@@ -1,13 +1,14 @@
 import { useMemo, useState, type FormEvent } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
-import { Link, useParams } from 'react-router-dom'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { AlertTriangle, ArrowUpRight, CalendarPlus, CheckCircle2, ClipboardCheck, Plus, Save, XCircle } from 'lucide-react'
 import { EmptyState, ErrorState, LoadingState, PageHeader } from '../../components/Ui'
-import { useHomes, useInspection, useInspections, usePublishedChecklistVersions, type ChecklistQuestionRow } from '../../lib/data'
+import { useHomes, useInspection, useInspections, usePublishedChecklistVersions, type ChecklistQuestionRow, type InspectionResponseRow, type InspectionRow } from '../../lib/data'
 import { formatDateTime, humanize } from '../../lib/utils'
 import { newCommand, runCommand } from '../../lib/commands'
 import { useAuth } from '../auth/AuthProvider'
 import type { UUID } from '../../types/domain'
+import { findOfflineInspection, listHomeOfflineBundles } from '../../lib/offline'
 
 const inspectionTypes = ['internal_quality', 'external_quality', 'pre_walkthrough', 'final_walkthrough', 'reinspection'] as const
 const results = ['pass', 'fail', 'not_applicable', 'not_checked'] as const
@@ -19,6 +20,12 @@ export function InspectionsPage() {
   const { user } = useAuth()
   const queryClient = useQueryClient()
   const inspections = useInspections(org)
+  const cachedHomes = useQuery({
+    queryKey: ['offline-home-list', user?.id, org],
+    enabled: Boolean(user && org),
+    queryFn: () => listHomeOfflineBundles(user!.id, org!)
+  })
+  const inspectionRows = inspections.data ?? (cachedHomes.data ?? []).flatMap((bundle) => bundle.inspections as unknown as InspectionRow[])
   const homes = useHomes(org)
   const templates = usePublishedChecklistVersions(org)
   const [scheduling, setScheduling] = useState(false)
@@ -50,7 +57,7 @@ export function InspectionsPage() {
   }
 
   return <div className="stack-xl">
-    <PageHeader eyebrow="QUALITY CONTROL" title="Inspections" description="Capture complete checklist coverage, preserve immutable submissions, and amend through numbered revisions." actions={<button className="button primary" onClick={() => setScheduling((value) => !value)}><Plus />Schedule inspection</button>} />
+    <PageHeader eyebrow="QUALITY CONTROL" title="Inspections" description="Capture complete checklist coverage, preserve immutable submissions, and amend through numbered revisions." actions={<button className="button primary" disabled={!navigator.onLine} onClick={() => setScheduling((value) => !value)}><Plus />Schedule inspection</button>} />
     {scheduling && <form className="panel form-panel stack-lg" onSubmit={schedule}>
       <div className="section-heading"><div><h2>Schedule inspection</h2><p>The signed-in administrator becomes the lead inspector.</p></div><button type="button" className="icon-button" aria-label="Close scheduling form" onClick={() => setScheduling(false)}><XCircle /></button></div>
       <div className="form-grid two">
@@ -62,48 +69,64 @@ export function InspectionsPage() {
       {error && <div className="notice danger" role="alert">{error}</div>}
       <div className="form-actions"><button type="button" className="button ghost" onClick={() => setScheduling(false)}>Cancel</button><button className="button primary" disabled={saving || homes.isLoading || templates.isLoading}><CalendarPlus />{saving ? 'Scheduling…' : 'Schedule'}</button></div>
     </form>}
-    {inspections.isLoading && <LoadingState label="Loading inspections" />}
-    {inspections.isError && <ErrorState message={inspections.error.message} retry={() => void inspections.refetch()} />}
-    {!inspections.isLoading && !inspections.data?.length && <EmptyState title="No inspections in scope" description="Schedule an inspection or begin an authorized ad-hoc review." action={<button className="button secondary" onClick={() => setScheduling(true)}><CalendarPlus />Schedule inspection</button>} />}
-    {!!inspections.data?.length && <section className="panel"><div className="inspection-table-head"><span>Inspection</span><span>Home</span><span>Scheduled</span><span>Status</span><span>Revision</span><span /></div>{inspections.data.map((inspection) => <Link className="inspection-table-row" to={`/org/${org}/inspections/${inspection.id}`} key={inspection.id}><span><span className="icon-tile"><ClipboardCheck /></span><strong>{humanize(inspection.type)}</strong></span><span><strong>Lot {inspection.lot_code ?? '—'}</strong><small>{inspection.address_line1 ?? 'Address pending'}</small></span><span>{formatDateTime(inspection.scheduled_at)}</span><span><span className={`state-badge state-${inspection.status}`}><span />{humanize(inspection.status)}</span></span><span>v{inspection.current_revision}</span><ArrowUpRight /></Link>)}</section>}
+    {!inspectionRows.length && (inspections.isLoading || cachedHomes.isLoading) && <LoadingState label="Loading inspections" />}
+    {!inspectionRows.length && inspections.isError && <ErrorState message={inspections.error.message} retry={() => void inspections.refetch()} />}
+    {!inspections.isLoading && !inspectionRows.length && <EmptyState title="No inspections in scope" description="Schedule an inspection or begin an authorized ad-hoc review." action={<button className="button secondary" disabled={!navigator.onLine} onClick={() => setScheduling(true)}><CalendarPlus />Schedule inspection</button>} />}
+    {!!inspectionRows.length && <section className="panel"><div className="inspection-table-head"><span>Inspection</span><span>Home</span><span>Scheduled</span><span>Status</span><span>Revision</span><span /></div>{inspectionRows.map((inspection) => <Link className="inspection-table-row" to={`/org/${org}/inspections/${inspection.id}`} key={inspection.id}><span><span className="icon-tile"><ClipboardCheck /></span><strong>{humanize(inspection.type)}</strong></span><span><strong>Lot {inspection.lot_code ?? '—'}</strong><small>{inspection.address_line1 ?? 'Address pending'}</small></span><span>{formatDateTime(inspection.scheduled_at)}</span><span><span className={`state-badge state-${inspection.status}`}><span />{humanize(inspection.status)}</span></span><span>v{inspection.current_revision}</span><ArrowUpRight /></Link>)}</section>}
   </div>
 }
 
 export function InspectionDetailPage() {
   const { org, id } = useParams()
+  const navigate = useNavigate()
   const { user } = useAuth()
   const queryClient = useQueryClient()
   const detail = useInspection(org, id)
+  const cachedDetail = useQuery({
+    queryKey: ['offline-inspection', user?.id, org, id],
+    enabled: Boolean(user && org && id),
+    queryFn: () => findOfflineInspection(user!.id, org!, id!)
+  })
+  const inspectionData = detail.data ?? cachedDetail.data as unknown as NonNullable<typeof detail.data>
   const [drafts, setDrafts] = useState<Record<string, DraftResponse>>({})
+  const [localResponses, setLocalResponses] = useState<Record<string, InspectionResponseRow>>({})
   const [busyQuestion, setBusyQuestion] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
 
-  const counts = useMemo(() => Object.fromEntries(results.map((result) => [result, detail.data?.responses.filter((response) => response.result === result).length ?? 0])), [detail.data]) as Record<InspectionResult, number>
+  const effectiveResponses = useMemo(() => {
+    const byQuestion = new Map((inspectionData?.responses ?? []).map((response) => [response.question_id, response]))
+    Object.values(localResponses).forEach((response) => byQuestion.set(response.question_id, response))
+    return [...byQuestion.values()]
+  }, [inspectionData?.responses, localResponses])
+  const counts = useMemo(() => Object.fromEntries(results.map((result) => [result, effectiveResponses.filter((response) => response.result === result).length])), [effectiveResponses]) as Record<InspectionResult, number>
 
-  async function command<TResult>(name: string, payload: Record<string, unknown>) {
-    if (!org || !id || !user || !detail.data) throw new Error('Inspection context is unavailable.')
-    const response = await runCommand<Record<string, unknown>, TResult>(name, newCommand(payload, detail.data.inspection.version), { organizationId: org, userId: user.id, aggregateId: id })
-    if ('queued' in response) throw new Error('Inspection submission requires a live connection.')
+  async function command<TResult>(name: string, payload: Record<string, unknown>, dependencies: UUID[] = []) {
+    if (!org || !id || !user || !inspectionData) throw new Error('Inspection context is unavailable.')
+    const response = await runCommand<Record<string, unknown>, TResult>(name, newCommand(payload, inspectionData.inspection.version), { organizationId: org, userId: user.id, aggregateId: id, dependencies, allowOffline: ['upsert_inspection_response', 'submit_inspection'].includes(name) })
+    if ('queued' in response) return response
     if (!response.ok) throw new Error(response.error.message)
     return response.data
   }
 
   async function saveResponse(question: ChecklistQuestionRow) {
-    if (!org || !id || !user || !detail.data) return
+    if (!org || !id || !user || !inspectionData) return
     const draft = drafts[question.id]
     if (!draft?.result) return setError('Choose a response before saving.')
     if (['not_applicable', 'not_checked'].includes(draft.result) && !draft.explanation.trim()) return setError('An explanation is required for this response.')
     setBusyQuestion(question.id)
     setError('')
     try {
-      let findingId = detail.data.responses.find((response) => response.question_id === question.id)?.finding_work_item_id ?? null
+      let findingId = effectiveResponses.find((response) => response.question_id === question.id)?.finding_work_item_id ?? null
+      let dependencies: UUID[] = []
       if (draft.result === 'fail' && !findingId) {
         if (!draft.findingTitle.trim()) throw new Error('A finding title is required for a failed item.')
-        const finding = await runCommand<Record<string, unknown>, { id: UUID }>('create_work_item', newCommand({
+        findingId = crypto.randomUUID()
+        const findingCommand = newCommand({
+          id: findingId,
           organization_id: org,
-          neighborhood_id: detail.data.inspection.neighborhood_id,
-          home_id: detail.data.inspection.home_id,
+          neighborhood_id: inspectionData.inspection.neighborhood_id,
+          home_id: inspectionData.inspection.home_id,
           inspection_id: id,
           origin: 'inspection_finding',
           title: draft.findingTitle.trim(),
@@ -111,19 +134,28 @@ export function InspectionDetailPage() {
           category_id: question.category_id,
           priority: 'normal',
           safety_flag: false
-        }), { organizationId: org, userId: user.id, aggregateId: crypto.randomUUID() })
-        if ('queued' in finding) throw new Error('Inspection findings require a live connection.')
-        if (!finding.ok) throw new Error(finding.error.message)
-        findingId = finding.data.id
+        })
+        const finding = await runCommand<Record<string, unknown>, { id: UUID }>('create_work_item', findingCommand, { organizationId: org, userId: user.id, aggregateId: findingId, allowOffline: true })
+        if ('queued' in finding) dependencies = [finding.operation_id]
+        else if (!finding.ok) throw new Error(finding.error.message)
+        else findingId = finding.data.id
       }
-      await command('upsert_inspection_response', {
+      const response = await command('upsert_inspection_response', {
         inspection_id: id,
         question_id: question.id,
         response: draft.result,
         reason: draft.explanation,
         finding_id: draft.result === 'fail' ? findingId : null
-      })
-      await detail.refetch()
+      }, dependencies)
+      if (typeof response === 'object' && response && 'queued' in response) {
+        setLocalResponses((current) => ({ ...current, [question.id]: {
+          id: String((response as unknown as { operation_id: UUID }).operation_id),
+          question_id: question.id,
+          result: draft.result!,
+          explanation: draft.explanation || null,
+          finding_work_item_id: draft.result === 'fail' ? findingId : null
+        } }))
+      } else await detail.refetch()
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Unable to save response.')
     } finally { setBusyQuestion(null) }
@@ -134,7 +166,11 @@ export function InspectionDetailPage() {
     setSubmitting(true)
     setError('')
     try {
-      await command('submit_inspection', { inspection_id: id })
+      const response = await command('submit_inspection', { inspection_id: id })
+      if (typeof response === 'object' && response && 'queued' in response) {
+        navigate(`/org/${org}/sync`)
+        return
+      }
       await Promise.all([detail.refetch(), queryClient.invalidateQueries({ queryKey: ['inspections', org] })])
     } catch (caught) { setError(caught instanceof Error ? caught.message : 'Unable to submit inspection.') }
     finally { setSubmitting(false) }
@@ -151,17 +187,18 @@ export function InspectionDetailPage() {
     finally { setSubmitting(false) }
   }
 
-  if (detail.isLoading) return <LoadingState label="Loading inspection" />
-  if (detail.isError || !detail.data) return <ErrorState message={detail.error?.message ?? 'Inspection was not found or is outside your scope.'} retry={() => void detail.refetch()} />
-  const inspection = detail.data.inspection
+  if (!inspectionData && (detail.isLoading || cachedDetail.isLoading)) return <LoadingState label="Loading inspection" />
+  if (!inspectionData) return <ErrorState message={detail.error?.message ?? 'This inspection was not downloaded before the device went offline.'} retry={() => void Promise.all([detail.refetch(), cachedDetail.refetch()])} />
+  const inspection = inspectionData.inspection
   const editable = ['draft', 'in_progress', 'amended'].includes(inspection.status)
-  const allRequiredAnswered = detail.data.questions.filter((question) => question.requires_response).every((question) => detail.data.responses.some((response) => response.question_id === question.id))
+  const allRequiredAnswered = inspectionData.questions.filter((question) => question.requires_response).every((question) => effectiveResponses.some((response) => response.question_id === question.id))
 
   return <div className="stack-xl"><PageHeader eyebrow={`REVISION ${inspection.current_revision}`} title={humanize(inspection.type)} description={`Scheduled ${formatDateTime(inspection.scheduled_at)}`} actions={<div className="button-row"><span className={`state-badge state-${inspection.status}`}><span />{humanize(inspection.status)}</span>{inspection.status === 'submitted' && <button className="button secondary" disabled={submitting} onClick={() => void beginAmendment()}>Begin amendment</button>}</div>} />
+    {!navigator.onLine && cachedDetail.data && <div className="notice warning"><AlertTriangle />Offline checklist loaded. Saved responses and findings remain queued until membership and versions are revalidated.</div>}
     {error && <div className="notice danger" role="alert"><AlertTriangle />{error}</div>}
     <section className="coverage-summary"><div><strong>{counts.pass}</strong><span>Pass</span></div><div><strong>{counts.fail}</strong><span>Fail</span></div><div><strong>{counts.not_applicable}</strong><span>Not applicable</span></div><div><strong>{counts.not_checked}</strong><span>Not checked</span></div></section>
-    <section className="stack-lg" aria-label="Inspection checklist">{detail.data.questions.map((question) => {
-      const saved = detail.data.responses.find((response) => response.question_id === question.id)
+    <section className="stack-lg" aria-label="Inspection checklist">{inspectionData.questions.map((question) => {
+      const saved = effectiveResponses.find((response) => response.question_id === question.id)
       const draft = drafts[question.id] ?? { result: saved?.result, explanation: saved?.explanation ?? '', findingTitle: '' }
       return <article className="panel checklist-question" key={question.id}><div className="question-title"><span>{question.ordinal}</span><div><small>{question.section}</small><h2>{question.label}</h2></div>{saved && <CheckCircle2 aria-label="Response saved" />}</div>
         <div className="response-options" role="radiogroup" aria-label={`Response for ${question.label}`}>{results.map((result) => <label key={result} className={draft.result === result ? 'selected' : ''}><input type="radio" name={`response-${question.id}`} value={result} checked={draft.result === result} disabled={!editable} onChange={() => setDrafts((current) => ({ ...current, [question.id]: { ...draft, result } }))} />{humanize(result)}</label>)}</div>
@@ -170,6 +207,6 @@ export function InspectionDetailPage() {
         {editable && <button className="button secondary" disabled={!draft.result || busyQuestion === question.id} onClick={() => void saveResponse(question)}><Save />{busyQuestion === question.id ? 'Saving…' : 'Save response'}</button>}
       </article>
     })}</section>
-    {editable && <div className="form-actions sticky-actions"><span>{detail.data.responses.length} of {detail.data.questions.length} questions saved</span><button className="button primary" disabled={!allRequiredAnswered || submitting} onClick={() => void submitInspection()}><ClipboardCheck />{submitting ? 'Submitting…' : `Submit revision ${inspection.current_revision}`}</button></div>}
+    {editable && <div className="form-actions sticky-actions"><span>{effectiveResponses.length} of {inspectionData.questions.length} questions saved</span><button className="button primary" disabled={!allRequiredAnswered || submitting} onClick={() => void submitInspection()}><ClipboardCheck />{submitting ? 'Submitting…' : `Submit revision ${inspection.current_revision}`}</button></div>}
   </div>
 }

@@ -59,6 +59,7 @@ code { display: inline-flex; padding: .35rem .55rem; border: 1px solid var(--lin
 .button.secondary { border-color: #b9c8c0; background: white; color: var(--forest-900); }
 .button.ghost { border-color: var(--line); background: transparent; }
 .button.danger { border-color: #a83229; background: var(--red); color: white; }
+.button.compact-button { min-height: 36px; padding: .45rem .7rem; font-size: .75rem; }
 .button.full { width: 100%; }
 .button-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: .65rem; }
 .text-button { display: inline-flex; align-items: center; gap: .35rem; padding: .25rem 0; border: 0; background: none; color: var(--forest-700); cursor: pointer; font-weight: 750; }
@@ -117,6 +118,7 @@ code { display: inline-flex; padding: .35rem .55rem; border: 1px solid var(--lin
 .topbar { position: sticky; z-index: 30; top: 0; display: flex; height: 66px; align-items: center; justify-content: space-between; padding: 0 2rem; border-bottom: 1px solid var(--line); background: rgba(245,243,235,.93); backdrop-filter: blur(12px); }
 .org-switcher select { min-width: 210px; border-color: transparent; background: transparent; font-weight: 800; }
 .topbar-actions { display: flex; gap: .7rem; align-items: center; }
+.pwa-update { display: flex; min-height: 44px; align-items: center; justify-content: center; gap: 1rem; padding: .45rem 1rem; border-bottom: 1px solid #d8bd77; background: #fff4d7; color: #5b410c; font-size: .8rem; font-weight: 700; }
 .connection { display: inline-flex; align-items: center; gap: .35rem; color: var(--forest-700); font-size: .75rem; font-weight: 750; }
 .connection.offline { color: var(--red); }
 .connection svg { width: .95rem; }
@@ -425,6 +427,13 @@ code { display: inline-flex; padding: .35rem .55rem; border: 1px solid var(--lin
 }
 
 @media (max-width: 560px) {
+  .topbar { gap: .55rem; padding: 0 .65rem; }
+  .org-switcher { min-width: 0; flex: 1; }
+  .org-switcher select { min-width: 0; max-width: 100%; }
+  .topbar-actions { gap: .4rem; }
+  .connection > span, .compact-button > span { display: none; }
+  .compact-button { width: 38px; padding: 0; }
+  .pwa-update { align-items: flex-start; flex-direction: column; gap: .25rem; }
   .metrics-grid { grid-template-columns: 1fr 1fr; gap: .65rem; }
   .metric-card { padding: .85rem; }
   .metric-card > strong { font-size: 1.75rem; }

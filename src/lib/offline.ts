@@ -1,5 +1,5 @@
 import Dexie, { type EntityTable } from 'dexie'
-import type { CachedRecord, OfflineOperation, QueueState, UUID } from '../types/domain'
+import type { CachedRecord, OfflineOperation, OrganizationSummary, QueueState, UUID, WorkItemSummary } from '../types/domain'
 import { requireSupabase } from './supabase'
 import { uploadWorkEvidence, validateEvidenceFile } from './uploads'
 
@@ -17,6 +17,28 @@ interface LocalBlob {
 interface SyncMeta {
   key: string
   value: string
+}
+
+export interface CachedWorkDetail {
+  item: WorkItemSummary
+  events: Array<Record<string, unknown>>
+  comments: Array<Record<string, unknown>>
+  attachments: Array<Record<string, unknown>>
+}
+
+export interface CachedInspectionDetail {
+  inspection: Record<string, unknown> & { id: UUID; version: number; neighborhood_id: UUID; home_id: UUID; status: string }
+  questions: Array<Record<string, unknown>>
+  responses: Array<Record<string, unknown>>
+}
+
+export interface OfflineHomeBundleValue {
+  home: Record<string, unknown> & { id: UUID; neighborhood_id: UUID; version: number }
+  neighborhood?: { id: UUID; name: string }
+  work: WorkItemSummary[]
+  inspections: Array<Record<string, unknown>>
+  workDetails?: Record<UUID, CachedWorkDetail>
+  inspectionDetails?: Record<UUID, CachedInspectionDetail>
 }
 
 class BuildTrackDatabase extends Dexie {
@@ -48,10 +70,16 @@ export async function enqueueOperation(
   input: Omit<OfflineOperation, 'id' | 'request_hash' | 'state' | 'retries' | 'created_at' | 'updated_at'>
 ) {
   const now = new Date().toISOString()
+  const priorOperations = input.dependencies.length ? [] : await offlineDb.operations
+    .where('[user_id+organization_id]').equals([input.user_id, input.organization_id])
+    .filter((operation) => operation.aggregate_id === input.aggregate_id && !['synced', 'access_revoked'].includes(operation.state))
+    .toArray()
+  const prior = priorOperations.sort((left, right) => right.created_at.localeCompare(left.created_at))[0]
   const operation: OfflineOperation = {
     ...input,
     id: input.envelope.operation_id,
     request_hash: await sha256(JSON.stringify(input.envelope)),
+    dependencies: input.dependencies.length ? input.dependencies : prior ? [prior.id] : [],
     state: 'queued',
     retries: 0,
     created_at: now,
@@ -68,6 +96,7 @@ export async function stageWorkEvidence(input: {
   homeId?: UUID | null
   workItemId: UUID
   file: File
+  dependencies?: UUID[]
 }) {
   validateEvidenceFile(input.file)
   const operationId = crypto.randomUUID()
@@ -101,7 +130,7 @@ export async function stageWorkEvidence(input: {
       request_hash: await sha256(JSON.stringify(envelope)),
       envelope,
       state: 'queued',
-      dependencies: [],
+      dependencies: input.dependencies ?? [],
       retries: 0,
       created_at: now,
       updated_at: now
@@ -162,7 +191,8 @@ export async function synchronizeQueue(userId: UUID, organizationId: UUID) {
 
   const { ordered, blocked } = dependencyOrder(scoped)
   const result = { synced: 0, failed: 0, conflicts: 0, accessRevoked: 0, blocked: blocked.length }
-  for (const operation of ordered) {
+  for (const queuedOperation of ordered) {
+    const operation = await offlineDb.operations.get(queuedOperation.id) ?? queuedOperation
     await offlineDb.operations.update(operation.id, { state: 'sending', updated_at: new Date().toISOString() })
     try {
       if (operation.command_name === '__upload_evidence') {
@@ -190,6 +220,17 @@ export async function synchronizeQueue(userId: UUID, organizationId: UUID) {
       if (error) throw error
       if (data?.ok) {
         await updateQueueState(operation.id, 'synced')
+        const nextVersion = data?.data?.version
+        if (typeof nextVersion === 'number') {
+          const remaining = await offlineDb.operations
+            .where('[user_id+organization_id]').equals([userId, organizationId])
+            .filter((candidate) => candidate.aggregate_id === operation.aggregate_id && ['queued', 'failed'].includes(candidate.state) && candidate.envelope.expected_version !== undefined)
+            .toArray()
+          for (const candidate of remaining) {
+            const envelope = { ...candidate.envelope, expected_version: nextVersion }
+            await offlineDb.operations.update(candidate.id, { envelope, request_hash: await sha256(JSON.stringify(envelope)) })
+          }
+        }
         result.synced += 1
         continue
       }
@@ -230,6 +271,7 @@ export async function purgeUserData(userId: UUID, organizationId?: UUID) {
       : offlineDb.blobs.where('user_id').equals(userId)
     await Promise.all([operationQuery.delete(), cacheQuery.delete(), blobQuery.delete()])
   })
+  if (!organizationId) await offlineDb.meta.delete(`organizations:${userId}`)
 }
 
 export async function purgeExpiredCache() {
@@ -237,7 +279,34 @@ export async function purgeExpiredCache() {
 }
 
 export async function purgeAuthorizedCache(userId: UUID) {
-  return offlineDb.cache.where('user_id').equals(userId).delete()
+  await Promise.all([
+    offlineDb.cache.where('user_id').equals(userId).delete(),
+    offlineDb.meta.delete(`organizations:${userId}`)
+  ])
+}
+
+export async function saveOrganizationSnapshot(userId: UUID, organizations: OrganizationSummary[]) {
+  const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
+  await offlineDb.meta.put({
+    key: `organizations:${userId}`,
+    value: JSON.stringify({ userId, organizations, expiresAt })
+  })
+}
+
+export async function readOrganizationSnapshot(userId: UUID) {
+  const row = await offlineDb.meta.get(`organizations:${userId}`)
+  if (!row) return []
+  try {
+    const snapshot = JSON.parse(row.value) as { userId: UUID; organizations: OrganizationSummary[]; expiresAt: string }
+    if (snapshot.userId !== userId || snapshot.expiresAt <= new Date().toISOString()) {
+      await offlineDb.meta.delete(row.key)
+      return []
+    }
+    return snapshot.organizations
+  } catch {
+    await offlineDb.meta.delete(row.key)
+    return []
+  }
 }
 
 export async function saveHomeOfflineBundle(input: {
@@ -268,4 +337,32 @@ export async function readHomeOfflineBundle(userId: UUID, organizationId: UUID, 
   const record = await offlineDb.cache.get(`${userId}:${organizationId}:home:${homeId}`)
   if (!record || record.expires_at <= new Date().toISOString()) return null
   return record
+}
+
+export async function listHomeOfflineBundles(userId: UUID, organizationId: UUID) {
+  const now = new Date().toISOString()
+  const records = await offlineDb.cache.where('[user_id+organization_id]').equals([userId, organizationId]).toArray()
+  return records
+    .filter((record) => record.entity_type === 'home_bundle' && record.expires_at > now)
+    .map((record) => record.value as OfflineHomeBundleValue)
+}
+
+export async function findOfflineWorkItem(userId: UUID, organizationId: UUID, workItemId: UUID) {
+  const bundles = await listHomeOfflineBundles(userId, organizationId)
+  for (const bundle of bundles) {
+    const detail = bundle.workDetails?.[workItemId]
+    if (detail) return detail
+    const item = bundle.work.find((candidate) => candidate.id === workItemId)
+    if (item) return { item, events: [], comments: [], attachments: [] } satisfies CachedWorkDetail
+  }
+  return undefined
+}
+
+export async function findOfflineInspection(userId: UUID, organizationId: UUID, inspectionId: UUID) {
+  const bundles = await listHomeOfflineBundles(userId, organizationId)
+  for (const bundle of bundles) {
+    const detail = bundle.inspectionDetails?.[inspectionId]
+    if (detail) return detail
+  }
+  return undefined
 }

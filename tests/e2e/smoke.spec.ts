@@ -17,8 +17,13 @@ test('publishes an installable manifest and active service worker', async ({ pag
   const manifestResponse = await request.get(manifestPath!)
   expect(manifestResponse.ok()).toBeTruthy()
   const manifest = await manifestResponse.json()
-  expect(manifest).toMatchObject({ name: 'BuildTrack', short_name: 'BuildTrack', display: 'standalone' })
+  expect(manifest).toMatchObject({ name: 'BuildTrack', short_name: 'BuildTrack', display: 'standalone', id: '/', scope: '/' })
   expect(manifest.icons).toEqual(expect.arrayContaining([expect.objectContaining({ purpose: expect.stringContaining('maskable') })]))
+  expect(manifest.icons).toEqual(expect.arrayContaining([
+    expect.objectContaining({ sizes: '192x192', type: 'image/png' }),
+    expect.objectContaining({ sizes: '512x512', type: 'image/png' })
+  ]))
+  await expect(page.locator('meta[name="apple-mobile-web-app-capable"]')).toHaveAttribute('content', 'yes')
 
   const hasActiveWorker = await page.evaluate(async () => {
     if (!('serviceWorker' in navigator)) return false
@@ -26,6 +31,15 @@ test('publishes an installable manifest and active service worker', async ({ pag
     return Boolean(registration.active)
   })
   expect(hasActiveWorker).toBeTruthy()
+})
+
+test('reopens the application shell without internet after the first visit', async ({ page, context }) => {
+  await page.goto('/')
+  await page.evaluate(async () => { await navigator.serviceWorker.ready })
+  await context.setOffline(true)
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  await expect(page.getByRole('heading', { name: 'Connect the application to Supabase' })).toBeVisible()
+  await context.setOffline(false)
 })
 
 test('fits the viewport without horizontal overflow', async ({ page }) => {

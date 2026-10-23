@@ -15,10 +15,10 @@ const queryClient = new QueryClient({
   }
 })
 
-registerSW({
+const updateServiceWorker = registerSW({
   immediate: false,
   onNeedRefresh() {
-    window.dispatchEvent(new CustomEvent('buildtrack:update-ready'))
+    window.dispatchEvent(new CustomEvent('buildtrack:update-ready', { detail: { update: () => updateServiceWorker(true) } }))
   }
 })
 

@@ -1,9 +1,9 @@
 /* eslint-disable react-refresh/only-export-components */
-import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
 import type { Session, User } from '@supabase/supabase-js'
 import { supabase } from '../../lib/supabase'
 import type { OrganizationSummary } from '../../types/domain'
-import { offlineDb, purgeAuthorizedCache } from '../../lib/offline'
+import { offlineDb, purgeAuthorizedCache, readOrganizationSnapshot, saveOrganizationSnapshot } from '../../lib/offline'
 
 interface AuthContextValue {
   configured: boolean
@@ -25,37 +25,52 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [organizations, setOrganizations] = useState<OrganizationSummary[]>([])
   const [activeOrganization, setActiveOrganizationState] = useState<OrganizationSummary | null>(null)
 
-  async function refreshOrganizations() {
-    if (!supabase) return
-    const { data, error } = await supabase.from('my_organizations').select('*').order('name')
-    if (error) throw error
-    const rows = (data ?? []) as unknown as OrganizationSummary[]
+  const applyOrganizations = useCallback((rows: OrganizationSummary[]) => {
     setOrganizations(rows)
     const storedId = localStorage.getItem('buildtrack.activeOrganization')
     const selected = rows.find((item) => item.id === storedId) ?? rows[0] ?? null
     setActiveOrganizationState(selected)
-  }
+  }, [])
+
+  const refreshOrganizations = useCallback(async (userId?: string) => {
+    if (!supabase) return
+    const { data, error } = await supabase.from('my_organizations').select('*').order('name')
+    if (error) throw error
+    const rows = (data ?? []) as unknown as OrganizationSummary[]
+    applyOrganizations(rows)
+    const snapshotUserId = userId ?? (await supabase.auth.getUser()).data.user?.id
+    if (snapshotUserId) await saveOrganizationSnapshot(snapshotUserId, rows)
+  }, [applyOrganizations])
 
   useEffect(() => {
     if (!supabase) return
     let alive = true
-    void supabase.auth.getSession().then(({ data }) => {
+    void supabase.auth.getSession().then(async ({ data }) => {
       if (!alive) return
       setSession(data.session)
-      setLoading(false)
-      if (data.session) void refreshOrganizations()
+      if (data.session) {
+        const cached = await readOrganizationSnapshot(data.session.user.id)
+        if (alive && cached.length) applyOrganizations(cached)
+        if (navigator.onLine) void refreshOrganizations(data.session.user.id).catch(() => undefined)
+      }
+      if (alive) setLoading(false)
     })
     const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
       setSession(nextSession)
       setOrganizations([])
       setActiveOrganizationState(null)
-      if (nextSession) void refreshOrganizations()
+      if (nextSession) {
+        void readOrganizationSnapshot(nextSession.user.id).then((cached) => {
+          if (cached.length) applyOrganizations(cached)
+        })
+        if (navigator.onLine) void refreshOrganizations(nextSession.user.id).catch(() => undefined)
+      }
     })
     return () => {
       alive = false
       listener.subscription.unsubscribe()
     }
-  }, [])
+  }, [applyOrganizations, refreshOrganizations])
 
   function setActiveOrganization(organization: OrganizationSummary) {
     setActiveOrganizationState(organization)

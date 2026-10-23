@@ -1,5 +1,5 @@
 import { useRef, useState, type ChangeEvent, type FormEvent } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams } from 'react-router-dom'
 import { AlertTriangle, CalendarClock, Camera, ChevronLeft, ClipboardCheck, MessageSquare, Paperclip, ShieldCheck, UserRound } from 'lucide-react'
 import { ErrorState, LoadingState, PageHeader, PriorityBadge, StateBadge } from '../../components/Ui'
@@ -7,7 +7,7 @@ import { useParticipants, useRosterCompanies, useWorkItem } from '../../lib/data
 import { formatDateTime, humanize, relativeDate } from '../../lib/utils'
 import { newCommand, runCommand } from '../../lib/commands'
 import { uploadWorkEvidence } from '../../lib/uploads'
-import { stageWorkEvidence } from '../../lib/offline'
+import { findOfflineWorkItem, stageWorkEvidence } from '../../lib/offline'
 import { useAuth } from '../auth/AuthProvider'
 import type { WorkState } from '../../types/domain'
 
@@ -25,8 +25,14 @@ export function WorkDetailPage() {
   const queryClient = useQueryClient()
   const { user } = useAuth()
   const work = useWorkItem(org, id)
-  const participants = useParticipants(org, work.data?.item.neighborhood_id)
-  const companies = useRosterCompanies(org, work.data?.item.neighborhood_id)
+  const cachedWork = useQuery({
+    queryKey: ['offline-work-item', user?.id, org, id],
+    enabled: Boolean(user && org && id),
+    queryFn: () => findOfflineWorkItem(user!.id, org!, id!)
+  })
+  const workData = work.data ?? cachedWork.data
+  const participants = useParticipants(org, workData?.item.neighborhood_id)
+  const companies = useRosterCompanies(org, workData?.item.neighborhood_id)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [uploading, setUploading] = useState(false)
@@ -34,11 +40,11 @@ export function WorkDetailPage() {
   const [accountableType, setAccountableType] = useState<'internal' | 'company'>('internal')
 
   async function execute(command: string, payload: Record<string, unknown> = {}) {
-    if (!org || !id || !user || !work.data) return
+    if (!org || !id || !user || !workData) return
     setBusy(true)
     setError('')
     try {
-      const result = await runCommand(command, newCommand({ item_id: id, ...payload }, work.data.item.version), {
+      const result = await runCommand(command, newCommand({ item_id: id, ...payload }, workData.item.version), {
         organizationId: org,
         userId: user.id,
         aggregateId: id,
@@ -63,7 +69,7 @@ export function WorkDetailPage() {
 
   async function uploadEvidence(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0]
-    if (!file || !org || !id || !work.data) return
+    if (!file || !org || !id || !workData) return
     setUploading(true)
     setError('')
     try {
@@ -72,8 +78,8 @@ export function WorkDetailPage() {
         await stageWorkEvidence({
           userId: user.id,
           organizationId: org,
-          neighborhoodId: work.data.item.neighborhood_id,
-          homeId: work.data.item.home_id,
+          neighborhoodId: workData.item.neighborhood_id,
+          homeId: workData.item.home_id,
           workItemId: id,
           file
         })
@@ -82,8 +88,8 @@ export function WorkDetailPage() {
       }
       await uploadWorkEvidence({
         organizationId: org,
-        neighborhoodId: work.data.item.neighborhood_id,
-        homeId: work.data.item.home_id,
+        neighborhoodId: workData.item.neighborhood_id,
+        homeId: workData.item.home_id,
         workItemId: id,
         file
       })
@@ -99,7 +105,7 @@ export function WorkDetailPage() {
   async function submitCorrection(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const form = new FormData(event.currentTarget)
-    const attachmentIds = work.data?.attachments.filter((attachment) => attachment.status === 'ready' && attachment.visibility === 'shared').map((attachment) => attachment.id) ?? []
+    const attachmentIds = workData?.attachments.filter((attachment) => attachment.status === 'ready' && attachment.visibility === 'shared').map((attachment) => attachment.id) ?? []
     await execute('submit_correction', { note: String(form.get('note')).trim(), attachment_ids: attachmentIds })
   }
 
@@ -145,14 +151,15 @@ export function WorkDetailPage() {
     await execute('cancel_work', { reason: String(form.get('reason')).trim(), duplicate_of_id: null })
   }
 
-  if (work.isLoading) return <LoadingState label="Loading work item" />
-  if (work.isError || !work.data) return <ErrorState message={work.error?.message ?? 'Work item was not found or is outside your scope.'} retry={() => void work.refetch()} />
-  const item = work.data.item
+  if (!workData && (work.isLoading || cachedWork.isLoading)) return <LoadingState label="Loading work item" />
+  if (!workData) return <ErrorState message={work.error?.message ?? 'This work item was not downloaded before the device went offline.'} retry={() => void Promise.all([work.refetch(), cachedWork.refetch()])} />
+  const item = workData.item
   const primaryAction = actionByState[item.state]
 
   return <div className="stack-xl">
     <button className="text-button" onClick={() => navigate(-1)}><ChevronLeft />Back</button>
     <PageHeader eyebrow={item.lot_code ? `LOT ${item.lot_code}` : 'COMMON AREA'} title={item.title} description={item.description} actions={<div className="button-row"><PriorityBadge priority={item.priority} /><StateBadge state={item.state} />{primaryAction && <button className="button primary" disabled={busy} onClick={() => void execute(primaryAction.command, primaryAction.command === 'unblock_work' ? { resolution: 'Work is ready to resume.' } : {})}>{primaryAction.label}</button>}</div>} />
+    {!navigator.onLine && cachedWork.data && <div className="notice warning"><AlertTriangle />Offline copy loaded. Changes and photos are queued on this device until access and record versions are revalidated.</div>}
     {error && <div className="notice danger" role="alert"><AlertTriangle />{error}</div>}
     <div className="detail-layout">
       <div className="stack-lg">
@@ -179,20 +186,20 @@ export function WorkDetailPage() {
           {!['verified', 'cancelled'].includes(item.state) && <details className="command-disclosure danger-zone"><summary>Cancel work item</summary><form onSubmit={cancelWork}><label className="field">Cancellation reason<textarea name="reason" maxLength={1000} required /></label><button className="button danger" disabled={busy}>Cancel work item</button></form></details>}
         </section>
         <section className="panel detail-card">
-          <div className="section-heading"><h2><MessageSquare />Conversation</h2><span>{work.data.comments.length} messages</span></div>
-          <div className="comment-list">{work.data.comments.map((comment) => <article className="comment" key={String(comment.id)}><div><strong>{String(comment.author_id).slice(0, 8)}</strong><span className={`visibility ${String(comment.visibility)}`}>{String(comment.visibility)}</span><time>{formatDateTime(String(comment.created_at))}</time></div><p>{String(comment.body)}</p></article>)}{!work.data.comments.length && <p className="muted">No comments yet.</p>}</div>
+          <div className="section-heading"><h2><MessageSquare />Conversation</h2><span>{workData.comments.length} messages</span></div>
+          <div className="comment-list">{workData.comments.map((comment) => <article className="comment" key={String(comment.id)}><div><strong>{String(comment.author_id).slice(0, 8)}</strong><span className={`visibility ${String(comment.visibility)}`}>{String(comment.visibility)}</span><time>{formatDateTime(String(comment.created_at))}</time></div><p>{String(comment.body)}</p></article>)}{!workData.comments.length && <p className="muted">No comments yet.</p>}</div>
           <form className="comment-form" onSubmit={addComment}><textarea name="body" required placeholder="Add a clear update or question…" /><div><label><span className="sr-only">Comment visibility</span><select name="visibility"><option value="shared">Shared with assigned participants</option><option value="internal">Internal only</option></select></label><button className="button primary" disabled={busy}>Post comment</button></div></form>
         </section>
         <section className="panel detail-card">
           <div className="section-heading"><h2><Camera />Evidence</h2><span>Private storage</span></div>
           <input ref={fileInput} className="sr-only" type="file" accept="image/jpeg,image/png,image/heic,image/heif,application/pdf" onChange={uploadEvidence} />
-          <button className="upload-drop interactive" disabled={uploading || work.data.attachments.length >= 20} onClick={() => fileInput.current?.click()}><Paperclip /><div><strong>{uploading ? 'Processing evidence…' : navigator.onLine ? 'Upload evidence' : 'Save evidence offline'}</strong><span>JPEG, PNG, HEIC, HEIF, or PDF · 20 MB maximum · 20 files per item</span></div></button>
-          <div className="evidence-list">{work.data.attachments.map((attachment) => <div className="evidence-row" key={String(attachment.id)}><Paperclip /><span><strong>{String(attachment.original_name)}</strong><small>{(Number(attachment.byte_size) / 1024 / 1024).toFixed(1)} MB</small></span><StateBadge state={String(attachment.status)} /></div>)}{!work.data.attachments.length && <p className="muted">No evidence uploaded yet.</p>}</div>
+          <button className="upload-drop interactive" disabled={uploading || workData.attachments.length >= 20} onClick={() => fileInput.current?.click()}><Paperclip /><div><strong>{uploading ? 'Processing evidence…' : navigator.onLine ? 'Upload evidence' : 'Save evidence offline'}</strong><span>JPEG, PNG, HEIC, HEIF, or PDF · 20 MB maximum · 20 files per item</span></div></button>
+          <div className="evidence-list">{workData.attachments.map((attachment) => <div className="evidence-row" key={String(attachment.id)}><Paperclip /><span><strong>{String(attachment.original_name)}</strong><small>{(Number(attachment.byte_size) / 1024 / 1024).toFixed(1)} MB</small></span><StateBadge state={String(attachment.status)} /></div>)}{!workData.attachments.length && <p className="muted">No evidence uploaded yet.</p>}</div>
         </section>
       </div>
       <aside className="panel timeline-card">
         <div className="section-heading"><h2>History</h2><span>Append-only</span></div>
-        <ol className="timeline">{work.data.events.map((event) => <li key={String(event.id)}><span className="timeline-dot" /><div><strong>{humanize(String(event.event_type))}</strong><p>{event.from_state && event.to_state ? `${humanize(String(event.from_state))} → ${humanize(String(event.to_state))}` : 'Recorded event'}</p><time>{formatDateTime(String(event.server_at))}</time></div></li>)}{!work.data.events.length && <li><span className="timeline-dot" /><div><strong>Draft created</strong><p>History will appear after the first synchronized command.</p></div></li>}</ol>
+        <ol className="timeline">{workData.events.map((event) => <li key={String(event.id)}><span className="timeline-dot" /><div><strong>{humanize(String(event.event_type))}</strong><p>{event.from_state && event.to_state ? `${humanize(String(event.from_state))} → ${humanize(String(event.to_state))}` : 'Recorded event'}</p><time>{formatDateTime(String(event.server_at))}</time></div></li>)}{!workData.events.length && <li><span className="timeline-dot" /><div><strong>Draft created</strong><p>History will appear after the first synchronized command.</p></div></li>}</ol>
       </aside>
     </div>
   </div>

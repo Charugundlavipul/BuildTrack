@@ -1,8 +1,8 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { NavLink, useNavigate, useParams } from 'react-router-dom'
 import {
-  Bell, Building2, ClipboardCheck, CloudOff, FileBarChart, HardHat,
-  Home, LogOut, Menu, Settings, ShieldAlert, Wifi, X
+  Bell, Building2, ClipboardCheck, CloudOff, Download, FileBarChart, HardHat,
+  Home, LogOut, Menu, RefreshCw, Settings, ShieldAlert, Wifi, X
 } from 'lucide-react'
 import { useAuth } from '../features/auth/AuthProvider'
 import { cn } from '../lib/utils'
@@ -16,12 +16,19 @@ const navItems = [
   { label: 'Sync center', path: 'sync', icon: Wifi }
 ]
 
+interface InstallPromptEvent extends Event {
+  prompt: () => Promise<void>
+  userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>
+}
+
 export function AppShell({ children }: { children: ReactNode }) {
   const { org } = useParams()
   const navigate = useNavigate()
   const { activeOrganization, organizations, setActiveOrganization, user, signOut } = useAuth()
   const [menuOpen, setMenuOpen] = useState(false)
   const [online, setOnline] = useState(navigator.onLine)
+  const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent | null>(null)
+  const [updateApp, setUpdateApp] = useState<(() => void) | null>(null)
 
   useEffect(() => {
     const setConnected = () => setOnline(true)
@@ -33,6 +40,33 @@ export function AppShell({ children }: { children: ReactNode }) {
       window.removeEventListener('offline', setDisconnected)
     }
   }, [])
+
+  useEffect(() => {
+    const captureInstall = (event: Event) => {
+      event.preventDefault()
+      setInstallPrompt(event as InstallPromptEvent)
+    }
+    const installed = () => setInstallPrompt(null)
+    const updateReady = (event: Event) => {
+      const detail = (event as CustomEvent<{ update: () => void }>).detail
+      if (detail?.update) setUpdateApp(() => detail.update)
+    }
+    window.addEventListener('beforeinstallprompt', captureInstall)
+    window.addEventListener('appinstalled', installed)
+    window.addEventListener('buildtrack:update-ready', updateReady)
+    return () => {
+      window.removeEventListener('beforeinstallprompt', captureInstall)
+      window.removeEventListener('appinstalled', installed)
+      window.removeEventListener('buildtrack:update-ready', updateReady)
+    }
+  }, [])
+
+  async function installApp() {
+    if (!installPrompt) return
+    await installPrompt.prompt()
+    const choice = await installPrompt.userChoice
+    if (choice.outcome === 'accepted') setInstallPrompt(null)
+  }
 
   return (
     <div className="app-shell">
@@ -65,10 +99,12 @@ export function AppShell({ children }: { children: ReactNode }) {
             navigate(`/org/${next.id}/my-work`)
           }}>{organizations.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
           <div className="topbar-actions">
-            <span className={cn('connection', !online && 'offline')}>{online ? <Wifi /> : <CloudOff />}{online ? 'Online' : 'Offline'}</span>
+            <span className={cn('connection', !online && 'offline')}>{online ? <Wifi /> : <CloudOff />}<span>{online ? 'Online' : 'Offline'}</span></span>
+            {installPrompt && <button className="button secondary compact-button" onClick={() => void installApp()}><Download /><span>Install</span></button>}
             <button className="icon-button" aria-label="Notifications"><Bell /></button>
           </div>
         </header>
+        {updateApp && <div className="pwa-update" role="status"><span>A safer BuildTrack update is ready.</span><button className="text-button" onClick={() => updateApp()}><RefreshCw />Update now</button></div>}
         <main className="page-content">{children}</main>
       </div>
     </div>

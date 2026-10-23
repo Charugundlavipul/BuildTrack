@@ -17,6 +17,8 @@ export default defineConfig({
         theme_color: '#12372a',
         background_color: '#f5f3eb',
         display: 'standalone',
+        id: '/',
+        scope: '/',
         start_url: '/',
         icons: [
           { src: '/buildtrack-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
