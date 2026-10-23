@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="BuildTrack">
+  <rect width="64" height="64" rx="16" fill="#12372a"/>
+  <path d="M14 29 32 14l18 15v21H14V29Z" fill="#f3f0e5"/>
+  <path d="m23 34 7 7 13-15" fill="none" stroke="#e7a833" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
