@@ -1,4 +1,4 @@
-import { authenticatedUser, errorStatus, handleOptions, json, serviceClient } from '../_shared/http.ts'
+import { authenticatedUser, errorResponse, handleOptions, json, serviceClient } from '../_shared/http.ts'
 
 function randomToken() {
   const bytes = crypto.getRandomValues(new Uint8Array(32))
@@ -33,8 +33,13 @@ Deno.serve(async (request) => {
 
     const service = serviceClient()
     const normalizedEmail = String(body.email).trim().toLowerCase()
-    const { data: users } = await service.auth.admin.listUsers({ page: 1, perPage: 1000 })
-    const existing = users.users.some((user) => user.email?.toLowerCase() === normalizedEmail)
+    let existing = false
+    for (let page = 1; page <= 100 && !existing; page += 1) {
+      const { data: users, error: usersError } = await service.auth.admin.listUsers({ page, perPage: 1000 })
+      if (usersError) throw usersError
+      existing = users.users.some((user) => user.email?.toLowerCase() === normalizedEmail)
+      if (users.users.length < 1000) break
+    }
     const appOrigin = (Deno.env.get('APP_ORIGIN') ?? 'http://localhost:5173').split(',')[0]
     if (!existing) {
       const { error: authInviteError } = await service.auth.admin.inviteUserByEmail(normalizedEmail, { redirectTo: `${appOrigin}/accept-invite?token=${encodeURIComponent(token)}&setup=1` })
@@ -66,6 +71,6 @@ Deno.serve(async (request) => {
     }
     return json(request, { invitation_id: invitation.id, expires_at: expiresAt, existing_identity: existing })
   } catch (error) {
-    return json(request, { error: error instanceof Error ? error.message : 'Invitation failed' }, errorStatus(error))
+    return errorResponse(request, error, 'Invitation failed')
   }
 })

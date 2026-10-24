@@ -4,6 +4,21 @@ import tailwindcss from '@tailwindcss/vite'
 import { VitePWA } from 'vite-plugin-pwa'
 
 export default defineConfig({
+  build: {
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          minSize: 20_000,
+          groups: [
+            { name: 'react-core', test: /node_modules[\\/](react|react-dom|react-router|react-router-dom)[\\/]/, includeDependenciesRecursively: false },
+            { name: 'supabase', test: /node_modules[\\/](@supabase|@realtime)[\\/]/, includeDependenciesRecursively: false },
+            { name: 'data-offline', test: /node_modules[\\/](@tanstack|dexie)[\\/]/, includeDependenciesRecursively: false },
+            { name: 'ui-vendor', test: /node_modules[\\/](lucide-react|sonner|react-hook-form|zod)[\\/]/, includeDependenciesRecursively: false }
+          ]
+        }
+      }
+    }
+  },
   plugins: [
     react(),
     tailwindcss(),

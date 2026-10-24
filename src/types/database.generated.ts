@@ -162,6 +162,7 @@ export type Database = {
           scan_reference: string | null
           sha256: string | null
           status: Database["public"]["Enums"]["attachment_status"]
+          storage_deleted_at: string | null
           uploader_id: string
           visibility: Database["public"]["Enums"]["comment_visibility"]
           work_item_id: string | null
@@ -188,6 +189,7 @@ export type Database = {
           scan_reference?: string | null
           sha256?: string | null
           status?: Database["public"]["Enums"]["attachment_status"]
+          storage_deleted_at?: string | null
           uploader_id: string
           visibility?: Database["public"]["Enums"]["comment_visibility"]
           work_item_id?: string | null
@@ -214,6 +216,7 @@ export type Database = {
           scan_reference?: string | null
           sha256?: string | null
           status?: Database["public"]["Enums"]["attachment_status"]
+          storage_deleted_at?: string | null
           uploader_id?: string
           visibility?: Database["public"]["Enums"]["comment_visibility"]
           work_item_id?: string | null
@@ -1136,6 +1139,7 @@ export type Database = {
           requested_by: string
           row_count: number | null
           status: string
+          storage_deleted_at: string | null
           updated_at: string
         }
         Insert: {
@@ -1151,6 +1155,7 @@ export type Database = {
           requested_by: string
           row_count?: number | null
           status?: string
+          storage_deleted_at?: string | null
           updated_at?: string
         }
         Update: {
@@ -1166,6 +1171,7 @@ export type Database = {
           requested_by?: string
           row_count?: number | null
           status?: string
+          storage_deleted_at?: string | null
           updated_at?: string
         }
         Relationships: [
@@ -1991,6 +1997,8 @@ export type Database = {
           organization_id: string
           specialty_id: string
           status: Database["public"]["Enums"]["organization_status"]
+          updated_at: string
+          version: number
         }
         Insert: {
           active_from?: string
@@ -2002,6 +2010,8 @@ export type Database = {
           organization_id: string
           specialty_id: string
           status?: Database["public"]["Enums"]["organization_status"]
+          updated_at?: string
+          version?: number
         }
         Update: {
           active_from?: string
@@ -2013,6 +2023,8 @@ export type Database = {
           organization_id?: string
           specialty_id?: string
           status?: Database["public"]["Enums"]["organization_status"]
+          updated_at?: string
+          version?: number
         }
         Relationships: [
           {
@@ -2333,6 +2345,7 @@ export type Database = {
           id: string
           invalidated_at: string | null
           organization_id: string
+          outbox_id: string | null
           read_at: string | null
           recipient_user_id: string
           title: string
@@ -2345,6 +2358,7 @@ export type Database = {
           id?: string
           invalidated_at?: string | null
           organization_id: string
+          outbox_id?: string | null
           read_at?: string | null
           recipient_user_id: string
           title: string
@@ -2357,6 +2371,7 @@ export type Database = {
           id?: string
           invalidated_at?: string | null
           organization_id?: string
+          outbox_id?: string | null
           read_at?: string | null
           recipient_user_id?: string
           title?: string
@@ -2389,6 +2404,13 @@ export type Database = {
             columns: ["organization_id", "work_item_id"]
             isOneToOne: false
             referencedRelation: "work_items"
+            referencedColumns: ["organization_id", "id"]
+          },
+          {
+            foreignKeyName: "notifications_outbox_fk"
+            columns: ["organization_id", "outbox_id"]
+            isOneToOne: false
+            referencedRelation: "notification_outbox"
             referencedColumns: ["organization_id", "id"]
           },
         ]
@@ -3332,6 +3354,8 @@ export type Database = {
         Row: {
           address: string | null
           assigned_party_name: string | null
+          category_id: string | null
+          created_at: string | null
           description: string | null
           due_at: string | null
           home_id: string | null
@@ -3347,6 +3371,13 @@ export type Database = {
           version: number | null
         }
         Relationships: [
+          {
+            foreignKeyName: "work_items_organization_id_category_id_fkey"
+            columns: ["organization_id", "category_id"]
+            isOneToOne: false
+            referencedRelation: "work_categories"
+            referencedColumns: ["organization_id", "id"]
+          },
           {
             foreignKeyName: "work_items_organization_id_fkey"
             columns: ["organization_id"]
@@ -3792,6 +3823,8 @@ export type Database = {
           organization_id: string
           specialty_id: string
           status: Database["public"]["Enums"]["organization_status"]
+          updated_at: string
+          version: number
         }
         SetofOptions: {
           from: "*"
@@ -3849,6 +3882,15 @@ export type Database = {
           isOneToOne: true
           isSetofReturn: false
         }
+      }
+      admin_set_catalog_status: {
+        Args: {
+          p_active: boolean
+          p_entity: string
+          p_id: string
+          p_organization_id: string
+        }
+        Returns: Json
       }
       admin_set_member_access: {
         Args: {
@@ -3941,6 +3983,7 @@ export type Database = {
           requested_by: string
           row_count: number | null
           status: string
+          storage_deleted_at: string | null
           updated_at: string
         }
         SetofOptions: {
@@ -3997,6 +4040,7 @@ export type Database = {
           scan_reference: string | null
           sha256: string | null
           status: Database["public"]["Enums"]["attachment_status"]
+          storage_deleted_at: string | null
           uploader_id: string
           visibility: Database["public"]["Enums"]["comment_visibility"]
           work_item_id: string | null
@@ -4040,6 +4084,7 @@ export type Database = {
           scan_reference: string | null
           sha256: string | null
           status: Database["public"]["Enums"]["attachment_status"]
+          storage_deleted_at: string | null
           uploader_id: string
           visibility: Database["public"]["Enums"]["comment_visibility"]
           work_item_id: string | null
@@ -4095,6 +4140,7 @@ export type Database = {
           scan_reference: string | null
           sha256: string | null
           status: Database["public"]["Enums"]["attachment_status"]
+          storage_deleted_at: string | null
           uploader_id: string
           visibility: Database["public"]["Enums"]["comment_visibility"]
           work_item_id: string | null

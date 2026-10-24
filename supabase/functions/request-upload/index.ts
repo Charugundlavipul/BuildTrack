@@ -1,4 +1,4 @@
-import { errorStatus, handleOptions, json, serviceClient, userClient } from '../_shared/http.ts'
+import { errorResponse, handleOptions, json, serviceClient, userClient } from '../_shared/http.ts'
 
 Deno.serve(async (request) => {
   const options = handleOptions(request)
@@ -24,6 +24,6 @@ Deno.serve(async (request) => {
     if (uploadError) throw uploadError
     return json(request, { attachment, upload: { path: upload.path, token: upload.token, signed_url: upload.signedUrl } })
   } catch (error) {
-    return json(request, { error: error instanceof Error ? error.message : 'Upload reservation failed' }, errorStatus(error))
+    return errorResponse(request, error, 'Upload reservation failed')
   }
 })

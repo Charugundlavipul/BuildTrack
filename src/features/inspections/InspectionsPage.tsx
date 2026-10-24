@@ -36,6 +36,7 @@ export function InspectionsPage() {
     event.preventDefault()
     if (!org || !user) return
     const form = new FormData(event.currentTarget)
+    const scheduledAt = String(form.get('scheduled_at'))
     setSaving(true)
     setError('')
     try {
@@ -43,7 +44,7 @@ export function InspectionsPage() {
         home_id: String(form.get('home_id')),
         type: String(form.get('type')),
         template_version_id: String(form.get('template_version_id')),
-        scheduled_at: new Date(String(form.get('scheduled_at'))).toISOString(),
+        scheduled_at: scheduledAt ? new Date(scheduledAt).toISOString() : null,
         lead_inspector_user_id: user.id
       }), { organizationId: org, userId: user.id, aggregateId: crypto.randomUUID() })
       if ('queued' in response) throw new Error('Inspection scheduling requires a live connection.')
@@ -64,10 +65,10 @@ export function InspectionsPage() {
         <label className="field">Home<select name="home_id" required defaultValue=""><option value="" disabled>Select home</option>{homes.data?.map((home) => <option value={home.id} key={home.id}>Lot {home.lot_code} · {home.address_line1 ?? 'Address pending'}</option>)}</select></label>
         <label className="field">Inspection type<select name="type" required defaultValue="internal_quality">{inspectionTypes.map((type) => <option value={type} key={type}>{humanize(type)}</option>)}</select></label>
         <label className="field">Published checklist<select name="template_version_id" required defaultValue=""><option value="" disabled>Select checklist</option>{templates.data?.map((template) => <option value={template.id} key={template.id}>{template.template_name} · v{template.number}</option>)}</select></label>
-        <label className="field">Scheduled date and time<input name="scheduled_at" type="datetime-local" required /></label>
+        <label className="field">Scheduled date and time (optional)<input name="scheduled_at" type="datetime-local" /><span className="fine-print">Leave blank to start an ad-hoc inspection.</span></label>
       </div>
       {error && <div className="notice danger" role="alert">{error}</div>}
-      <div className="form-actions"><button type="button" className="button ghost" onClick={() => setScheduling(false)}>Cancel</button><button className="button primary" disabled={saving || homes.isLoading || templates.isLoading}><CalendarPlus />{saving ? 'Scheduling…' : 'Schedule'}</button></div>
+      <div className="form-actions"><button type="button" className="button ghost" onClick={() => setScheduling(false)}>Cancel</button><button className="button primary" disabled={saving || homes.isLoading || templates.isLoading}><CalendarPlus />{saving ? 'Creating…' : 'Create inspection'}</button></div>
     </form>}
     {!inspectionRows.length && (inspections.isLoading || cachedHomes.isLoading) && <LoadingState label="Loading inspections" />}
     {!inspectionRows.length && inspections.isError && <ErrorState message={inspections.error.message} retry={() => void inspections.refetch()} />}

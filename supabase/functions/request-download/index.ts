@@ -1,4 +1,4 @@
-import { errorStatus, handleOptions, json, serviceClient, userClient } from '../_shared/http.ts'
+import { errorResponse, handleOptions, json, serviceClient, userClient } from '../_shared/http.ts'
 
 Deno.serve(async (request) => {
   const options = handleOptions(request)
@@ -13,6 +13,6 @@ Deno.serve(async (request) => {
     if (signedError) throw signedError
     return json(request, { url: data.signedUrl, expires_in: 60, original_name: attachment.original_name, mime_type: attachment.derivative_object_key ? 'image/png' : attachment.mime_type })
   } catch (error) {
-    return json(request, { error: error instanceof Error ? error.message : 'Download authorization failed' }, errorStatus(error))
+    return errorResponse(request, error, 'Download authorization failed')
   }
 })

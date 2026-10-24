@@ -21,18 +21,15 @@ Database reads are protected by RLS. Workflow writes use the `execute_command` t
 
 ## Local setup
 
-Prerequisites: Node 22+, Docker Desktop, and Supabase CLI.
+Prerequisites: Node 22+, Supabase CLI, and an isolated hosted Supabase development/test project. Docker is not used in the current engagement.
 
 ```powershell
 npm install
-npm run db:start
-npm run db:reset
-npm run db:types
 Copy-Item .env.example .env.local
 npm run dev
 ```
 
-Copy the local API URL and anon key printed by `npm run db:start` into `.env.local`. Do not place service-role, Resend, worker, or Cloudmersive secrets in a Vite variable.
+Copy only the hosted development API URL and publishable key into `.env.local`. Apply migrations with the linked Supabase CLI only to the explicitly selected development/test project. Do not place service-role, Resend, worker, or Cloudmersive secrets in a Vite variable.
 
 Synthetic local accounts all use `BuildTrack-Dev-2026!`:
 

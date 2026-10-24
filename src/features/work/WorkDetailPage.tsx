@@ -34,6 +34,15 @@ export function WorkDetailPage() {
   const workData = work.data ?? cachedWork.data
   const participants = useParticipants(org, workData?.item.neighborhood_id)
   const companies = useRosterCompanies(org, workData?.item.neighborhood_id)
+  const categories = useQuery({
+    queryKey: ['work-categories', org],
+    enabled: Boolean(org && (can('work.create') || can('work.triage'))),
+    queryFn: async () => {
+      const { data, error } = await requireSupabase().from('work_categories').select('id,name').eq('organization_id', org!).eq('active', true).order('name')
+      if (error) throw error
+      return data
+    }
+  })
   const delegation = useQuery({
     queryKey: ['company-delegation', org, id, workData?.item.version],
     enabled: Boolean(org && id && workData),
@@ -140,6 +149,22 @@ export function WorkDetailPage() {
     })
   }
 
+  async function updateDraft(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const form = new FormData(event.currentTarget)
+    await execute('update_work_draft', {
+      title: String(form.get('title')).trim(), description: String(form.get('description')).trim(),
+      category_id: String(form.get('category_id')) || null, priority: String(form.get('priority')),
+      safety_flag: form.get('safety_flag') === 'on'
+    })
+  }
+
+  async function triageWork(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const form = new FormData(event.currentTarget)
+    await execute('triage_work_item', { category_id: String(form.get('category_id')) || null, priority: String(form.get('priority')), notes: String(form.get('notes')).trim() })
+  }
+
   async function delegateCompanyWork(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const technicianId = String(new FormData(event.currentTarget).get('technician_id'))
@@ -190,6 +215,8 @@ export function WorkDetailPage() {
             <div><dt>Location</dt><dd>{item.lot_code ? `Lot ${item.lot_code}` : 'Common area'}{item.address ? <small>{item.address}</small> : null}</dd></div>
             <div><dt>Safety</dt><dd>{item.safety_flag ? 'On-site verification required' : 'Standard verification policy'}</dd></div>
           </dl>
+          {item.state === 'draft' && (can('work.create') || can('work.triage')) && <details className="command-disclosure" open><summary>Edit draft</summary><form className="stack-lg" onSubmit={updateDraft}><div className="form-grid two"><label className="field">Title<input name="title" defaultValue={item.title} maxLength={160} required/></label><label className="field">Priority<select name="priority" defaultValue={item.priority}><option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option><option value="critical">Critical</option></select></label><label className="field">Category<select name="category_id" defaultValue={item.category_id ?? ''}><option value="">Keep current</option>{categories.data?.map((category)=><option key={category.id} value={category.id}>{category.name}</option>)}</select></label><label className="check-row"><input type="checkbox" name="safety_flag" defaultChecked={item.safety_flag}/><span>Safety-sensitive; require on-site verification</span></label><label className="field full-span">Description<textarea name="description" defaultValue={item.description} rows={4} maxLength={10000} required/></label></div><button className="button secondary" disabled={busy}>Save draft changes</button></form></details>}
+          {can('work.triage') && !['verified','cancelled'].includes(item.state) && <details className="command-disclosure"><summary>Triage classification</summary><form className="form-grid two" onSubmit={triageWork}><label className="field">Category<select name="category_id" defaultValue={item.category_id ?? ''}><option value="">Keep current</option>{categories.data?.map((category)=><option key={category.id} value={category.id}>{category.name}</option>)}</select></label><label className="field">Priority<select name="priority" defaultValue={item.priority}><option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option><option value="critical">Critical</option></select></label><label className="field full-span">Triage notes<input name="notes" maxLength={500}/></label><div className="full-span"><button className="button secondary" disabled={busy}>Save triage</button></div></form></details>}
           {can('work.execute_assigned') && ['in_progress', 'acknowledged', 'rework_required'].includes(item.state) && <div className="inline-actions"><button className="button secondary" onClick={() => void execute('block_work', { cause: 'other', notes: 'Blocked from work detail' })}>Report blocker</button></div>}
           {can('work.execute_assigned') && item.state === 'in_progress' && <form className="correction-form" onSubmit={submitCorrection}><label className="field">Completion note<textarea name="note" required maxLength={4000} placeholder="Describe what was corrected and where." /></label><p className="muted">At least one ready shared evidence file is required unless an authorized exception exists.</p><button className="button primary" disabled={busy}><ClipboardCheck />Submit correction</button></form>}
           {can('work.assign') && ['submitted', 'assigned', 'acknowledged', 'in_progress', 'blocked', 'rework_required'].includes(item.state) && <form className="assignment-form" onSubmit={assignWork}><div className="section-heading"><h3>Assign or reassign</h3><span>Due date required</span></div><div className="form-grid two">
@@ -208,7 +235,7 @@ export function WorkDetailPage() {
         <section className="panel detail-card">
           <div className="section-heading"><h2><MessageSquare />Conversation</h2><span>{workData.comments.length} messages</span></div>
           <div className="comment-list">{workData.comments.map((comment) => <article className="comment" key={String(comment.id)}><div><strong>{String(comment.author_id).slice(0, 8)}</strong><span className={`visibility ${String(comment.visibility)}`}>{String(comment.visibility)}</span><time>{formatDateTime(String(comment.created_at))}</time></div><p>{String(comment.body)}</p></article>)}{!workData.comments.length && <p className="muted">No comments yet.</p>}</div>
-          <form className="comment-form" onSubmit={addComment}><textarea name="body" required placeholder="Add a clear update or question…" /><div><label><span className="sr-only">Comment visibility</span><select name="visibility"><option value="shared">Shared with assigned participants</option>{can('comment.internal') && <option value="internal">Internal only</option>}</select></label><button className="button primary" disabled={busy}>Post comment</button></div></form>
+          {can('comment.create_shared') && <form className="comment-form" onSubmit={addComment}><textarea name="body" required placeholder="Add a clear update or question…" /><div><label><span className="sr-only">Comment visibility</span><select name="visibility"><option value="shared">Shared with assigned participants</option>{can('comment.internal') && <option value="internal">Internal only</option>}</select></label><button className="button primary" disabled={busy}>Post comment</button></div></form>}
         </section>
         <section className="panel detail-card">
           <div className="section-heading"><h2><Camera />Evidence</h2><span>Private storage</span></div>

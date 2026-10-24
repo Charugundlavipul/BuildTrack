@@ -90,6 +90,8 @@ export type PermissionCode =
   | 'inspection.manage'
   | 'inspection.perform'
   | 'comment.internal'
+  | 'comment.create_shared'
+  | 'evidence.upload'
   | 'report.read_scope'
   | 'audit.read_scope'
   | 'config.manage'
@@ -127,6 +129,7 @@ export interface WorkItemSummary {
   priority: 'low' | 'normal' | 'high' | 'critical'
   state: WorkState
   safety_flag: boolean
+  category_id: UUID | null
   due_at: string | null
   assigned_party_name?: string | null
   updated_at: string

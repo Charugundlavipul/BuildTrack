@@ -3444,3 +3444,618 @@ grant execute on function public.company_delegation_options(uuid,uuid) to authen
 
 commit;
 
+-- ============================================================================
+-- SOURCE: supabase/migrations/202610230018_assignment_notification_coverage.sql
+-- ============================================================================
+
+begin;
+
+create or replace function private.enqueue_assignment_notifications()
+returns trigger language plpgsql security definer set search_path = '' as $$
+declare recipient uuid; channel_name text;
+begin
+  if tg_op='UPDATE' and new.technician_user_id is not distinct from old.technician_user_id then return new; end if;
+  if tg_op='UPDATE' and old.technician_user_id is not null then
+    update public.notification_outbox set status='cancelled',updated_at=now()
+      where organization_id=new.organization_id and assignment_episode_id=new.id and recipient_user_id=old.technician_user_id and status in ('pending','failed','leased');
+    update public.notifications set invalidated_at=now()
+      where organization_id=new.organization_id and work_item_id=new.work_item_id and recipient_user_id=old.technician_user_id and invalidated_at is null;
+  end if;
+
+  for recipient,channel_name in
+    select recipient_id,channel from (
+      select new.internal_assignee_user_id recipient_id,'email'::text channel where tg_op='INSERT' and new.internal_assignee_user_id is not null
+      union
+      select cm.user_id,v.channel from public.company_memberships cm cross join(values('in_app'::text),('email'::text)) v(channel)
+        where tg_op='INSERT' and new.company_id is not null and cm.organization_id=new.organization_id and cm.company_id=new.company_id and cm.kind='manager'
+          and cm.revoked_at is null and cm.active_from<=now() and (cm.active_to is null or cm.active_to>now())
+      union
+      select new.technician_user_id,v.channel from (values('in_app'::text),('email'::text)) v(channel) where new.technician_user_id is not null
+    ) recipients where recipient_id is not null
+  loop
+    insert into public.notification_outbox(organization_id,recipient_user_id,work_item_id,assignment_episode_id,channel,dedupe_key,template_key,payload)
+      values(new.organization_id,recipient,new.work_item_id,new.id,channel_name,'assignment:'||new.id||':'||channel_name||':'||recipient,'work_assigned',jsonb_build_object('work_item_id',new.work_item_id))
+      on conflict(organization_id,dedupe_key) do nothing;
+  end loop;
+  return new;
+end; $$;
+
+drop trigger if exists assignment_episode_notifications on public.assignment_episodes;
+create trigger assignment_episode_notifications
+after insert or update of technician_user_id on public.assignment_episodes
+for each row execute function private.enqueue_assignment_notifications();
+
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202610240019_filtered_reporting.sql
+-- ============================================================================
+
+begin;
+
+create or replace view public.work_item_list with (security_invoker = true) as
+select
+  w.id, w.organization_id, w.neighborhood_id, w.home_id, h.lot_code,
+  nullif(concat_ws(', ', h.address_line1, h.city, h.state_code), '') as address,
+  w.title, w.description, w.priority, w.state, w.safety_flag, w.due_at,
+  coalesce(c.name, p.display_name) as assigned_party_name,
+  w.updated_at, w.version, w.created_at
+from public.work_items w
+left join public.homes h on h.organization_id = w.organization_id and h.id = w.home_id
+left join public.assignment_episodes ae on ae.organization_id = w.organization_id and ae.id = w.current_assignment_id
+left join public.companies c on c.organization_id = ae.organization_id and c.id = ae.company_id
+left join public.profiles p on p.id = ae.internal_assignee_user_id;
+grant select on public.work_item_list to authenticated;
+
+create or replace function public.get_report_metrics(p_organization_id uuid, p_filters jsonb default '{}'::jsonb)
+returns jsonb language plpgsql stable security invoker set search_path = ''
+as $$
+declare
+  result jsonb;
+  state_filter text := nullif(trim(p_filters->>'state'), '');
+  priority_filter text := nullif(trim(p_filters->>'priority'), '');
+  neighborhood_filter uuid := nullif(p_filters->>'neighborhood_id', '')::uuid;
+  home_filter uuid := nullif(p_filters->>'home_id', '')::uuid;
+  date_from_filter date := nullif(p_filters->>'date_from', '')::date;
+  date_to_filter date := nullif(p_filters->>'date_to', '')::date;
+begin
+  if not private.active_member(p_organization_id, auth.uid()) then
+    raise exception using errcode = '42501', message = 'forbidden';
+  end if;
+  if state_filter is not null and state_filter not in ('draft','submitted','assigned','acknowledged','in_progress','blocked','ready_for_verification','rework_required','verified','cancelled') then
+    raise exception using errcode = '22023', message = 'invalid state filter';
+  end if;
+  if priority_filter is not null and priority_filter not in ('low','normal','high','critical') then
+    raise exception using errcode = '22023', message = 'invalid priority filter';
+  end if;
+  if date_from_filter is not null and date_to_filter is not null and date_from_filter > date_to_filter then
+    raise exception using errcode = '22023', message = 'invalid report date range';
+  end if;
+
+  with filtered_work as materialized (
+    select w.*
+    from public.work_items w
+    where w.organization_id = p_organization_id
+      and (neighborhood_filter is null or w.neighborhood_id = neighborhood_filter)
+      and (home_filter is null or w.home_id = home_filter)
+      and (state_filter is null or w.state::text = state_filter)
+      and (priority_filter is null or w.priority::text = priority_filter)
+      and (date_from_filter is null or w.created_at >= date_from_filter::timestamptz)
+      and (date_to_filter is null or w.created_at < (date_to_filter + 1)::timestamptz)
+  ),
+  acknowledgment as (
+    select
+      round((percentile_cont(.5) within group (order by extract(epoch from (ae.acknowledged_at - ae.assigned_at))) / 3600)::numeric, 1) median_hours,
+      count(*) sample
+    from public.assignment_episodes ae
+    join filtered_work w on w.organization_id = ae.organization_id and w.id = ae.work_item_id
+    where ae.acknowledged_at is not null
+  ),
+  first_pass as (
+    select
+      round(100.0 * count(*) filter (where v.decision = 'accepted') / nullif(count(*), 0), 1) acceptance_pct,
+      count(*) sample
+    from public.correction_attempts ca
+    join filtered_work w on w.organization_id = ca.organization_id and w.id = ca.work_item_id
+    join public.verifications v on v.organization_id = ca.organization_id and v.correction_attempt_id = ca.id
+    where ca.attempt_number = 1
+  ),
+  states as (
+    select fw.state, count(*) total from filtered_work fw group by fw.state
+  )
+  select jsonb_build_object(
+    'open_count', (select count(*) from filtered_work where state not in ('draft','verified','cancelled')),
+    'overdue_count', (select count(*) from filtered_work where due_at < now() and state not in ('draft','verified','cancelled')),
+    'acknowledgment_median_hours', case when acknowledgment.sample >= 10 then coalesce(acknowledgment.median_hours, 0) else null end,
+    'acknowledgment_sample', acknowledgment.sample,
+    'first_pass_acceptance_pct', case when first_pass.sample >= 10 then coalesce(first_pass.acceptance_pct, 0) else null end,
+    'first_pass_sample', first_pass.sample,
+    'small_sample_threshold', 10,
+    'by_state', coalesce((select jsonb_agg(jsonb_build_object('label', replace(states.state::text, '_', ' '), 'value', states.total) order by states.state::text) from states), '[]'::jsonb),
+    'filters', p_filters,
+    'timezone', (select timezone from public.organizations where id = p_organization_id)
+  ) into result
+  from acknowledgment cross join first_pass;
+  return result;
+end;
+$$;
+
+revoke all on function public.get_report_metrics(uuid, jsonb) from public, anon;
+grant execute on function public.get_report_metrics(uuid, jsonb) to authenticated;
+
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202610240020_rule_driven_notifications.sql
+-- ============================================================================
+
+begin;
+
+create or replace function private.add_business_minutes(
+  p_organization_id uuid,
+  p_neighborhood_id uuid,
+  p_start timestamptz,
+  p_minutes integer
+) returns timestamptz language plpgsql stable security definer set search_path = '' as $$
+declare
+  calendar_id uuid;
+  working_weekdays smallint[];
+  local_start_time time;
+  local_end_time time;
+  holiday_dates date[];
+  timezone_name text;
+  current_at timestamptz := p_start;
+  remaining integer := abs(coalesce(p_minutes, 0));
+  direction integer := case when coalesce(p_minutes, 0) < 0 then -1 else 1 end;
+  local_date date;
+  local_time time;
+  day_start timestamptz;
+  day_end timestamptz;
+  available integer;
+  guard integer := 0;
+begin
+  select bc.id,bc.working_weekdays,bc.local_start_time,bc.local_end_time,bc.holiday_dates,coalesce(n.timezone, bc.timezone, o.timezone, 'UTC')
+    into calendar_id,working_weekdays,local_start_time,local_end_time,holiday_dates,timezone_name
+  from public.organizations o
+  left join public.neighborhoods n on n.organization_id = o.id and n.id = p_neighborhood_id
+  left join public.business_calendars bc on bc.organization_id = o.id and bc.id = coalesce(n.calendar_id, o.default_calendar_id)
+  where o.id = p_organization_id;
+  if remaining = 0 then return current_at; end if;
+  if calendar_id is null then return current_at + make_interval(mins => p_minutes); end if;
+
+  while remaining > 0 loop
+    guard := guard + 1;
+    if guard > 4000 then raise exception using errcode = '54000', message = 'business calendar calculation exceeded safety limit'; end if;
+    local_date := (current_at at time zone timezone_name)::date;
+    local_time := (current_at at time zone timezone_name)::time;
+    if extract(isodow from local_date)::smallint <> all(working_weekdays) or local_date = any(holiday_dates) then
+      local_date := local_date + direction;
+      current_at := (local_date + case when direction > 0 then local_start_time else local_end_time end) at time zone timezone_name;
+      continue;
+    end if;
+    day_start := (local_date + local_start_time) at time zone timezone_name;
+    day_end := (local_date + local_end_time) at time zone timezone_name;
+    if direction > 0 then
+      if local_time < local_start_time then current_at := day_start; end if;
+      if current_at >= day_end then
+        current_at := ((local_date + 1) + local_start_time) at time zone timezone_name;
+        continue;
+      end if;
+      available := greatest(0, floor(extract(epoch from (day_end - current_at)) / 60)::integer);
+      if available >= remaining then return current_at + make_interval(mins => remaining); end if;
+      remaining := remaining - available;
+      current_at := ((local_date + 1) + local_start_time) at time zone timezone_name;
+    else
+      if local_time > local_end_time then current_at := day_end; end if;
+      if current_at <= day_start then
+        current_at := ((local_date - 1) + local_end_time) at time zone timezone_name;
+        continue;
+      end if;
+      available := greatest(0, floor(extract(epoch from (current_at - day_start)) / 60)::integer);
+      if available >= remaining then return current_at - make_interval(mins => remaining); end if;
+      remaining := remaining - available;
+      current_at := ((local_date - 1) + local_end_time) at time zone timezone_name;
+    end if;
+  end loop;
+  return current_at;
+end;
+$$;
+
+create or replace function private.apply_quiet_hours(
+  p_organization_id uuid,
+  p_neighborhood_id uuid,
+  p_at timestamptz,
+  p_quiet_hours jsonb
+) returns timestamptz language plpgsql stable security definer set search_path = '' as $$
+declare
+  timezone_name text;
+  quiet_start time;
+  quiet_end time;
+  local_value timestamp;
+  target_date date;
+begin
+  if nullif(p_quiet_hours->>'start', '') is null or nullif(p_quiet_hours->>'end', '') is null then return p_at; end if;
+  quiet_start := (p_quiet_hours->>'start')::time;
+  quiet_end := (p_quiet_hours->>'end')::time;
+  select coalesce(n.timezone, bc.timezone, o.timezone, 'UTC') into timezone_name
+  from public.organizations o
+  left join public.neighborhoods n on n.organization_id=o.id and n.id=p_neighborhood_id
+  left join public.business_calendars bc on bc.organization_id=o.id and bc.id=coalesce(n.calendar_id,o.default_calendar_id)
+  where o.id=p_organization_id;
+  local_value := p_at at time zone timezone_name;
+  if quiet_start < quiet_end and local_value::time >= quiet_start and local_value::time < quiet_end then
+    return (local_value::date + quiet_end) at time zone timezone_name;
+  elsif quiet_start > quiet_end and local_value::time >= quiet_start then
+    target_date := local_value::date + 1;
+    return (target_date + quiet_end) at time zone timezone_name;
+  elsif quiet_start > quiet_end and local_value::time < quiet_end then
+    return (local_value::date + quiet_end) at time zone timezone_name;
+  end if;
+  return p_at;
+exception when invalid_datetime_format then
+  return p_at;
+end;
+$$;
+
+create or replace function private.schedule_due_notifications()
+returns integer language plpgsql security definer set search_path = '' as $$
+declare inserted_count integer := 0;
+begin
+  with events as materialized (
+    select r.id rule_id,r.organization_id,w.neighborhood_id,w.home_id,w.id work_item_id,ae.id assignment_episode_id,ae.company_id,
+      r.trigger,r.business_minutes,r.repeat_minutes,r.max_repeats,r.quiet_hours,r.escalation_route_id,
+      'assignment:'||ae.id event_key,ae.assigned_at anchor_at,1 direction
+    from public.notification_rules r join public.assignment_episodes ae on ae.organization_id=r.organization_id
+    join public.work_items w on w.organization_id=ae.organization_id and w.id=ae.work_item_id
+    where r.enabled and r.trigger='assignment_unacknowledged' and ae.ended_at is null and ae.acknowledged_at is null
+      and w.state not in ('draft','verified','cancelled') and (r.neighborhood_id is null or r.neighborhood_id=w.neighborhood_id)
+    union all
+    select r.id,r.organization_id,w.neighborhood_id,w.home_id,w.id,ae.id,ae.company_id,r.trigger,r.business_minutes,r.repeat_minutes,r.max_repeats,r.quiet_hours,r.escalation_route_id,
+      'due:'||w.id,w.due_at,-1
+    from public.notification_rules r join public.work_items w on w.organization_id=r.organization_id
+    left join public.assignment_episodes ae on ae.organization_id=w.organization_id and ae.id=w.current_assignment_id
+    where r.enabled and r.trigger='work_due' and w.due_at is not null and w.state not in ('draft','verified','cancelled')
+      and (r.neighborhood_id is null or r.neighborhood_id=w.neighborhood_id)
+    union all
+    select r.id,r.organization_id,w.neighborhood_id,w.home_id,w.id,ca.assignment_episode_id,ae.company_id,r.trigger,r.business_minutes,r.repeat_minutes,r.max_repeats,r.quiet_hours,r.escalation_route_id,
+      'attempt:'||ca.id,ca.submitted_at,1
+    from public.notification_rules r join public.correction_attempts ca on ca.organization_id=r.organization_id
+    join public.work_items w on w.organization_id=ca.organization_id and w.id=ca.work_item_id
+    join public.assignment_episodes ae on ae.organization_id=ca.organization_id and ae.id=ca.assignment_episode_id
+    where r.enabled and r.trigger='attempt_unreviewed' and not exists(select 1 from public.verifications v where v.organization_id=ca.organization_id and v.correction_attempt_id=ca.id)
+      and (r.neighborhood_id is null or r.neighborhood_id=w.neighborhood_id)
+    union all
+    select r.id,r.organization_id,w.neighborhood_id,w.home_id,w.id,b.assignment_episode_id,ae.company_id,r.trigger,r.business_minutes,r.repeat_minutes,r.max_repeats,r.quiet_hours,r.escalation_route_id,
+      'blocker:'||b.id,b.opened_at,1
+    from public.notification_rules r join public.blocker_events b on b.organization_id=r.organization_id
+    join public.work_items w on w.organization_id=b.organization_id and w.id=b.work_item_id
+    left join public.assignment_episodes ae on ae.organization_id=b.organization_id and ae.id=b.assignment_episode_id
+    where r.enabled and r.trigger='blocked' and b.resolved_at is null and w.state='blocked'
+      and (r.neighborhood_id is null or r.neighborhood_id=w.neighborhood_id)
+    union all
+    select r.id,r.organization_id,w.neighborhood_id,w.home_id,w.id,ae.id,ae.company_id,r.trigger,r.business_minutes,r.repeat_minutes,r.max_repeats,r.quiet_hours,r.escalation_route_id,
+      'critical:'||w.id,w.created_at,1
+    from public.notification_rules r join public.work_items w on w.organization_id=r.organization_id
+    left join public.assignment_episodes ae on ae.organization_id=w.organization_id and ae.id=w.current_assignment_id
+    where r.enabled and r.trigger='critical_created' and w.priority='critical' and w.state not in ('verified','cancelled')
+      and (r.neighborhood_id is null or r.neighborhood_id=w.neighborhood_id)
+  ), instances as materialized (
+    select e.*,g.repeat_number,
+      private.apply_quiet_hours(e.organization_id,e.neighborhood_id,
+        private.add_business_minutes(e.organization_id,e.neighborhood_id,e.anchor_at,(coalesce(e.business_minutes,0)*e.direction)+(coalesce(e.repeat_minutes,0)*g.repeat_number)),e.quiet_hours) scheduled_at
+    from events e cross join lateral generate_series(0,e.max_repeats) g(repeat_number)
+    where g.repeat_number=0 or e.repeat_minutes is not null
+  ), routed as materialized (
+    select i.*,s.recipient_kind,s.recipient_user_id
+    from instances i
+    join lateral (
+      select ers.recipient_kind,ers.recipient_user_id from public.escalation_route_steps ers
+      where ers.organization_id=i.organization_id and ers.route_id=i.escalation_route_id
+        and ers.level=least(i.repeat_number+1,(select max(level) from public.escalation_route_steps mx where mx.organization_id=i.organization_id and mx.route_id=i.escalation_route_id))
+    ) s on true
+    where i.scheduled_at <= now()+interval '7 days'
+  ), recipients as materialized (
+    select distinct r.*,candidate.user_id
+    from routed r
+    left join public.homes h on h.organization_id=r.organization_id and h.id=r.home_id
+    join lateral (
+      select r.recipient_user_id user_id where r.recipient_kind='specific_user'
+      union select cm.user_id from public.company_memberships cm where r.recipient_kind='assigned_company_manager' and cm.organization_id=r.organization_id and cm.company_id=r.company_id and cm.kind='manager' and cm.revoked_at is null and cm.active_from<=now() and (cm.active_to is null or cm.active_to>now())
+      union select coalesce(h.primary_supervisor_user_id,n.supervisor_user_id) from public.neighborhoods n where r.recipient_kind='supervisor' and n.organization_id=r.organization_id and n.id=r.neighborhood_id
+      union select ra.user_id from public.role_assignments ra where r.recipient_kind='area_manager' and ra.organization_id=r.organization_id and ra.role_code='area_manager' and ra.revoked_at is null and ra.starts_at<=now() and (ra.ends_at is null or ra.ends_at>now()) and (ra.scope_kind='organization' or (ra.scope_kind='neighborhood' and ra.neighborhood_id=r.neighborhood_id) or (ra.scope_kind='home' and ra.home_id=r.home_id))
+      union select ra.user_id from public.role_assignments ra where r.recipient_kind='org_admin' and ra.organization_id=r.organization_id and ra.role_code='org_admin' and ra.scope_kind='organization' and ra.revoked_at is null and ra.starts_at<=now() and (ra.ends_at is null or ra.ends_at>now())
+    ) candidate on candidate.user_id is not null
+    where private.active_member(r.organization_id,candidate.user_id)
+  )
+  insert into public.notification_outbox(organization_id,recipient_user_id,work_item_id,assignment_episode_id,channel,dedupe_key,template_key,payload,available_at)
+  select r.organization_id,r.user_id,r.work_item_id,r.assignment_episode_id,ch.channel,
+    'rule:'||r.rule_id||':'||r.event_key||':'||r.repeat_number||':'||r.user_id||':'||ch.channel,
+    r.trigger,jsonb_build_object('work_item_id',r.work_item_id,'rule_id',r.rule_id,'trigger',r.trigger,'event_key',r.event_key,'repeat_number',r.repeat_number,'recipient_kind',r.recipient_kind,'neighborhood_id',r.neighborhood_id,'home_id',r.home_id,'company_id',r.company_id),r.scheduled_at
+  from recipients r cross join(values('in_app'::text),('email'::text)) ch(channel)
+  on conflict(organization_id,dedupe_key) do nothing;
+  get diagnostics inserted_count=row_count;
+  return inserted_count;
+end;
+$$;
+
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202610240021_operational_validation.sql
+-- ============================================================================
+
+begin;
+
+create or replace view public.work_item_list with (security_invoker = true) as
+select
+  w.id, w.organization_id, w.neighborhood_id, w.home_id, h.lot_code,
+  nullif(concat_ws(', ', h.address_line1, h.city, h.state_code), '') as address,
+  w.title, w.description, w.priority, w.state, w.safety_flag, w.due_at,
+  coalesce(c.name, p.display_name) as assigned_party_name,
+  w.updated_at, w.version, w.created_at, w.category_id
+from public.work_items w
+left join public.homes h on h.organization_id = w.organization_id and h.id = w.home_id
+left join public.assignment_episodes ae on ae.organization_id = w.organization_id and ae.id = w.current_assignment_id
+left join public.companies c on c.organization_id = ae.organization_id and c.id = ae.company_id
+left join public.profiles p on p.id = ae.internal_assignee_user_id;
+grant select on public.work_item_list to authenticated;
+
+alter table public.role_assignments
+  add constraint role_assignments_valid_window check (ends_at is null or ends_at > starts_at) not valid;
+alter table public.company_memberships
+  add constraint company_memberships_valid_window check (active_to is null or active_to > active_from) not valid;
+
+create or replace function private.validate_notification_rule()
+returns trigger language plpgsql set search_path = '' as $$
+declare quiet_start text := new.quiet_hours->>'start'; quiet_end text := new.quiet_hours->>'end';
+begin
+  if jsonb_typeof(new.quiet_hours) <> 'object' then
+    raise exception using errcode='22023',message='quiet hours must be an object';
+  end if;
+  if (quiet_start is null) <> (quiet_end is null) then
+    raise exception using errcode='22023',message='quiet hours require both start and end';
+  end if;
+  if quiet_start is not null and (quiet_start !~ '^([01][0-9]|2[0-3]):[0-5][0-9]$' or quiet_end !~ '^([01][0-9]|2[0-3]):[0-5][0-9]$' or quiet_start=quiet_end) then
+    raise exception using errcode='22023',message='quiet hours are invalid';
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists notification_rule_validation on public.notification_rules;
+create trigger notification_rule_validation before insert or update on public.notification_rules
+for each row execute function private.validate_notification_rule();
+
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202610240022_participant_mutation_permissions.sql
+-- ============================================================================
+
+begin;
+
+insert into public.permissions(code,description) values
+  ('comment.create_shared','Create shared work conversation comments'),
+  ('evidence.upload','Reserve and upload field evidence')
+on conflict(code) do update set description=excluded.description;
+
+insert into public.role_permissions(role_code,permission_code)
+select role_code,permission_code from (values
+  ('area_manager','comment.create_shared'),('superintendent','comment.create_shared'),('assistant_superintendent','comment.create_shared'),
+  ('internal_quality','comment.create_shared'),('external_inspector','comment.create_shared'),('verifier','comment.create_shared'),
+  ('trade_manager','comment.create_shared'),('trade_technician','comment.create_shared'),('operations_coordinator','comment.create_shared'),('internal_contributor','comment.create_shared'),
+  ('area_manager','evidence.upload'),('superintendent','evidence.upload'),('assistant_superintendent','evidence.upload'),
+  ('internal_quality','evidence.upload'),('external_inspector','evidence.upload'),('trade_manager','evidence.upload'),
+  ('trade_technician','evidence.upload'),('operations_coordinator','evidence.upload'),('internal_contributor','evidence.upload')
+) grants(role_code,permission_code)
+on conflict do nothing;
+
+create or replace function private.enforce_comment_create_permission()
+returns trigger language plpgsql security definer set search_path = '' as $$
+declare item public.work_items;
+begin
+  if auth.role()='service_role' then return new; end if;
+  select * into item from public.work_items where organization_id=new.organization_id and id=new.work_item_id;
+  if auth.uid() is null or item.id is null or not private.has_permission(new.organization_id,auth.uid(),'comment.create_shared',item.neighborhood_id,item.home_id) then
+    raise exception using errcode='42501',message='comment permission required';
+  end if;
+  if new.visibility='internal' and not private.has_permission(new.organization_id,auth.uid(),'comment.internal',item.neighborhood_id,item.home_id) then
+    raise exception using errcode='42501',message='internal comment permission required';
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists enforce_comment_create_permission on public.comments;
+create trigger enforce_comment_create_permission before insert on public.comments
+for each row execute function private.enforce_comment_create_permission();
+
+create or replace function private.enforce_attachment_create_permission()
+returns trigger language plpgsql security definer set search_path = '' as $$
+begin
+  if auth.role()='service_role' then return new; end if;
+  if auth.uid() is null or not private.has_permission(new.organization_id,auth.uid(),'evidence.upload',new.neighborhood_id,new.home_id) then
+    raise exception using errcode='42501',message='evidence upload permission required';
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists enforce_attachment_create_permission on public.attachments;
+create trigger enforce_attachment_create_permission before insert on public.attachments
+for each row execute function private.enforce_attachment_create_permission();
+
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202610240023_notification_delivery_idempotency.sql
+-- ============================================================================
+
+begin;
+
+alter table public.notifications add column outbox_id uuid;
+alter table public.notifications add constraint notifications_outbox_fk
+  foreign key(organization_id,outbox_id) references public.notification_outbox(organization_id,id) on delete restrict;
+create unique index notifications_one_per_outbox on public.notifications(organization_id,outbox_id) where outbox_id is not null;
+
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202610240024_catalog_lifecycle.sql
+-- ============================================================================
+
+begin;
+
+create or replace function public.admin_set_catalog_status(
+  p_organization_id uuid,
+  p_entity text,
+  p_id uuid,
+  p_active boolean
+) returns jsonb language plpgsql security definer set search_path = '' as $$
+declare required_permission text; before_row jsonb; after_row jsonb;
+begin
+  required_permission := case
+    when p_entity in ('division','neighborhood','home') then 'structure.manage'
+    when p_entity in ('company','specialty','roster') then 'roster.manage'
+    when p_entity in ('work_category','checklist_template','escalation_route','notification_rule','inspection_engagement') then 'config.manage'
+    else null end;
+  if required_permission is null then raise exception using errcode='22023',message='unsupported catalog entity'; end if;
+  perform private.require_admin_permission(p_organization_id,required_permission);
+
+  if p_entity='division' then
+    select to_jsonb(t) into before_row from public.divisions t where t.organization_id=p_organization_id and t.id=p_id for update;
+    update public.divisions set status=case when p_active then 'active' else 'archived' end,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(divisions.*) into after_row;
+  elsif p_entity='neighborhood' then
+    select to_jsonb(t) into before_row from public.neighborhoods t where t.organization_id=p_organization_id and t.id=p_id for update;
+    if not p_active and exists(select 1 from public.work_items w where w.organization_id=p_organization_id and w.neighborhood_id=p_id and w.state not in ('verified','cancelled')) then raise exception using errcode='23514',message='neighborhood has open work'; end if;
+    update public.neighborhoods set status=case when p_active then 'active' else 'archived' end,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(neighborhoods.*) into after_row;
+  elsif p_entity='home' then
+    select to_jsonb(t) into before_row from public.homes t where t.organization_id=p_organization_id and t.id=p_id for update;
+    if not p_active and exists(select 1 from public.work_items w where w.organization_id=p_organization_id and w.home_id=p_id and w.state not in ('verified','cancelled')) then raise exception using errcode='23514',message='home has open work'; end if;
+    update public.homes set archived_at=case when p_active then null else now() end,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(homes.*) into after_row;
+  elsif p_entity='company' then
+    select to_jsonb(t) into before_row from public.companies t where t.organization_id=p_organization_id and t.id=p_id for update;
+    if not p_active and exists(select 1 from public.assignment_episodes ae join public.work_items w on w.organization_id=ae.organization_id and w.id=ae.work_item_id where ae.organization_id=p_organization_id and ae.company_id=p_id and ae.ended_at is null and w.state not in ('verified','cancelled')) then raise exception using errcode='23514',message='company has active assignments'; end if;
+    update public.companies set status=case when p_active then 'active' else 'archived' end,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(companies.*) into after_row;
+  elsif p_entity='specialty' then
+    select to_jsonb(t) into before_row from public.trade_specialties t where t.organization_id=p_organization_id and t.id=p_id for update;
+    update public.trade_specialties set active=p_active,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(trade_specialties.*) into after_row;
+  elsif p_entity='roster' then
+    select to_jsonb(t) into before_row from public.neighborhood_trade_rosters t where t.organization_id=p_organization_id and t.id=p_id for update;
+    update public.neighborhood_trade_rosters set status=case when p_active then 'active' else 'inactive' end,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(neighborhood_trade_rosters.*) into after_row;
+  elsif p_entity='work_category' then
+    select to_jsonb(t) into before_row from public.work_categories t where t.organization_id=p_organization_id and t.id=p_id for update;
+    update public.work_categories set active=p_active,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(work_categories.*) into after_row;
+  elsif p_entity='checklist_template' then
+    select to_jsonb(t) into before_row from public.checklist_templates t where t.organization_id=p_organization_id and t.id=p_id for update;
+    update public.checklist_templates set active=p_active,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(checklist_templates.*) into after_row;
+  elsif p_entity='escalation_route' then
+    select to_jsonb(t) into before_row from public.escalation_routes t where t.organization_id=p_organization_id and t.id=p_id for update;
+    if not p_active and exists(select 1 from public.notification_rules n where n.organization_id=p_organization_id and n.escalation_route_id=p_id and n.enabled) then raise exception using errcode='23514',message='disable dependent notification rules first'; end if;
+    update public.escalation_routes set active=p_active,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(escalation_routes.*) into after_row;
+  elsif p_entity='notification_rule' then
+    select to_jsonb(t) into before_row from public.notification_rules t where t.organization_id=p_organization_id and t.id=p_id for update;
+    update public.notification_rules set enabled=p_active,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(notification_rules.*) into after_row;
+  elsif p_entity='inspection_engagement' then
+    select to_jsonb(t) into before_row from public.inspection_engagements t where t.organization_id=p_organization_id and t.id=p_id for update;
+    update public.inspection_engagements set revoked_at=case when p_active then null else now() end where organization_id=p_organization_id and id=p_id returning to_jsonb(inspection_engagements.*) into after_row;
+  end if;
+  if before_row is null or after_row is null then raise exception using errcode='02000',message='catalog record not found'; end if;
+  perform private.append_audit(p_organization_id,auth.uid(),'catalog.status_changed',p_entity,p_id,null,before_row,after_row,jsonb_build_object('active',p_active));
+  return jsonb_build_object('id',p_id,'entity',p_entity,'active',p_active);
+end;
+$$;
+
+revoke all on function public.admin_set_catalog_status(uuid,text,uuid,boolean) from public,anon;
+grant execute on function public.admin_set_catalog_status(uuid,text,uuid,boolean) to authenticated;
+
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202610240025_fix_catalog_lifecycle_enum.sql
+-- ============================================================================
+
+begin;
+
+create or replace function public.admin_set_catalog_status(
+  p_organization_id uuid,p_entity text,p_id uuid,p_active boolean
+) returns jsonb language plpgsql security definer set search_path = '' as $$
+declare required_permission text; before_row jsonb; after_row jsonb;
+begin
+  required_permission := case
+    when p_entity in ('division','neighborhood','home') then 'structure.manage'
+    when p_entity in ('company','specialty','roster') then 'roster.manage'
+    when p_entity in ('work_category','checklist_template','escalation_route','notification_rule','inspection_engagement') then 'config.manage'
+    else null end;
+  if required_permission is null then raise exception using errcode='22023',message='unsupported catalog entity'; end if;
+  perform private.require_admin_permission(p_organization_id,required_permission);
+
+  if p_entity='division' then
+    select to_jsonb(t) into before_row from public.divisions t where t.organization_id=p_organization_id and t.id=p_id for update;
+    update public.divisions set status=(case when p_active then 'active' else 'archived' end)::public.organization_status,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(divisions.*) into after_row;
+  elsif p_entity='neighborhood' then
+    select to_jsonb(t) into before_row from public.neighborhoods t where t.organization_id=p_organization_id and t.id=p_id for update;
+    if not p_active and exists(select 1 from public.work_items w where w.organization_id=p_organization_id and w.neighborhood_id=p_id and w.state not in ('verified','cancelled')) then raise exception using errcode='23514',message='neighborhood has open work'; end if;
+    update public.neighborhoods set status=(case when p_active then 'active' else 'archived' end)::public.organization_status,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(neighborhoods.*) into after_row;
+  elsif p_entity='home' then
+    select to_jsonb(t) into before_row from public.homes t where t.organization_id=p_organization_id and t.id=p_id for update;
+    if not p_active and exists(select 1 from public.work_items w where w.organization_id=p_organization_id and w.home_id=p_id and w.state not in ('verified','cancelled')) then raise exception using errcode='23514',message='home has open work'; end if;
+    update public.homes set archived_at=case when p_active then null else now() end,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(homes.*) into after_row;
+  elsif p_entity='company' then
+    select to_jsonb(t) into before_row from public.companies t where t.organization_id=p_organization_id and t.id=p_id for update;
+    if not p_active and exists(select 1 from public.assignment_episodes ae join public.work_items w on w.organization_id=ae.organization_id and w.id=ae.work_item_id where ae.organization_id=p_organization_id and ae.company_id=p_id and ae.ended_at is null and w.state not in ('verified','cancelled')) then raise exception using errcode='23514',message='company has active assignments'; end if;
+    update public.companies set status=(case when p_active then 'active' else 'archived' end)::public.organization_status,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(companies.*) into after_row;
+  elsif p_entity='specialty' then
+    select to_jsonb(t) into before_row from public.trade_specialties t where t.organization_id=p_organization_id and t.id=p_id for update;
+    update public.trade_specialties set active=p_active,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(trade_specialties.*) into after_row;
+  elsif p_entity='roster' then
+    select to_jsonb(t) into before_row from public.neighborhood_trade_rosters t where t.organization_id=p_organization_id and t.id=p_id for update;
+    update public.neighborhood_trade_rosters set status=(case when p_active then 'active' else 'archived' end)::public.organization_status,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(neighborhood_trade_rosters.*) into after_row;
+  elsif p_entity='work_category' then
+    select to_jsonb(t) into before_row from public.work_categories t where t.organization_id=p_organization_id and t.id=p_id for update;
+    update public.work_categories set active=p_active,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(work_categories.*) into after_row;
+  elsif p_entity='checklist_template' then
+    select to_jsonb(t) into before_row from public.checklist_templates t where t.organization_id=p_organization_id and t.id=p_id for update;
+    update public.checklist_templates set active=p_active,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(checklist_templates.*) into after_row;
+  elsif p_entity='escalation_route' then
+    select to_jsonb(t) into before_row from public.escalation_routes t where t.organization_id=p_organization_id and t.id=p_id for update;
+    if not p_active and exists(select 1 from public.notification_rules n where n.organization_id=p_organization_id and n.escalation_route_id=p_id and n.enabled) then raise exception using errcode='23514',message='disable dependent notification rules first'; end if;
+    update public.escalation_routes set active=p_active,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(escalation_routes.*) into after_row;
+  elsif p_entity='notification_rule' then
+    select to_jsonb(t) into before_row from public.notification_rules t where t.organization_id=p_organization_id and t.id=p_id for update;
+    update public.notification_rules set enabled=p_active,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(notification_rules.*) into after_row;
+  elsif p_entity='inspection_engagement' then
+    select to_jsonb(t) into before_row from public.inspection_engagements t where t.organization_id=p_organization_id and t.id=p_id for update;
+    update public.inspection_engagements set revoked_at=case when p_active then null else now() end where organization_id=p_organization_id and id=p_id returning to_jsonb(inspection_engagements.*) into after_row;
+  end if;
+  if before_row is null or after_row is null then raise exception using errcode='02000',message='catalog record not found'; end if;
+  perform private.append_audit(p_organization_id,auth.uid(),'catalog.status_changed',p_entity,p_id,null,before_row,after_row,jsonb_build_object('active',p_active));
+  return jsonb_build_object('id',p_id,'entity',p_entity,'active',p_active);
+end;
+$$;
+
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202610240026_roster_optimistic_metadata.sql
+-- ============================================================================
+
+begin;
+
+alter table public.neighborhood_trade_rosters
+  add column updated_at timestamptz not null default now(),
+  add column version bigint not null default 1;
+
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202610240027_storage_cleanup_tracking.sql
+-- ============================================================================
+
+begin;
+
+alter table public.attachments add column storage_deleted_at timestamptz;
+alter table public.export_jobs add column storage_deleted_at timestamptz;
+
+commit;
+

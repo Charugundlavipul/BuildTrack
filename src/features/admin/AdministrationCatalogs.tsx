@@ -50,6 +50,51 @@ function AdminForm({ title, description, children, onSubmit, disabled }: { title
   return <form className="admin-catalog-form stack-lg" onSubmit={onSubmit}><div><h3>{title}</h3><p>{description}</p></div>{children}<button className="button primary" disabled={disabled}><Plus />Save</button></form>
 }
 
+interface LifecycleItem { id: string; label: string; entity: string; active: boolean }
+
+function CatalogLifecycle({ organizationId, disabled, onMessage }: { organizationId: string; disabled: boolean; onMessage: (message: string) => void }) {
+  const records = useQuery({
+    queryKey: ['catalog-lifecycle', organizationId],
+    queryFn: async () => {
+      const client=requireSupabase()
+      const results=await Promise.all([
+        client.from('divisions').select('id,name,status').eq('organization_id',organizationId).order('name'),
+        client.from('neighborhoods').select('id,name,status').eq('organization_id',organizationId).order('name'),
+        client.from('homes').select('id,lot_code,archived_at').eq('organization_id',organizationId).order('lot_code'),
+        client.from('companies').select('id,name,status').eq('organization_id',organizationId).order('name'),
+        client.from('trade_specialties').select('id,name,active').eq('organization_id',organizationId).order('name'),
+        client.from('work_categories').select('id,name,active').eq('organization_id',organizationId).order('name'),
+        client.from('checklist_templates').select('id,name,active').eq('organization_id',organizationId).order('name'),
+        client.from('escalation_routes').select('id,name,active').eq('organization_id',organizationId).order('name'),
+        client.from('notification_rules').select('id,trigger,enabled').eq('organization_id',organizationId).order('created_at',{ascending:false})
+      ])
+      const failed=results.find((result)=>result.error); if(failed?.error)throw failed.error
+      return [
+        ...(results[0].data??[]).map((row)=>({id:row.id,label:`Division · ${row.name}`,entity:'division',active:row.status==='active'})),
+        ...(results[1].data??[]).map((row)=>({id:row.id,label:`Neighborhood · ${row.name}`,entity:'neighborhood',active:row.status==='active'})),
+        ...(results[2].data??[]).map((row)=>({id:row.id,label:`Home · Lot ${row.lot_code}`,entity:'home',active:!row.archived_at})),
+        ...(results[3].data??[]).map((row)=>({id:row.id,label:`Company · ${row.name}`,entity:'company',active:row.status==='active'})),
+        ...(results[4].data??[]).map((row)=>({id:row.id,label:`Specialty · ${row.name}`,entity:'specialty',active:row.active})),
+        ...(results[5].data??[]).map((row)=>({id:row.id,label:`Category · ${row.name}`,entity:'work_category',active:row.active})),
+        ...(results[6].data??[]).map((row)=>({id:row.id,label:`Checklist · ${row.name}`,entity:'checklist_template',active:row.active})),
+        ...(results[7].data??[]).map((row)=>({id:row.id,label:`Escalation · ${row.name}`,entity:'escalation_route',active:row.active})),
+        ...(results[8].data??[]).map((row)=>({id:row.id,label:`Notification · ${row.trigger.replaceAll('_',' ')}`,entity:'notification_rule',active:row.enabled}))
+      ] as LifecycleItem[]
+    }
+  })
+  const [changing,setChanging]=useState<string|null>(null)
+  async function change(item:LifecycleItem){
+    const next=!item.active
+    if(!window.confirm(`${next?'Activate':'Deactivate'} ${item.label}?`))return
+    setChanging(item.id)
+    const {error}=await requireSupabase().rpc('admin_set_catalog_status',{p_organization_id:organizationId,p_entity:item.entity,p_id:item.id,p_active:next})
+    setChanging(null)
+    if(error){onMessage(error.message);return}
+    onMessage(`${item.label} ${next?'activated':'deactivated'}.`);await records.refetch()
+  }
+  return <section className="panel form-panel stack-lg"><div className="section-heading"><div><h2>Catalog lifecycle</h2><p>Deactivate obsolete configuration without deleting history. Open-work and dependency guards are enforced by the database.</p></div><span>{records.data?.length??0} records</span></div><div className="member-list">{records.data?.map((item)=><div key={`${item.entity}-${item.id}`}><span><strong>{item.label}</strong><small>{item.active?'Active':'Inactive / archived'}</small></span><button className="button ghost" disabled={disabled||changing===item.id} onClick={()=>void change(item)}>{item.active?'Deactivate':'Activate'}</button></div>)}</div></section>
+}
+
 export function AdministrationCatalogs({ organizationId, aal }: CatalogProps) {
   const catalogs = useCatalogs(organizationId)
   const [busy, setBusy] = useState(false)
@@ -127,5 +172,6 @@ export function AdministrationCatalogs({ organizationId, aal }: CatalogProps) {
       </div>
       <div className="catalog-summary"><span><MapPin />{catalogs.data?.homes.length ?? 0} homes</span><span><Wrench />{catalogs.data?.companies.length ?? 0} companies</span><span><ClipboardList />{catalogs.data?.templates.reduce((count,item)=>count+item.versions.length,0) ?? 0} checklist versions</span></div>
     </section>
+    <CatalogLifecycle organizationId={organizationId} disabled={disabled} onMessage={setMessage}/>
   </div>
 }

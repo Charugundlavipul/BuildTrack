@@ -1,4 +1,4 @@
-import { authenticatedUser, errorStatus, handleOptions, json, serviceClient } from '../_shared/http.ts'
+import { authenticatedUser, errorResponse, handleOptions, json, serviceClient } from '../_shared/http.ts'
 import { detectMime, sha256Hex } from '../_shared/files.ts'
 
 async function cloudmersiveScan(blob: Blob, name: string, apiKey: string) {
@@ -37,6 +37,8 @@ Deno.serve(async (request) => {
     if (bytes.byteLength !== attachment.byte_size) throw new Error('Uploaded size does not match the reservation')
     const actualMime = detectMime(bytes)
     if (!actualMime) throw new Error('File signature is unsupported or disguised')
+    const reservedMime = attachment.mime_type === 'image/heif' ? 'image/heic' : attachment.mime_type
+    if (actualMime !== reservedMime) throw new Error('File signature does not match the reserved content type')
 
     await service.rpc('mark_attachment_quarantined', { p_attachment_id: attachment.id })
     const scan = await cloudmersiveScan(object, attachment.original_name, cloudmersiveKey)
@@ -58,10 +60,13 @@ Deno.serve(async (request) => {
       p_derivative_object_key: derivativeKey,
       p_rejection_reason: clean ? null : 'Malware or unsafe embedded content was detected'
     })
-    if (finalizeError) throw finalizeError
+    if (finalizeError) {
+      if (derivativeKey) await service.storage.from('evidence').remove([derivativeKey])
+      throw finalizeError
+    }
     if (!clean) await service.storage.from('evidence').remove([attachment.object_key])
     return json(request, { attachment: finalized }, clean ? 200 : 422)
   } catch (error) {
-    return json(request, { error: error instanceof Error ? error.message : 'Upload finalization failed' }, errorStatus(error))
+    return errorResponse(request, error, 'Upload finalization failed')
   }
 })

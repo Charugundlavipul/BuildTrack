@@ -1,4 +1,4 @@
-import { errorStatus, handleOptions, json, userClient } from '../_shared/http.ts'
+import { errorResponse, handleOptions, json, userClient } from '../_shared/http.ts'
 
 Deno.serve(async (request) => {
   const options = handleOptions(request)
@@ -15,6 +15,6 @@ Deno.serve(async (request) => {
     const status = data?.ok ? 200 : ({ UNAUTHENTICATED: 401, FORBIDDEN: 403, NOT_FOUND: 404, VALIDATION_ERROR: 422, INVALID_TRANSITION: 409, VERSION_CONFLICT: 409, EVIDENCE_NOT_READY: 409, ASSIGNEE_INELIGIBLE: 422, INDEPENDENCE_REQUIRED: 403, OPERATION_REUSE: 409, OPERATION_EXPIRED: 409, RATE_LIMITED: 429, TEMPORARY_FAILURE: 503 }[data?.error?.code as string] ?? 400)
     return json(request, data, status)
   } catch (error) {
-    return json(request, { error: error instanceof Error ? error.message : 'Command failed' }, errorStatus(error))
+    return errorResponse(request, error, 'Command failed')
   }
 })

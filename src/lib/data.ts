@@ -241,12 +241,21 @@ export function useRosterCompanies(organizationId?: UUID, neighborhoodId?: UUID)
   })
 }
 
-export function useReportMetrics(organizationId?: UUID) {
+export interface ReportFilters {
+  neighborhood_id?: UUID
+  home_id?: UUID
+  state?: string
+  priority?: string
+  date_from?: string
+  date_to?: string
+}
+
+export function useReportMetrics(organizationId?: UUID, filters: ReportFilters = {}) {
   return useQuery({
-    queryKey: ['report-metrics', organizationId],
+    queryKey: ['report-metrics', organizationId, filters],
     enabled: Boolean(organizationId),
     queryFn: async () => {
-      const { data, error } = await client().rpc('get_report_metrics', { p_organization_id: organizationId, p_filters: {} })
+      const { data, error } = await client().rpc('get_report_metrics', { p_organization_id: organizationId, p_filters: filters })
       if (error) throw error
       return data as Record<string, unknown>
     }
