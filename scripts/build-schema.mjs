@@ -11,7 +11,7 @@ const migrationNames = (await readdir(migrationsDirectory))
 const sections = [
   '-- BuildTrack consolidated Supabase schema',
   '-- Generated from versioned migrations. Safe for an empty Supabase project.',
-  '-- Contains the fixed permission/role catalog, but no synthetic users or fixture data.',
+  '-- Contains the fixed permission/role catalog, but no tenant users or fixture data.',
   '-- Rebuild with: npm run schema:build',
   '',
 ]

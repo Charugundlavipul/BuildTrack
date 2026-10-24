@@ -1,6 +1,6 @@
-# Development decision register
+# Operational decision register
 
-| ID | Development baseline | Production owner/status |
+| ID | Current decision | Approval owner/status |
 | --- | --- | --- |
 | D01 | One builder organization is the tenant boundary; divisions are reporting only. | Product/IT approval required |
 | D02 | Responsive installable PWA with explicit offline home downloads. | Device durability test required |
@@ -19,6 +19,6 @@
 
 - Realtime is omitted initially; polling and reconnect reconciliation trigger authorized refreshes.
 - Versioned migrations are authoritative and generated database types are committed after migrations pass.
-- Cloudmersive is isolated behind Edge Functions. Only synthetic fixtures may be uploaded until vendor privacy and processing terms are approved.
-- The micro Supabase development size is not evidence that pilot performance targets are met.
-- Vercel deployment is a development preview with a visible banner and synthetic data only.
+- Cloudmersive is isolated behind Edge Functions and enabled only under the organization’s approved vendor privacy and data-processing terms.
+- Supabase compute and high availability must match approved capacity, availability, and recovery objectives.
+- Vercel serves the BuildTrack client from the approved HTTPS origin; Supabase Auth redirects and Edge origin checks use that exact origin.

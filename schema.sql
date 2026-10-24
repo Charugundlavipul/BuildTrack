@@ -1,6 +1,6 @@
 -- BuildTrack consolidated Supabase schema
 -- Generated from versioned migrations. Safe for an empty Supabase project.
--- Contains the fixed permission/role catalog, but no synthetic users or fixture data.
+-- Contains the fixed permission/role catalog, but no tenant users or fixture data.
 -- Rebuild with: npm run schema:build
 
 -- ============================================================================
@@ -2500,7 +2500,7 @@ commit;
 
 begin;
 
--- Required application metadata, not development fixture data.
+-- Required application metadata, not tenant fixture data.
 insert into public.permissions(code, description) values
   ('structure.manage','Manage divisions, neighborhoods, homes, locations, and milestones'),
   ('access.manage','Manage memberships, invitations, and scoped role grants'),

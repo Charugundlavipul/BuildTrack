@@ -132,7 +132,6 @@ code { display: inline-flex; padding: .35rem .55rem; border: 1px solid var(--lin
 .avatar { display: grid; width: 34px; height: 34px; place-items: center; border-radius: 50%; background: #295945; color: white; font-size: .72rem; font-weight: 800; }
 .close-menu, .menu-button { display: none; }
 .app-main { min-height: 100vh; margin-left: 260px; }
-.dev-banner { display: flex; height: 26px; align-items: center; justify-content: center; gap: .4rem; background: #f3d789; color: #4b3911; font-size: .68rem; font-weight: 800; letter-spacing: .04em; }
 .topbar { position: sticky; z-index: 30; top: 0; display: flex; height: 66px; align-items: center; justify-content: space-between; padding: 0 2rem; border-bottom: 1px solid var(--line); background: rgba(245,243,235,.93); backdrop-filter: blur(12px); }
 .org-switcher select { min-width: 210px; border-color: transparent; background: transparent; font-weight: 800; }
 .topbar-actions { display: flex; gap: .7rem; align-items: center; }

@@ -1,4 +1,4 @@
-import { Database, KeyRound, TerminalSquare } from 'lucide-react'
+import { Database, KeyRound, Settings } from 'lucide-react'
 
 export function SetupPage() {
   return (
@@ -7,11 +7,11 @@ export function SetupPage() {
         <div className="brand-lockup dark"><span className="brand-mark"><Database /></span><span>BuildTrack</span></div>
         <p className="eyebrow">SETUP REQUIRED</p>
         <h1>Connect the application to Supabase</h1>
-        <p className="lead">The interface is built, but persistence is intentionally unavailable until browser-safe project credentials are configured.</p>
+        <p className="lead">BuildTrack needs browser-safe Supabase project credentials before users can sign in.</p>
         <ol className="setup-steps">
-          <li><TerminalSquare /><div><strong>Start the local backend</strong><code>npm run db:start</code></div></li>
-          <li><KeyRound /><div><strong>Create a local environment file</strong><code>Copy-Item .env.example .env.local</code></div></li>
-          <li><Database /><div><strong>Add the printed API URL and anon key</strong><span>Then restart the Vite development server.</span></div></li>
+          <li><Database /><div><strong>Open the connected Supabase project</strong><span>Copy its project URL and publishable key.</span></div></li>
+          <li><KeyRound /><div><strong>Create the environment file</strong><code>Copy-Item .env.example .env.local</code></div></li>
+          <li><Settings /><div><strong>Add the URL and publishable key</strong><span>Restart BuildTrack after saving the configuration.</span></div></li>
         </ol>
       </div>
     </main>

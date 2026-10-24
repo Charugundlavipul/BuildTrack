@@ -44,6 +44,6 @@
 - `supabase/tests/authorization.test.sql`: initial SEC01–SEC09 hostile-client coverage.
 - `supabase/tests/invariants.test.sql`: tenant, accountability, independence, concurrency-index, and no-global-role checks.
 - `tests/unit`: shared command/CSV contracts and no-backend setup boundary.
-- `tests/e2e`: safe shell smoke test; full AT/FLOW/OFF/NOT/REP browser journeys require the local Supabase service.
+- `tests/e2e`: browser shell, installability, offline reload, recovery boundary, viewport, and release-language checks; full AT/FLOW/OFF/NOT/REP journeys require an isolated hosted Supabase verification project.
 
-An acceptance report must record pass/fail output for every scenario before a pilot. Unexecuted scenarios are limitations, never implied successes.
+An acceptance report records pass/fail output for every scenario before an organizational rollout. Unexecuted scenarios remain explicitly identified in the release record.

@@ -15,11 +15,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
-    "db:start": "supabase start",
-    "db:stop": "supabase stop",
-    "db:reset": "supabase db reset",
-    "db:test": "supabase test db",
-    "db:types": "supabase gen types typescript --local > src/types/database.generated.ts",
+    "db:lint": "supabase db lint --linked",
+    "db:types": "supabase gen types typescript --linked > src/types/database.generated.ts",
     "schema:build": "node scripts/build-schema.mjs",
     "check": "npm run lint && npm run typecheck && npm run test && npm run build"
   },

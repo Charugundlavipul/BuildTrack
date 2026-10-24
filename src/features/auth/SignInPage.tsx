@@ -40,7 +40,7 @@ export function SignInPage() {
             <span><LockKeyhole /> Private evidence</span>
           </div>
         </div>
-        <p className="auth-footnote">Development environment · Never use production construction data here.</p>
+        <p className="auth-footnote">Authorized organization members only. Activity is recorded for security and accountability.</p>
       </section>
       <section className="auth-panel">
         <div className="auth-card">

@@ -1,6 +1,6 @@
 begin;
 
--- Required application metadata, not development fixture data.
+-- Required application metadata, not tenant fixture data.
 insert into public.permissions(code, description) values
   ('structure.manage','Manage divisions, neighborhoods, homes, locations, and milestones'),
   ('access.manage','Manage memberships, invitations, and scoped role grants'),

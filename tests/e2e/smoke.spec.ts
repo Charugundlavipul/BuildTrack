@@ -8,6 +8,7 @@ test('shows the invitation-only sign-in boundary when configured', async ({ page
   await expect(page.getByLabel('Email address')).toBeVisible()
   await expect(page.getByLabel('Password')).toBeVisible()
   await expect(page.getByRole('link', { name: 'Forgot password?' })).toBeVisible()
+  await expect(page.getByText(/development environment|synthetic data|testing only/i)).toHaveCount(0)
 })
 
 test('publishes an installable manifest and active service worker', async ({ page, request }) => {

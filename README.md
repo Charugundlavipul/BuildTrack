@@ -6,7 +6,7 @@ It is installable on supported Android and iOS browsers. Authorized homes can be
 
 See [the persona and access guide](docs/persona-guide.md) for dashboard routing, role scopes, password recovery, invitations, and administrator handover.
 
-This repository is a **development baseline** built from `Construction_Operations_Business_Requirements.docx` and `Supabase_LLM_Implementation_Specification.txt`. It must not be treated as an approved production policy or municipal, payment, procurement, or safety authority.
+This repository implements the BuildTrack field-operations platform from `Construction_Operations_Business_Requirements.docx` and `Supabase_LLM_Implementation_Specification.txt`. Each organization remains responsible for its approved safety, retention, procurement, and compliance policies.
 
 ## Architecture
 
@@ -15,13 +15,13 @@ This repository is a **development baseline** built from `Construction_Operation
 - IndexedDB/Dexie durable offline queue partitioned by user and organization
 - Resend for invitation and operational email
 - Cloudmersive for malware scanning and HEIC display conversion
-- Vercel development preview for the static client
+- Vercel hosting for the static client
 
 Database reads are protected by RLS. Workflow writes use the `execute_command` transaction envelope and cannot be performed through ordinary direct table updates.
 
 ## Local setup
 
-Prerequisites: Node 22+, Supabase CLI, and an isolated hosted Supabase development/test project. Docker is not used in the current engagement.
+Prerequisites: Node 22+, Supabase CLI, and a hosted Supabase project appropriate to the target environment. The supported setup does not require Docker.
 
 ```powershell
 npm install
@@ -29,9 +29,9 @@ Copy-Item .env.example .env.local
 npm run dev
 ```
 
-Copy only the hosted development API URL and publishable key into `.env.local`. Apply migrations with the linked Supabase CLI only to the explicitly selected development/test project. Do not place service-role, Resend, worker, or Cloudmersive secrets in a Vite variable.
+Copy only the hosted Supabase API URL and publishable key into `.env.local`. Apply migrations with the linked Supabase CLI only to the explicitly selected project. Do not place service-role, Resend, worker, or Cloudmersive secrets in a Vite variable.
 
-Synthetic local accounts all use `BuildTrack-Dev-2026!`:
+The optional seed dataset creates these sample accounts with password `BuildTrack-Seed-2026!`:
 
 | Persona | Email |
 | --- | --- |
@@ -53,20 +53,20 @@ npm run lint
 npm run typecheck
 npm run test
 npm run build
-npm run db:test
+npm run db:lint
 npm run test:e2e
 ```
 
-`docs/traceability.md` maps business and acceptance identifiers to the implementation and required automated evidence. See `docs/decisions.md` before any pilot or production configuration.
+`docs/traceability.md` maps business and acceptance identifiers to the implementation and required automated evidence. See `docs/decisions.md` when configuring organizational policies.
 
 The latest factual test record is in [docs/acceptance-results.md](docs/acceptance-results.md). Operator procedures are under `docs/runbooks`, including setup, deployment, notification disable, backup/restore, rollback, incident response, and pilot exit.
 
 ## External provisioning
 
-The requested development targets are:
+The configured deployment targets are:
 
 - Supabase project `field-ops-dev`, `us-east-1`, micro compute, no HA
-- Vercel project `buildtrack`, development preview only
+- Vercel project `buildtrack`
 - Resend sender `BuildTrack <notifications@verified-domain>` after domain verification
 
 Provisioning requires interactive account access and secrets. Follow [deployment.md](docs/runbooks/deployment.md); never paste secrets into source files, issues, or chat transcripts.

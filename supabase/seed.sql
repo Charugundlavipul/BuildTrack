@@ -1,4 +1,4 @@
--- BuildTrack synthetic development fixtures. Never replace these with production data.
+-- Optional BuildTrack fixture dataset. Apply only to an isolated disposable tenant.
 
 insert into public.permissions(code, description) values
   ('structure.manage','Manage divisions, neighborhoods, homes, locations, and milestones'),
@@ -71,7 +71,7 @@ begin
   ) as users(id,email,display_name)
   loop
     insert into auth.users(instance_id,id,aud,role,email,encrypted_password,email_confirmed_at,created_at,updated_at,raw_app_meta_data,raw_user_meta_data,is_super_admin,confirmation_token,email_change,email_change_token_new,recovery_token)
-    values (instance,user_row.id,'authenticated','authenticated',user_row.email,extensions.crypt('BuildTrack-Dev-2026!',extensions.gen_salt('bf')),now(),now(),now(),'{"provider":"email","providers":["email"]}'::jsonb,jsonb_build_object('display_name',user_row.display_name),false,'','','','')
+    values (instance,user_row.id,'authenticated','authenticated',user_row.email,extensions.crypt('BuildTrack-Seed-2026!',extensions.gen_salt('bf')),now(),now(),now(),'{"provider":"email","providers":["email"]}'::jsonb,jsonb_build_object('display_name',user_row.display_name),false,'','','','')
     on conflict (id) do nothing;
     insert into auth.identities(id,user_id,provider_id,identity_data,provider,last_sign_in_at,created_at,updated_at)
     values (user_row.id,user_row.id,user_row.id::text,jsonb_build_object('sub',user_row.id::text,'email',user_row.email),'email',now(),now(),now())
@@ -212,4 +212,4 @@ insert into public.comments(organization_id,work_item_id,author_id,visibility,bo
   ('20000000-0000-0000-0000-000000000001','70000000-0000-0000-0000-000000000001','10000000-0000-0000-0000-000000000003','internal','Safety flag requires an on-site verification.')
 on conflict do nothing;
 
--- Local accounts all use: BuildTrack-Dev-2026!
+-- Optional seed accounts all use: BuildTrack-Seed-2026!

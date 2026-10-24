@@ -2,7 +2,7 @@
 
 ## Install BuildTrack
 
-Open the HTTPS development URL while online and sign in. On Android/Chrome, use the visible **Install** action when offered. On iPhone/iPad Safari, use **Share → Add to Home Screen**. Launch BuildTrack from its home-screen icon once before going to the field.
+Open your organization’s HTTPS BuildTrack URL while online and sign in. On Android/Chrome, use the visible **Install** action when offered. On iPhone/iPad Safari, use **Share → Add to Home Screen**. Launch BuildTrack from its home-screen icon once before going to the field.
 
 ## Prepare for offline work
 

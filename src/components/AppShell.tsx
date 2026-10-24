@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { NavLink, useNavigate, useParams } from 'react-router-dom'
 import {
   Bell, Building2, ClipboardCheck, CloudOff, Download, FileBarChart, HardHat,
-  Home, LogOut, Menu, RefreshCw, Settings, ShieldAlert, UserRound, Wifi, X
+  Home, LogOut, Menu, RefreshCw, Settings, UserRound, Wifi, X
 } from 'lucide-react'
 import { useAuth } from '../features/auth/AuthProvider'
 import { cn } from '../lib/utils'
@@ -91,7 +91,6 @@ export function AppShell({ children }: { children: ReactNode }) {
       </aside>
       {menuOpen && <button className="menu-scrim" aria-label="Close navigation" onClick={() => setMenuOpen(false)} />}
       <div className="app-main">
-        <div className="dev-banner"><ShieldAlert size={14} /> Development environment · Synthetic data only</div>
         <header className="topbar">
           <button className="icon-button menu-button" aria-label="Open navigation" onClick={() => setMenuOpen(true)}><Menu /></button>
           <label className="org-switcher"><span className="sr-only">Active organization</span><select value={activeOrganization?.id ?? ''} onChange={(event) => {

@@ -14,4 +14,4 @@
 
 Suspend affected memberships and notification delivery first. Preserve audit, operation-deduplication, inspection submission, verification, and evidence records. Do not delete the Supabase project until legal/IT retention and incident owners give written approval and the restore drill succeeds.
 
-Production migration is a separate approval. A successful development pilot does not authorize production data, production email, or deletion of retained evidence.
+Any environment migration requires an approved data, email-delivery, retention, and recovery plan. Retained evidence must not be deleted without the designated legal and IT approvals.
