@@ -2495,12 +2495,12 @@ grant execute on function public.run_notification_scheduler() to service_role;
 commit;
 
 -- ============================================================================
--- FIXED AUTHORIZATION CATALOG (no development fixtures)
+-- SOURCE: supabase/migrations/202610230009_fixed_authorization_catalog.sql
 -- ============================================================================
 
 begin;
--- BuildTrack fixed permission and scoped-role catalog.
 
+-- Required application metadata, not development fixture data.
 insert into public.permissions(code, description) values
   ('structure.manage','Manage divisions, neighborhoods, homes, locations, and milestones'),
   ('access.manage','Manage memberships, invitations, and scoped role grants'),
@@ -2534,7 +2534,10 @@ insert into public.roles(code, label, allowed_scope_kinds, immutable_seed) value
   ('internal_contributor','Internal field contributor','{neighborhood,home}',true),
   ('leadership_viewer','Leadership viewer','{organization,neighborhood,home}',true),
   ('auditor','Auditor','{organization,neighborhood,home}',true)
-on conflict (code) do update set label = excluded.label, allowed_scope_kinds = excluded.allowed_scope_kinds;
+on conflict (code) do update
+set label = excluded.label,
+    allowed_scope_kinds = excluded.allowed_scope_kinds,
+    immutable_seed = true;
 
 insert into public.role_permissions(role_code, permission_code) values
   ('org_admin','structure.manage'),('org_admin','access.manage'),('org_admin','roster.manage'),('org_admin','config.manage'),('org_admin','audit.read_scope'),
@@ -2551,5 +2554,26 @@ insert into public.role_permissions(role_code, permission_code) values
   ('leadership_viewer','work.read_scope'),('leadership_viewer','report.read_scope'),
   ('auditor','work.read_scope'),('auditor','report.read_scope'),('auditor','audit.read_scope')
 on conflict do nothing;
+
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202610230010_service_role_backend_access.sql
+-- ============================================================================
+
+begin;
+
+-- Edge Functions use the service role only for trusted server-side work.
+-- RLS bypass does not itself confer table privileges, so grant the internal
+-- role DML access without changing anon/authenticated client permissions.
+grant usage on schema public to service_role;
+grant select, insert, update, delete on all tables in schema public to service_role;
+grant usage, select on all sequences in schema public to service_role;
+
+alter default privileges for role postgres in schema public
+  grant select, insert, update, delete on tables to service_role;
+alter default privileges for role postgres in schema public
+  grant usage, select on sequences to service_role;
+
 commit;
 

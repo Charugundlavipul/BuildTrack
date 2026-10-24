@@ -3,7 +3,7 @@ project_id = "buildtrack"
 [api]
 enabled = true
 port = 54321
-schemas = ["public", "storage", "graphql_public"]
+schemas = ["public", "graphql_public"]
 extra_search_path = ["public", "extensions"]
 max_rows = 1000
 
@@ -29,16 +29,15 @@ enabled = true
 site_url = "http://localhost:5173"
 additional_redirect_urls = ["http://127.0.0.1:5173", "http://localhost:4173"]
 jwt_expiry = 3600
-enable_signup = true
+enable_signup = false
 enable_anonymous_sign_ins = false
 minimum_password_length = 12
 
 [auth.email]
-enable_signup = true
+enable_signup = false
 double_confirm_changes = true
 enable_confirmations = true
 max_frequency = "1m"
-otp_length = 6
 otp_expiry = 3600
 
 [storage]
