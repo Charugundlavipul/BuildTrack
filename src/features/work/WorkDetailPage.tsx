@@ -10,6 +10,7 @@ import { downloadEvidence, uploadWorkEvidence } from '../../lib/uploads'
 import { findOfflineWorkItem, stageWorkEvidence } from '../../lib/offline'
 import { useAuth } from '../auth/AuthProvider'
 import type { WorkState } from '../../types/domain'
+import { requireSupabase } from '../../lib/supabase'
 
 const actionByState: Partial<Record<WorkState, { command: string; label: string }>> = {
   draft: { command: 'submit_work_item', label: 'Submit for triage' },
@@ -33,6 +34,16 @@ export function WorkDetailPage() {
   const workData = work.data ?? cachedWork.data
   const participants = useParticipants(org, workData?.item.neighborhood_id)
   const companies = useRosterCompanies(org, workData?.item.neighborhood_id)
+  const delegation = useQuery({
+    queryKey: ['company-delegation', org, id, workData?.item.version],
+    enabled: Boolean(org && id && workData),
+    queryFn: async () => {
+      const { data, error } = await requireSupabase().rpc('company_delegation_options', { p_organization_id: org!, p_work_item_id: id! })
+      if (error) throw error
+      return data as null | { company_id: string; current_technician_id: string | null; technicians: Array<{ user_id: string; display_name: string }> }
+    },
+    retry: false
+  })
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [uploading, setUploading] = useState(false)
@@ -129,6 +140,13 @@ export function WorkDetailPage() {
     })
   }
 
+  async function delegateCompanyWork(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const technicianId = String(new FormData(event.currentTarget).get('technician_id'))
+    await execute('delegate_company_work', { technician_id: technicianId || null })
+    await delegation.refetch()
+  }
+
   async function issueEvidenceException(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const form = new FormData(event.currentTarget)
@@ -180,6 +198,7 @@ export function WorkDetailPage() {
             <label className="field">Due date and time<input name="due_at" type="datetime-local" required /></label>
             <label className="field">Assignment reason<input name="reason" maxLength={500} placeholder="Initial assignment or reason for reassignment" /></label>
           </div><button className="button secondary" disabled={busy}>Assign work</button></form>}
+          {delegation.data && <form className="assignment-form" onSubmit={delegateCompanyWork}><div className="section-heading"><div><h3>Delegate company work</h3><p>Choose an active technician in your accountable company. The company remains accountable.</p></div></div><div className="form-grid two"><label className="field">Technician<select name="technician_id" defaultValue={delegation.data.current_technician_id ?? ''}><option value="">Company manager / unassigned technician</option>{delegation.data.technicians.map((technician)=><option key={technician.user_id} value={technician.user_id}>{technician.display_name}</option>)}</select></label></div><button className="button secondary" disabled={busy}>Save delegation</button></form>}
           {can('work.assign') && item.due_at && !['verified', 'cancelled'].includes(item.state) && <details className="command-disclosure"><summary>Change due date</summary><form className="form-grid two" onSubmit={updateDueDate}><label className="field">New due date and time<input name="new_due_at" type="datetime-local" required /></label><label className="field">Reason<input name="reason" maxLength={500} required /></label><div className="full-span"><button className="button secondary" disabled={busy}>Update due date</button></div></form></details>}
           {can('work.assign') && ['assigned', 'acknowledged', 'in_progress', 'blocked', 'rework_required'].includes(item.state) && <details className="command-disclosure"><summary>Authorize an evidence exception</summary><form className="form-grid two" onSubmit={issueEvidenceException}><label className="field">Reason<textarea name="reason" maxLength={1000} required /></label><label className="field">Expires at (optional)<input name="expires_at" type="datetime-local" /></label><div className="full-span"><button className="button secondary" disabled={busy}>Authorize exception</button></div></form></details>}
           {can('work.verify') && item.state === 'ready_for_verification' && <div className="verification-box"><ShieldCheck /><div><strong>Ready for independent verification</strong><p>An eligible verifier must record an on-site or remote decision.</p></div><div><button className="button secondary" onClick={() => void execute('verify_correction', { decision: 'rejected', method: 'on_site', notes: 'Additional correction required' })}>Return for rework</button><button className="button primary" onClick={() => void execute('verify_correction', { decision: 'accepted', method: item.safety_flag ? 'on_site' : 'remote', notes: 'Correction accepted' })}>Accept correction</button></div></div>}

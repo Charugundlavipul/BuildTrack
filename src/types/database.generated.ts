@@ -3900,6 +3900,10 @@ export type Database = {
           isSetofReturn: true
         }
       }
+      company_delegation_options: {
+        Args: { p_organization_id: string; p_work_item_id: string }
+        Returns: Json
+      }
       complete_export_job: {
         Args: {
           p_error: string

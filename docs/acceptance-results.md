@@ -12,7 +12,7 @@ This is a factual execution record, not a production sign-off.
 | Production PWA build | PASS | Vite build generated the installable manifest, service worker, and 40 precache entries |
 | Desktop/mobile shell E2E | PASS | 10 Playwright tests across desktop and Pixel 7 Chrome |
 | PWA manifest/service worker | PASS | Browser tests verified install metadata, active worker, offline shell reload, and no horizontal overflow |
-| Hosted migrations | PASS | Migrations 001-016 match the linked `field-ops-dev` project |
+| Hosted migrations | PASS | Migrations 001-017 match the linked `field-ops-dev` project |
 | Hosted database lint | PASS WITH WARNING | No schema errors after migration 014; one non-security warning remains for the intentionally reserved `get_report_metrics.p_filters` parameter |
 | Generated database types/no drift | PASS | Types regenerated from the linked project after migration 015 |
 | Edge Function deployment | PASS | Eight functions are ACTIVE; six user endpoints verify JWT and two worker endpoints require a separate worker secret |
