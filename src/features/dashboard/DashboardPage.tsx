@@ -17,7 +17,7 @@ export function DashboardPage() {
   const [bulkMessage, setBulkMessage] = useState('')
   const [bulkBusy, setBulkBusy] = useState(false)
   const queryClient = useQueryClient()
-  const { user } = useAuth()
+  const { user, can } = useAuth()
   const metrics = useDashboardMetrics(org)
   const work = useWorkItems(org)
   const participants = useParticipants(org)
@@ -79,7 +79,7 @@ export function DashboardPage() {
 
   return (
     <div className="stack-xl">
-      <PageHeader eyebrow="TODAY'S FIELD VIEW" title="My work" description="Prioritize what needs attention, then move each item toward an independently verified finish." actions={<Link className="button primary" to={`/org/${org}/work/new`}><Plus />New work item</Link>} />
+      <PageHeader eyebrow="TODAY'S FIELD VIEW" title="My work" description="Prioritize what needs attention, then move each item toward an independently verified finish." actions={can('work.create') ? <Link className="button primary" to={`/org/${org}/work/new`}><Plus />New work item</Link> : undefined} />
       {metrics.isError && <ErrorState message={metrics.error.message} retry={() => void metrics.refetch()} />}
       <section className="metrics-grid" aria-label="Work summary">
         <MetricCard label="Open work" value={metrics.data?.open_count ?? '—'} helper="Excludes drafts and closed work" />
@@ -87,7 +87,7 @@ export function DashboardPage() {
         <MetricCard label="Blocked" value={metrics.data?.blocked_count ?? '—'} helper="Waiting on a recorded cause" tone="warning" />
         <MetricCard label="Awaiting verification" value={metrics.data?.pending_verification_count ?? '—'} helper="Requires an independent decision" tone="success" />
       </section>
-      <details className="panel bulk-panel">
+      {can('work.assign') && <details className="panel bulk-panel">
         <summary><UsersRound />Bulk assign active work</summary>
         <form onSubmit={bulkAssign} className="stack-lg">
           <p className="muted">Select up to 500 visible items. Each row is authorized and version-checked independently, so one failure does not hide the other results.</p>
@@ -100,7 +100,7 @@ export function DashboardPage() {
           {bulkMessage && <div className="notice" role="status">{bulkMessage}</div>}
           <div><button className="button primary" disabled={bulkBusy || !filtered.length}>{bulkBusy ? 'Assigning…' : 'Assign selected work'}</button></div>
         </form>
-      </details>
+      </details>}
       <section className="panel">
         <div className="panel-toolbar">
           <div className="segmented" aria-label="Work filter">{filters.map((value) => <button key={value} className={filter === value ? 'active' : ''} onClick={() => setFilter(value)}>{value === 'all' ? 'Active' : value.replaceAll('_', ' ')}</button>)}</div>
@@ -108,7 +108,7 @@ export function DashboardPage() {
         </div>
         {work.isLoading && <LoadingState label="Loading authorized work" />}
         {work.isError && <ErrorState message={work.error.message} retry={() => void work.refetch()} />}
-        {!work.isLoading && !filtered.length && <EmptyState title="No work in this view" description="Change the filters or create a new field observation." action={<Link className="button secondary" to={`/org/${org}/work/new`}>Create work</Link>} />}
+        {!work.isLoading && !filtered.length && <EmptyState title="No work in this view" description="Change the filters or wait for work to enter your authorized scope." action={can('work.create') ? <Link className="button secondary" to={`/org/${org}/work/new`}>Create work</Link> : undefined} />}
         {!!filtered.length && <div className="work-list">{filtered.map((item) => (
           <Link className="work-row" key={item.id} to={`/org/${org}/work/${item.id}`}>
             <div className="work-priority-line" data-priority={item.priority} />

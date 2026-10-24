@@ -4,6 +4,8 @@ BuildTrack is a mobile-responsive construction field operations and quality-mana
 
 It is installable on supported Android and iOS browsers. Authorized homes can be explicitly downloaded for 24-hour offline access, with field records, checklist responses, comments, and evidence queued until reconnection. See [the mobile/offline field guide](docs/mobile-offline-guide.md).
 
+See [the persona and access guide](docs/persona-guide.md) for dashboard routing, role scopes, password recovery, invitations, and administrator handover.
+
 This repository is a **development baseline** built from `Construction_Operations_Business_Requirements.docx` and `Supabase_LLM_Implementation_Specification.txt`. It must not be treated as an approved production policy or municipal, payment, procurement, or safety authority.
 
 ## Architecture

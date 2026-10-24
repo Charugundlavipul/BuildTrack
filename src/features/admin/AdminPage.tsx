@@ -4,11 +4,14 @@ import { useParams } from 'react-router-dom'
 import { Building2, CalendarDays, CheckCircle2, ClipboardList, KeyRound, MailPlus, ShieldCheck, UsersRound, Wrench } from 'lucide-react'
 import { ErrorState, LoadingState, PageHeader } from '../../components/Ui'
 import { requireSupabase, supabase } from '../../lib/supabase'
-import { useHomes, useNeighborhoods, useParticipants } from '../../lib/data'
+import { useHomes, useNeighborhoods } from '../../lib/data'
 import { useAuth } from '../auth/AuthProvider'
 import { newCommand, runCommand } from '../../lib/commands'
 import { parseHomeImportCsv } from '../../lib/csv'
 import { purgeAuthorizedCache } from '../../lib/offline'
+import { MembersPanel } from './MembersPanel'
+import { AdministrationCatalogs } from './AdministrationCatalogs'
+import { OperationsHealthPanel } from './OperationsHealthPanel'
 
 const roleOptions = [
   'org_admin', 'area_manager', 'superintendent', 'assistant_superintendent', 'internal_quality',
@@ -41,11 +44,19 @@ function useAdminSummary(organizationId?: string) {
 
 export function AdminPage() {
   const { org } = useParams()
-  const { user } = useAuth()
+  const { user, can } = useAuth()
   const summary = useAdminSummary(org)
   const neighborhoods = useNeighborhoods(org)
   const homes = useHomes(org)
-  const members = useParticipants(org)
+  const companies = useQuery({
+    queryKey: ['admin-companies', org],
+    enabled: Boolean(org),
+    queryFn: async () => {
+      const { data, error } = await requireSupabase().from('companies').select('id,name').eq('organization_id', org!).eq('status', 'active').order('name')
+      if (error) throw error
+      return data
+    }
+  })
   const [aal, setAal] = useState<string>('aal1')
   const [showInvite, setShowInvite] = useState(false)
   const [inviteBusy, setInviteBusy] = useState(false)
@@ -113,7 +124,9 @@ export function AdminPage() {
           scope_kind: scopeKind,
           neighborhood_id: scopeKind === 'organization' ? null : neighborhoodId,
           home_id: scopeKind === 'home' ? homeId : null
-        }]
+        }],
+        company_id: String(form.get('company_id')) || null,
+        company_kind: String(form.get('company_kind')) || null
       } })
       if (error) throw error
       if (!data?.invitation_id) throw new Error('Invitation delivery did not complete.')
@@ -163,7 +176,7 @@ export function AdminPage() {
         await requireSupabase().auth.signOut({ scope: 'local' })
         return
       }
-      await Promise.all([members.refetch(), summary.refetch()])
+      await summary.refetch()
     } catch (error) { setMemberMessage(error instanceof Error ? error.message : 'Member suspension failed.') }
   }
 
@@ -179,6 +192,8 @@ export function AdminPage() {
       <label className="field">Scope<select name="scope_kind" defaultValue="neighborhood"><option value="organization">Organization</option><option value="neighborhood">Neighborhood</option><option value="home">Home</option></select></label>
       <label className="field">Neighborhood<select name="neighborhood_id" defaultValue=""><option value="">Choose when scoped</option>{neighborhoods.data?.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>
       <label className="field">Home<select name="home_id" defaultValue=""><option value="">Choose for home scope</option>{homes.data?.map((item) => <option value={item.id} key={item.id}>Lot {item.lot_code}</option>)}</select></label>
+      <label className="field">Trade company<select name="company_id" defaultValue=""><option value="">No company</option>{companies.data?.map((company) => <option value={company.id} key={company.id}>{company.name}</option>)}</select></label>
+      <label className="field">Company member type<select name="company_kind" defaultValue=""><option value="">Not applicable</option><option value="manager">Manager</option><option value="technician">Technician</option></select></label>
     </div>{inviteMessage && <div className="notice" role="status">{inviteMessage}</div>}<div className="form-actions"><button type="button" className="button ghost" onClick={() => setShowInvite(false)}>Cancel</button><button className="button primary" disabled={inviteBusy}><MailPlus />{inviteBusy ? 'Sending…' : 'Send invitation'}</button></div></form>}
     {summary.isLoading && <LoadingState label="Loading administration summary" />}
     {summary.isError && <ErrorState message={summary.error.message} retry={() => void summary.refetch()} />}
@@ -190,7 +205,10 @@ export function AdminPage() {
       <AdminCard icon={CalendarDays} title="Calendars and escalation" description="Business time, quiet hours, reminders, and routes" />
       <AdminCard icon={ShieldCheck} title="Audit and retention" description="Access history, archive policy, and exceptions" />
     </section>}
-    <section className="panel"><div className="section-heading admin-section-heading"><div><h2>Active members</h2><p>Suspension immediately revokes grants and company access. The last active organization administrator is protected; self-suspension completes a handover and signs out.</p></div><span>{members.data?.length ?? 0} active</span></div>{memberMessage && <div className="notice" role="status">{memberMessage}</div>}<div className="member-list">{members.data?.map((member) => <div key={member.user_id}><span><strong>{member.display_name}</strong><small>{member.affiliation}</small></span><button className="button ghost" disabled={aal !== 'aal2'} onClick={() => void suspendMember(member.user_id, member.display_name)}>{member.user_id === user?.id ? 'Complete handover' : 'Suspend'}</button></div>)}</div></section>
+    {memberMessage && <div className="notice" role="status">{memberMessage}</div>}
+    {org && <MembersPanel organizationId={org} aal={aal} currentUserId={user?.id} neighborhoods={neighborhoods.data ?? []} homes={homes.data ?? []} onSuspend={suspendMember} />}
+    {org && <AdministrationCatalogs organizationId={org} aal={aal} />}
+    {org && <OperationsHealthPanel organizationId={org} canAudit={can('audit.read_scope')} canConfig={can('config.manage')} />}
     <section className="panel form-panel stack-lg"><div className="section-heading"><div><h2>Home import</h2><p>Preview duplicate and validation results before committing up to 1,000 CSV rows.</p></div><span className="state-badge state-active"><span />AAL2 required</span></div>
       <div className="form-grid two"><label className="field">Neighborhood<select value={importNeighborhood} onChange={(event) => setImportNeighborhood(event.target.value)}><option value="">Select neighborhood</option>{neighborhoods.data?.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label><label className="field full-span">CSV data<textarea rows={8} value={importCsv} onChange={(event) => setImportCsv(event.target.value)} spellCheck={false} /></label></div>
       <p className="fine-print">Accepted headers: lot_code, address_line1, address_line2, city, state_code, postal_code, phase, external_reference.</p>

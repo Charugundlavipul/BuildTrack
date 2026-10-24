@@ -17,7 +17,7 @@ type DraftResponse = { result?: InspectionResult; explanation: string; findingTi
 
 export function InspectionsPage() {
   const { org } = useParams()
-  const { user } = useAuth()
+  const { user, can } = useAuth()
   const queryClient = useQueryClient()
   const inspections = useInspections(org)
   const cachedHomes = useQuery({
@@ -57,7 +57,7 @@ export function InspectionsPage() {
   }
 
   return <div className="stack-xl">
-    <PageHeader eyebrow="QUALITY CONTROL" title="Inspections" description="Capture complete checklist coverage, preserve immutable submissions, and amend through numbered revisions." actions={<button className="button primary" disabled={!navigator.onLine} onClick={() => setScheduling((value) => !value)}><Plus />Schedule inspection</button>} />
+    <PageHeader eyebrow="QUALITY CONTROL" title="Inspections" description="Capture complete checklist coverage, preserve immutable submissions, and amend through numbered revisions." actions={can('inspection.manage') ? <button className="button primary" disabled={!navigator.onLine} onClick={() => setScheduling((value) => !value)}><Plus />Schedule inspection</button> : undefined} />
     {scheduling && <form className="panel form-panel stack-lg" onSubmit={schedule}>
       <div className="section-heading"><div><h2>Schedule inspection</h2><p>The signed-in administrator becomes the lead inspector.</p></div><button type="button" className="icon-button" aria-label="Close scheduling form" onClick={() => setScheduling(false)}><XCircle /></button></div>
       <div className="form-grid two">
@@ -71,7 +71,7 @@ export function InspectionsPage() {
     </form>}
     {!inspectionRows.length && (inspections.isLoading || cachedHomes.isLoading) && <LoadingState label="Loading inspections" />}
     {!inspectionRows.length && inspections.isError && <ErrorState message={inspections.error.message} retry={() => void inspections.refetch()} />}
-    {!inspections.isLoading && !inspectionRows.length && <EmptyState title="No inspections in scope" description="Schedule an inspection or begin an authorized ad-hoc review." action={<button className="button secondary" disabled={!navigator.onLine} onClick={() => setScheduling(true)}><CalendarPlus />Schedule inspection</button>} />}
+    {!inspections.isLoading && !inspectionRows.length && <EmptyState title="No inspections in scope" description="No scheduled or ad-hoc inspections are currently authorized." action={can('inspection.manage') ? <button className="button secondary" disabled={!navigator.onLine} onClick={() => setScheduling(true)}><CalendarPlus />Schedule inspection</button> : undefined} />}
     {!!inspectionRows.length && <section className="panel"><div className="inspection-table-head"><span>Inspection</span><span>Home</span><span>Scheduled</span><span>Status</span><span>Revision</span><span /></div>{inspectionRows.map((inspection) => <Link className="inspection-table-row" to={`/org/${org}/inspections/${inspection.id}`} key={inspection.id}><span><span className="icon-tile"><ClipboardCheck /></span><strong>{humanize(inspection.type)}</strong></span><span><strong>Lot {inspection.lot_code ?? '—'}</strong><small>{inspection.address_line1 ?? 'Address pending'}</small></span><span>{formatDateTime(inspection.scheduled_at)}</span><span><span className={`state-badge state-${inspection.status}`}><span />{humanize(inspection.status)}</span></span><span>v{inspection.current_revision}</span><ArrowUpRight /></Link>)}</section>}
   </div>
 }
@@ -79,7 +79,7 @@ export function InspectionsPage() {
 export function InspectionDetailPage() {
   const { org, id } = useParams()
   const navigate = useNavigate()
-  const { user } = useAuth()
+  const { user, can } = useAuth()
   const queryClient = useQueryClient()
   const detail = useInspection(org, id)
   const cachedDetail = useQuery({
@@ -128,7 +128,7 @@ export function InspectionDetailPage() {
           neighborhood_id: inspectionData.inspection.neighborhood_id,
           home_id: inspectionData.inspection.home_id,
           inspection_id: id,
-          origin: 'inspection_finding',
+          origin: inspectionData.inspection.type === 'external_quality' ? 'external_inspection' : 'internal_inspection',
           title: draft.findingTitle.trim(),
           description: draft.explanation.trim() || question.label,
           category_id: question.category_id,
@@ -193,7 +193,7 @@ export function InspectionDetailPage() {
   const editable = ['draft', 'in_progress', 'amended'].includes(inspection.status)
   const allRequiredAnswered = inspectionData.questions.filter((question) => question.requires_response).every((question) => effectiveResponses.some((response) => response.question_id === question.id))
 
-  return <div className="stack-xl"><PageHeader eyebrow={`REVISION ${inspection.current_revision}`} title={humanize(inspection.type)} description={`Scheduled ${formatDateTime(inspection.scheduled_at)}`} actions={<div className="button-row"><span className={`state-badge state-${inspection.status}`}><span />{humanize(inspection.status)}</span>{inspection.status === 'submitted' && <button className="button secondary" disabled={submitting} onClick={() => void beginAmendment()}>Begin amendment</button>}</div>} />
+  return <div className="stack-xl"><PageHeader eyebrow={`REVISION ${inspection.current_revision}`} title={humanize(inspection.type)} description={`Scheduled ${formatDateTime(inspection.scheduled_at)}`} actions={<div className="button-row"><span className={`state-badge state-${inspection.status}`}><span />{humanize(inspection.status)}</span>{inspection.status === 'submitted' && can('inspection.manage') && <button className="button secondary" disabled={submitting} onClick={() => void beginAmendment()}>Begin amendment</button>}</div>} />
     {!navigator.onLine && cachedDetail.data && <div className="notice warning"><AlertTriangle />Offline checklist loaded. Saved responses and findings remain queued until membership and versions are revalidated.</div>}
     {error && <div className="notice danger" role="alert"><AlertTriangle />{error}</div>}
     <section className="coverage-summary"><div><strong>{counts.pass}</strong><span>Pass</span></div><div><strong>{counts.fail}</strong><span>Fail</span></div><div><strong>{counts.not_applicable}</strong><span>Not applicable</span></div><div><strong>{counts.not_checked}</strong><span>Not checked</span></div></section>

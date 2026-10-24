@@ -77,6 +77,44 @@ export interface OrganizationSummary {
   status: 'active' | 'suspended' | 'archived'
 }
 
+export type PermissionCode =
+  | 'structure.manage'
+  | 'access.manage'
+  | 'roster.manage'
+  | 'work.read_scope'
+  | 'work.create'
+  | 'work.triage'
+  | 'work.assign'
+  | 'work.execute_assigned'
+  | 'work.verify'
+  | 'inspection.manage'
+  | 'inspection.perform'
+  | 'comment.internal'
+  | 'report.read_scope'
+  | 'audit.read_scope'
+  | 'config.manage'
+  | 'milestone.approve'
+
+export interface AccessRole {
+  id: UUID
+  role_code: string
+  scope_kind: 'organization' | 'neighborhood' | 'home'
+  neighborhood_id: UUID | null
+  home_id: UUID | null
+  starts_at: string
+  ends_at: string | null
+}
+
+export interface AccessContext {
+  organization_id: UUID
+  user_id: UUID
+  membership: { affiliation: 'internal' | 'external'; status: string }
+  profile: { display_name: string; preferred_locale: string; timezone: string | null }
+  roles: AccessRole[]
+  permissions: PermissionCode[]
+  companies: Array<{ company_id: UUID; kind: 'manager' | 'technician' }>
+}
+
 export interface WorkItemSummary {
   id: UUID
   organization_id: UUID

@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react'
-import { Navigate, useLocation } from 'react-router-dom'
+import { Link, Navigate, useLocation } from 'react-router-dom'
 import { ArrowRight, HardHat, LockKeyhole, ShieldCheck } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
 import { useAuth } from './AuthProvider'
@@ -14,7 +14,7 @@ export function SignInPage() {
 
   if (session) {
     const requested = (location.state as { from?: { pathname?: string } } | null)?.from?.pathname
-    return <Navigate replace to={requested ?? (activeOrganization ? `/org/${activeOrganization.id}/my-work` : '/organizations/select')} />
+    return <Navigate replace to={requested ?? (activeOrganization ? `/org/${activeOrganization.id}` : '/organizations/select')} />
   }
 
   async function submit(event: FormEvent) {
@@ -50,6 +50,7 @@ export function SignInPage() {
           <form onSubmit={submit} className="stack-lg">
             <label className="field">Email address<input type="email" required autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@company.com" /></label>
             <label className="field">Password<input type="password" required autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} /></label>
+            <div className="form-assist"><Link className="text-button" to="/forgot-password">Forgot password?</Link></div>
             {error && <div className="notice danger" role="alert">{error}</div>}
             <button className="button primary full" disabled={submitting}>{submitting ? 'Signing in…' : <>Sign in <ArrowRight size={18} /></>}</button>
           </form>

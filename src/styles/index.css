@@ -81,7 +81,25 @@ code { display: inline-flex; padding: .35rem .55rem; border: 1px solid var(--lin
 .auth-footnote { z-index: 1; margin: 0; color: #aec1b8; font-size: .75rem; }
 .auth-panel { display: grid; place-items: center; padding: 2rem; background: var(--cream); }
 .auth-card { width: min(440px, 100%); }
+.compact-auth-card { width: min(520px, 100%); }
 .auth-card h2 { margin-bottom: .4rem; font-family: Georgia, serif; font-size: 2rem; }
+.form-assist { display: flex; justify-content: flex-end; margin-top: -.45rem; }
+.access-editor { padding: 1rem; border: 1px solid var(--line); border-radius: .8rem; background: #f8f7f1; }
+.role-editor-list { display: grid; gap: .75rem; }
+.role-editor { display: grid; grid-template-columns: 1.2fr .8fr 1fr 1fr auto; gap: .65rem; align-items: end; padding: .8rem; border: 1px solid var(--line); border-radius: .7rem; background: white; }
+.admin-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+.admin-catalog-form { align-content: start; padding: 1rem; border: 1px solid var(--line); border-radius: .8rem; background: #f8f7f1; }
+.admin-catalog-form h3 { margin: 0 0 .25rem; }
+.admin-catalog-form p { margin: 0; color: var(--muted); font-size: .8rem; }
+.admin-catalog-form > .button { justify-self: start; }
+.catalog-summary { display: flex; flex-wrap: wrap; gap: 1rem; }
+.catalog-summary span { display: inline-flex; align-items: center; gap: .4rem; color: var(--muted); font-size: .82rem; font-weight: 700; }
+.notification-list { display: grid; }
+.notification-row { display: grid; grid-template-columns: auto 1fr auto; gap: .85rem; align-items: center; padding: 1rem; border-bottom: 1px solid var(--line); }
+.notification-row:last-child { border-bottom: 0; }
+.notification-row.unread { background: var(--amber-soft); }
+.notification-row p, .notification-row small { margin: 0; color: var(--muted); }
+.notification-row p { margin-top: .2rem; }
 .field { display: grid; gap: .42rem; color: #34453e; font-size: .84rem; font-weight: 750; }
 .field input, .field textarea, .field select, .search-box input, .comment-form textarea, .comment-form select, .org-switcher select { width: 100%; border: 1px solid #cfcfc6; border-radius: .6rem; background: white; color: var(--ink); }
 .field input, .field select, .org-switcher select { min-height: 46px; padding: .65rem .8rem; }
@@ -392,6 +410,8 @@ code { display: inline-flex; padding: .35rem .55rem; border: 1px solid var(--lin
 }
 
 @media (max-width: 800px) {
+  .role-editor { grid-template-columns: 1fr; }
+  .admin-form-grid { grid-template-columns: 1fr; }
   h1 { font-size: 2.2rem; }
   .auth-page { grid-template-columns: 1fr; }
   .auth-story { min-height: 44vh; padding: 1.5rem; }

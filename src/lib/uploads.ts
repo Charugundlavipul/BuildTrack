@@ -47,3 +47,10 @@ export async function uploadWorkEvidence(input: {
   if (finalized?.attachment?.status !== 'ready') throw new Error(finalized?.attachment?.rejection_reason ?? 'The evidence file did not pass validation.')
   return finalized.attachment as { id: UUID; status: string; original_name: string; byte_size: number; created_at: string }
 }
+
+export async function downloadEvidence(attachmentId: UUID) {
+  const { data, error } = await requireSupabase().functions.invoke('request-download', { body: { attachment_id: attachmentId } })
+  if (error) throw error
+  if (!data?.url) throw new Error('The authorized download link was not created.')
+  window.location.assign(String(data.url))
+}

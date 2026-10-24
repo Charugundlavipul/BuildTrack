@@ -2,7 +2,7 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
 import type { Session, User } from '@supabase/supabase-js'
 import { supabase } from '../../lib/supabase'
-import type { OrganizationSummary } from '../../types/domain'
+import type { AccessContext, OrganizationSummary, PermissionCode } from '../../types/domain'
 import { offlineDb, purgeAuthorizedCache, readOrganizationSnapshot, saveOrganizationSnapshot } from '../../lib/offline'
 
 interface AuthContextValue {
@@ -12,8 +12,14 @@ interface AuthContextValue {
   user: User | null
   organizations: OrganizationSummary[]
   activeOrganization: OrganizationSummary | null
+  access: AccessContext | null
+  accessLoading: boolean
+  accessError: string | null
   setActiveOrganization: (organization: OrganizationSummary) => void
   refreshOrganizations: () => Promise<void>
+  refreshAccess: () => Promise<void>
+  can: (permission: PermissionCode) => boolean
+  canAny: (...permissions: PermissionCode[]) => boolean
   signOut: () => Promise<void>
 }
 
@@ -24,12 +30,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null)
   const [organizations, setOrganizations] = useState<OrganizationSummary[]>([])
   const [activeOrganization, setActiveOrganizationState] = useState<OrganizationSummary | null>(null)
+  const [access, setAccess] = useState<AccessContext | null>(null)
+  const [accessLoading, setAccessLoading] = useState(false)
+  const [accessError, setAccessError] = useState<string | null>(null)
 
   const applyOrganizations = useCallback((rows: OrganizationSummary[]) => {
     setOrganizations(rows)
     const storedId = localStorage.getItem('buildtrack.activeOrganization')
     const selected = rows.find((item) => item.id === storedId) ?? rows[0] ?? null
     setActiveOrganizationState(selected)
+    if (selected) setAccessLoading(true)
   }, [])
 
   const refreshOrganizations = useCallback(async (userId?: string) => {
@@ -41,6 +51,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const snapshotUserId = userId ?? (await supabase.auth.getUser()).data.user?.id
     if (snapshotUserId) await saveOrganizationSnapshot(snapshotUserId, rows)
   }, [applyOrganizations])
+
+  const refreshAccess = useCallback(async () => {
+    if (!supabase || !session || !activeOrganization) {
+      setAccess(null)
+      return
+    }
+    setAccessLoading(true)
+    setAccessError(null)
+    try {
+      const { data, error } = await supabase.rpc('current_access', { p_organization_id: activeOrganization.id })
+      if (error) throw error
+      setAccess(data as unknown as AccessContext)
+    } catch (error) {
+      setAccess(null)
+      setAccessError(error instanceof Error ? error.message : 'Unable to load scoped access.')
+    } finally {
+      setAccessLoading(false)
+    }
+  }, [activeOrganization, session])
 
   useEffect(() => {
     if (!supabase) return
@@ -59,6 +88,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setSession(nextSession)
       setOrganizations([])
       setActiveOrganizationState(null)
+      setAccess(null)
+      setAccessError(null)
       if (nextSession) {
         void readOrganizationSnapshot(nextSession.user.id).then((cached) => {
           if (cached.length) applyOrganizations(cached)
@@ -72,7 +103,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [applyOrganizations, refreshOrganizations])
 
+  useEffect(() => {
+    if (!session || !activeOrganization) return
+    const timer = window.setTimeout(() => void refreshAccess(), 0)
+    return () => window.clearTimeout(timer)
+  }, [activeOrganization, refreshAccess, session])
+
   function setActiveOrganization(organization: OrganizationSummary) {
+    setAccess(null)
+    setAccessError(null)
+    setAccessLoading(true)
     setActiveOrganizationState(organization)
     localStorage.setItem('buildtrack.activeOrganization', organization.id)
   }
@@ -93,8 +133,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     user: session?.user ?? null,
     organizations,
     activeOrganization,
+    access,
+    accessLoading,
+    accessError,
     setActiveOrganization,
     refreshOrganizations,
+    refreshAccess,
+    can: (permission) => Boolean(access?.permissions.includes(permission)),
+    canAny: (...permissions) => permissions.some((permission) => access?.permissions.includes(permission)),
     signOut
   }
 

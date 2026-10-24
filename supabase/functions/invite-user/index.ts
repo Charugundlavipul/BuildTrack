@@ -37,10 +37,15 @@ Deno.serve(async (request) => {
     const existing = users.users.some((user) => user.email?.toLowerCase() === normalizedEmail)
     const appOrigin = (Deno.env.get('APP_ORIGIN') ?? 'http://localhost:5173').split(',')[0]
     if (!existing) {
-      const { error: authInviteError } = await service.auth.admin.inviteUserByEmail(normalizedEmail, { redirectTo: `${appOrigin}/accept-invite?token=${encodeURIComponent(token)}` })
-      if (authInviteError) throw authInviteError
+      const { error: authInviteError } = await service.auth.admin.inviteUserByEmail(normalizedEmail, { redirectTo: `${appOrigin}/accept-invite?token=${encodeURIComponent(token)}&setup=1` })
+      if (authInviteError) {
+        await service.from('invites').update({ delivery_error: authInviteError.message.slice(0, 500) }).eq('id', invitation.id)
+        throw authInviteError
+      }
+      return json(request, { invitation_id: invitation.id, expires_at: expiresAt, existing_identity: false })
     }
 
+    // Existing identities do not receive an Auth invite, so deliver the business invitation directly.
     const resendKey = Deno.env.get('RESEND_API_KEY')
     const emailFrom = Deno.env.get('EMAIL_FROM')
     if (!resendKey || !emailFrom) throw new Error('Resend delivery is not configured')

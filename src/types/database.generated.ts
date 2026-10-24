@@ -3394,6 +3394,15 @@ export type Database = {
     }
     Functions: {
       accept_invitation: { Args: { p_plaintext_token: string }; Returns: Json }
+      admin_create_checklist_version: {
+        Args: {
+          p_organization_id: string
+          p_questions: Json
+          p_template_id: string
+          p_template_name: string
+        }
+        Returns: Json
+      }
       admin_create_invitation: {
         Args: {
           p_affiliation: Database["public"]["Enums"]["affiliation_kind"]
@@ -3427,6 +3436,430 @@ export type Database = {
           isOneToOne: true
           isSetofReturn: false
         }
+      }
+      admin_list_invitations: {
+        Args: { p_organization_id: string }
+        Returns: Json
+      }
+      admin_list_members: { Args: { p_organization_id: string }; Returns: Json }
+      admin_publish_checklist_version: {
+        Args: { p_organization_id: string; p_version_id: string }
+        Returns: {
+          created_at: string
+          created_by: string
+          id: string
+          number: number
+          organization_id: string
+          published_at: string | null
+          template_id: string
+        }
+        SetofOptions: {
+          from: "*"
+          to: "checklist_versions"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
+      admin_revoke_invitation: {
+        Args: { p_invitation_id: string; p_organization_id: string }
+        Returns: Json
+      }
+      admin_save_business_calendar: {
+        Args: {
+          p_holiday_dates?: string[]
+          p_id: string
+          p_local_end_time: string
+          p_local_start_time: string
+          p_name: string
+          p_organization_id: string
+          p_timezone: string
+          p_working_weekdays: number[]
+        }
+        Returns: {
+          created_at: string
+          holiday_dates: string[]
+          id: string
+          local_end_time: string
+          local_start_time: string
+          name: string
+          organization_id: string
+          timezone: string
+          updated_at: string
+          version: number
+          working_weekdays: number[]
+        }
+        SetofOptions: {
+          from: "*"
+          to: "business_calendars"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
+      admin_save_company: {
+        Args: {
+          p_external_vendor_reference?: string
+          p_id: string
+          p_name: string
+          p_organization_id: string
+          p_status?: Database["public"]["Enums"]["organization_status"]
+        }
+        Returns: {
+          created_at: string
+          external_vendor_reference: string | null
+          id: string
+          name: string
+          organization_id: string
+          status: Database["public"]["Enums"]["organization_status"]
+          updated_at: string
+          version: number
+        }
+        SetofOptions: {
+          from: "*"
+          to: "companies"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
+      admin_save_division: {
+        Args: {
+          p_id: string
+          p_name: string
+          p_organization_id: string
+          p_status?: Database["public"]["Enums"]["organization_status"]
+        }
+        Returns: {
+          created_at: string
+          id: string
+          name: string
+          organization_id: string
+          status: Database["public"]["Enums"]["organization_status"]
+          updated_at: string
+          version: number
+        }
+        SetofOptions: {
+          from: "*"
+          to: "divisions"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
+      admin_save_escalation_route: {
+        Args: {
+          p_active: boolean
+          p_id: string
+          p_name: string
+          p_organization_id: string
+          p_steps: Json
+        }
+        Returns: Json
+      }
+      admin_save_home: {
+        Args: {
+          p_address_line1?: string
+          p_address_line2?: string
+          p_archived?: boolean
+          p_city?: string
+          p_external_reference?: string
+          p_id: string
+          p_lot_code: string
+          p_neighborhood_id: string
+          p_organization_id: string
+          p_phase?: string
+          p_postal_code?: string
+          p_primary_supervisor_user_id?: string
+          p_state_code?: string
+        }
+        Returns: {
+          address_line1: string | null
+          address_line2: string | null
+          archived_at: string | null
+          city: string | null
+          created_at: string
+          external_reference: string | null
+          id: string
+          lot_code: string
+          neighborhood_id: string
+          organization_id: string
+          phase: string
+          postal_code: string | null
+          primary_supervisor_user_id: string | null
+          state_code: string | null
+          updated_at: string
+          version: number
+        }
+        SetofOptions: {
+          from: "*"
+          to: "homes"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
+      admin_save_home_location: {
+        Args: {
+          p_active?: boolean
+          p_home_id: string
+          p_id: string
+          p_name: string
+          p_organization_id: string
+          p_parent_location_id?: string
+        }
+        Returns: {
+          active: boolean
+          created_at: string
+          home_id: string
+          id: string
+          name: string
+          neighborhood_id: string
+          organization_id: string
+          parent_location_id: string | null
+          updated_at: string
+          version: number
+        }
+        SetofOptions: {
+          from: "*"
+          to: "home_locations"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
+      admin_save_home_milestone: {
+        Args: {
+          p_home_id: string
+          p_id: string
+          p_milestone_code: string
+          p_organization_id: string
+          p_planned_at?: string
+        }
+        Returns: {
+          actual_at: string | null
+          created_at: string
+          home_id: string
+          id: string
+          milestone_code: string
+          organization_id: string
+          planned_at: string | null
+          updated_at: string
+          version: number
+        }
+        SetofOptions: {
+          from: "*"
+          to: "home_milestones"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
+      admin_save_inspector_engagement: {
+        Args: {
+          p_ends_at: string
+          p_home_id: string
+          p_id: string
+          p_inspector_user_id: string
+          p_neighborhood_id: string
+          p_organization_id: string
+          p_purpose: string
+          p_revoke?: boolean
+          p_starts_at: string
+        }
+        Returns: {
+          created_at: string
+          ends_at: string
+          home_id: string
+          id: string
+          inspector_user_id: string
+          neighborhood_id: string
+          organization_id: string
+          purpose: string
+          revoked_at: string | null
+          starts_at: string
+        }
+        SetofOptions: {
+          from: "*"
+          to: "inspection_engagements"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
+      admin_save_milestone_requirement: {
+        Args: {
+          p_home_id: string
+          p_id: string
+          p_milestone_code: string
+          p_organization_id: string
+          p_required?: boolean
+          p_required_inspection_type: Database["public"]["Enums"]["inspection_type"]
+        }
+        Returns: {
+          home_id: string
+          id: string
+          milestone_code: string
+          organization_id: string
+          required: boolean
+          required_inspection_type: Database["public"]["Enums"]["inspection_type"]
+        }
+        SetofOptions: {
+          from: "*"
+          to: "milestone_requirements"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
+      admin_save_neighborhood: {
+        Args: {
+          p_code: string
+          p_division_id: string
+          p_id: string
+          p_name: string
+          p_organization_id: string
+          p_status?: Database["public"]["Enums"]["organization_status"]
+          p_supervisor_user_id?: string
+          p_timezone?: string
+        }
+        Returns: {
+          calendar_id: string | null
+          code: string
+          created_at: string
+          division_id: string | null
+          escalation_route_id: string | null
+          id: string
+          name: string
+          organization_id: string
+          status: Database["public"]["Enums"]["organization_status"]
+          supervisor_user_id: string | null
+          timezone: string | null
+          updated_at: string
+          version: number
+        }
+        SetofOptions: {
+          from: "*"
+          to: "neighborhoods"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
+      admin_save_notification_rule: {
+        Args: {
+          p_business_minutes: number
+          p_enabled: boolean
+          p_escalation_route_id: string
+          p_id: string
+          p_max_repeats: number
+          p_neighborhood_id: string
+          p_organization_id: string
+          p_quiet_hours: Json
+          p_repeat_minutes: number
+          p_trigger: string
+        }
+        Returns: {
+          business_minutes: number | null
+          created_at: string
+          enabled: boolean
+          escalation_route_id: string
+          id: string
+          max_repeats: number
+          neighborhood_id: string | null
+          organization_id: string
+          quiet_hours: Json
+          repeat_minutes: number | null
+          trigger: string
+          updated_at: string
+          version: number
+        }
+        SetofOptions: {
+          from: "*"
+          to: "notification_rules"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
+      admin_save_roster: {
+        Args: {
+          p_active_from?: string
+          p_active_to?: string
+          p_company_id: string
+          p_id: string
+          p_neighborhood_id: string
+          p_organization_id: string
+          p_specialty_id: string
+          p_status?: Database["public"]["Enums"]["organization_status"]
+        }
+        Returns: {
+          active_from: string
+          active_to: string | null
+          company_id: string
+          created_at: string
+          id: string
+          neighborhood_id: string
+          organization_id: string
+          specialty_id: string
+          status: Database["public"]["Enums"]["organization_status"]
+        }
+        SetofOptions: {
+          from: "*"
+          to: "neighborhood_trade_rosters"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
+      admin_save_specialty: {
+        Args: {
+          p_active?: boolean
+          p_code: string
+          p_id: string
+          p_name: string
+          p_organization_id: string
+        }
+        Returns: {
+          active: boolean
+          code: string
+          created_at: string
+          id: string
+          name: string
+          organization_id: string
+          updated_at: string
+          version: number
+        }
+        SetofOptions: {
+          from: "*"
+          to: "trade_specialties"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
+      admin_save_work_category: {
+        Args: {
+          p_active?: boolean
+          p_code: string
+          p_id: string
+          p_name: string
+          p_organization_id: string
+        }
+        Returns: {
+          active: boolean
+          code: string
+          created_at: string
+          id: string
+          name: string
+          organization_id: string
+          updated_at: string
+          version: number
+        }
+        SetofOptions: {
+          from: "*"
+          to: "work_categories"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
+      admin_set_member_access: {
+        Args: {
+          p_affiliation: Database["public"]["Enums"]["affiliation_kind"]
+          p_assignments: Json
+          p_company_id?: string
+          p_company_kind?: string
+          p_organization_id: string
+          p_user_id: string
+        }
+        Returns: Json
       }
       admin_suspend_member: {
         Args: { p_organization_id: string; p_reason: string; p_user_id: string }
@@ -3513,6 +3946,7 @@ export type Database = {
           isSetofReturn: false
         }
       }
+      current_access: { Args: { p_organization_id: string }; Returns: Json }
       execute_command: {
         Args: { p_command_name: string; p_envelope: Json }
         Returns: Json
@@ -3747,505 +4181,6 @@ export type Database = {
       [_ in never]: never
     }
   }
-  storage: {
-    Tables: {
-      buckets: {
-        Row: {
-          allowed_mime_types: string[] | null
-          avif_autodetection: boolean | null
-          created_at: string | null
-          file_size_limit: number | null
-          id: string
-          lifecycle_configuration: Json | null
-          lifecycle_configuration_generation: string | null
-          name: string
-          owner: string | null
-          owner_id: string | null
-          public: boolean | null
-          type: Database["storage"]["Enums"]["buckettype"]
-          updated_at: string | null
-          versioning_status: string
-        }
-        Insert: {
-          allowed_mime_types?: string[] | null
-          avif_autodetection?: boolean | null
-          created_at?: string | null
-          file_size_limit?: number | null
-          id: string
-          lifecycle_configuration?: Json | null
-          lifecycle_configuration_generation?: string | null
-          name: string
-          owner?: string | null
-          owner_id?: string | null
-          public?: boolean | null
-          type?: Database["storage"]["Enums"]["buckettype"]
-          updated_at?: string | null
-          versioning_status?: string
-        }
-        Update: {
-          allowed_mime_types?: string[] | null
-          avif_autodetection?: boolean | null
-          created_at?: string | null
-          file_size_limit?: number | null
-          id?: string
-          lifecycle_configuration?: Json | null
-          lifecycle_configuration_generation?: string | null
-          name?: string
-          owner?: string | null
-          owner_id?: string | null
-          public?: boolean | null
-          type?: Database["storage"]["Enums"]["buckettype"]
-          updated_at?: string | null
-          versioning_status?: string
-        }
-        Relationships: []
-      }
-      buckets_analytics: {
-        Row: {
-          created_at: string
-          deleted_at: string | null
-          format: string
-          id: string
-          name: string
-          type: Database["storage"]["Enums"]["buckettype"]
-          updated_at: string
-        }
-        Insert: {
-          created_at?: string
-          deleted_at?: string | null
-          format?: string
-          id?: string
-          name: string
-          type?: Database["storage"]["Enums"]["buckettype"]
-          updated_at?: string
-        }
-        Update: {
-          created_at?: string
-          deleted_at?: string | null
-          format?: string
-          id?: string
-          name?: string
-          type?: Database["storage"]["Enums"]["buckettype"]
-          updated_at?: string
-        }
-        Relationships: []
-      }
-      buckets_vectors: {
-        Row: {
-          created_at: string
-          id: string
-          type: Database["storage"]["Enums"]["buckettype"]
-          updated_at: string
-        }
-        Insert: {
-          created_at?: string
-          id: string
-          type?: Database["storage"]["Enums"]["buckettype"]
-          updated_at?: string
-        }
-        Update: {
-          created_at?: string
-          id?: string
-          type?: Database["storage"]["Enums"]["buckettype"]
-          updated_at?: string
-        }
-        Relationships: []
-      }
-      migrations: {
-        Row: {
-          executed_at: string | null
-          hash: string
-          id: number
-          name: string
-        }
-        Insert: {
-          executed_at?: string | null
-          hash: string
-          id: number
-          name: string
-        }
-        Update: {
-          executed_at?: string | null
-          hash?: string
-          id?: number
-          name?: string
-        }
-        Relationships: []
-      }
-      objects: {
-        Row: {
-          archived_at: string | null
-          bucket_id: string | null
-          created_at: string | null
-          id: string
-          is_delete_marker: boolean
-          is_versioned: boolean
-          last_accessed_at: string | null
-          metadata: Json | null
-          name: string | null
-          owner: string | null
-          owner_id: string | null
-          path_tokens: string[] | null
-          updated_at: string | null
-          user_metadata: Json | null
-          version: string | null
-        }
-        Insert: {
-          archived_at?: string | null
-          bucket_id?: string | null
-          created_at?: string | null
-          id?: string
-          is_delete_marker?: boolean
-          is_versioned?: boolean
-          last_accessed_at?: string | null
-          metadata?: Json | null
-          name?: string | null
-          owner?: string | null
-          owner_id?: string | null
-          path_tokens?: string[] | null
-          updated_at?: string | null
-          user_metadata?: Json | null
-          version?: string | null
-        }
-        Update: {
-          archived_at?: string | null
-          bucket_id?: string | null
-          created_at?: string | null
-          id?: string
-          is_delete_marker?: boolean
-          is_versioned?: boolean
-          last_accessed_at?: string | null
-          metadata?: Json | null
-          name?: string | null
-          owner?: string | null
-          owner_id?: string | null
-          path_tokens?: string[] | null
-          updated_at?: string | null
-          user_metadata?: Json | null
-          version?: string | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "objects_bucketId_fkey"
-            columns: ["bucket_id"]
-            isOneToOne: false
-            referencedRelation: "buckets"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      s3_multipart_uploads: {
-        Row: {
-          bucket_id: string
-          created_at: string
-          id: string
-          in_progress_size: number
-          key: string
-          metadata: Json | null
-          owner_id: string | null
-          upload_signature: string
-          user_metadata: Json | null
-          version: string
-        }
-        Insert: {
-          bucket_id: string
-          created_at?: string
-          id: string
-          in_progress_size?: number
-          key: string
-          metadata?: Json | null
-          owner_id?: string | null
-          upload_signature: string
-          user_metadata?: Json | null
-          version: string
-        }
-        Update: {
-          bucket_id?: string
-          created_at?: string
-          id?: string
-          in_progress_size?: number
-          key?: string
-          metadata?: Json | null
-          owner_id?: string | null
-          upload_signature?: string
-          user_metadata?: Json | null
-          version?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "s3_multipart_uploads_bucket_id_fkey"
-            columns: ["bucket_id"]
-            isOneToOne: false
-            referencedRelation: "buckets"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      s3_multipart_uploads_parts: {
-        Row: {
-          bucket_id: string
-          created_at: string
-          etag: string
-          id: string
-          key: string
-          owner_id: string | null
-          part_number: number
-          size: number
-          upload_id: string
-          version: string
-        }
-        Insert: {
-          bucket_id: string
-          created_at?: string
-          etag: string
-          id?: string
-          key: string
-          owner_id?: string | null
-          part_number: number
-          size?: number
-          upload_id: string
-          version: string
-        }
-        Update: {
-          bucket_id?: string
-          created_at?: string
-          etag?: string
-          id?: string
-          key?: string
-          owner_id?: string | null
-          part_number?: number
-          size?: number
-          upload_id?: string
-          version?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "s3_multipart_uploads_parts_bucket_id_fkey"
-            columns: ["bucket_id"]
-            isOneToOne: false
-            referencedRelation: "buckets"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "s3_multipart_uploads_parts_upload_id_fkey"
-            columns: ["upload_id"]
-            isOneToOne: false
-            referencedRelation: "s3_multipart_uploads"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      vector_indexes: {
-        Row: {
-          bucket_id: string
-          created_at: string
-          data_type: string
-          dimension: number
-          distance_metric: string
-          id: string
-          metadata_configuration: Json | null
-          name: string
-          updated_at: string
-        }
-        Insert: {
-          bucket_id: string
-          created_at?: string
-          data_type: string
-          dimension: number
-          distance_metric: string
-          id?: string
-          metadata_configuration?: Json | null
-          name: string
-          updated_at?: string
-        }
-        Update: {
-          bucket_id?: string
-          created_at?: string
-          data_type?: string
-          dimension?: number
-          distance_metric?: string
-          id?: string
-          metadata_configuration?: Json | null
-          name?: string
-          updated_at?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "vector_indexes_bucket_id_fkey"
-            columns: ["bucket_id"]
-            isOneToOne: false
-            referencedRelation: "buckets_vectors"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-    }
-    Views: {
-      [_ in never]: never
-    }
-    Functions: {
-      allow_any_operation: {
-        Args: { expected_operations: string[] }
-        Returns: boolean
-      }
-      allow_only_operation: {
-        Args: { expected_operation: string }
-        Returns: boolean
-      }
-      can_insert_object: {
-        Args: { bucketid: string; metadata: Json; name: string; owner: string }
-        Returns: undefined
-      }
-      extension: { Args: { name: string }; Returns: string }
-      filename: { Args: { name: string }; Returns: string }
-      foldername: { Args: { name: string }; Returns: string[] }
-      get_common_prefix: {
-        Args: { p_delimiter: string; p_key: string; p_prefix: string }
-        Returns: string
-      }
-      get_size_by_bucket: {
-        Args: { delete_markers?: string; noncurrent_versions?: string }
-        Returns: {
-          bucket_id: string
-          size: number
-        }[]
-      }
-      list_multipart_uploads_with_delimiter: {
-        Args: {
-          bucket_id: string
-          delimiter_param: string
-          max_keys?: number
-          next_key_token?: string
-          next_upload_token?: string
-          prefix_param: string
-          raw_prefix_param?: string
-        }
-        Returns: {
-          created_at: string
-          id: string
-          key: string
-        }[]
-      }
-      list_objects_with_delimiter: {
-        Args: {
-          _bucket_id: string
-          delete_markers?: string
-          delimiter_param: string
-          max_keys?: number
-          next_token?: string
-          next_token_archived_at?: string
-          next_token_version?: string
-          noncurrent_versions?: string
-          prefix_param: string
-          sort_order?: string
-          start_after?: string
-        }
-        Returns: {
-          archived_at: string
-          created_at: string
-          id: string
-          is_delete_marker: boolean
-          is_versioned: boolean
-          last_accessed_at: string
-          metadata: Json
-          name: string
-          updated_at: string
-          version: string
-        }[]
-      }
-      operation: { Args: never; Returns: string }
-      search: {
-        Args: {
-          bucketname: string
-          delete_markers?: string
-          levels?: number
-          limits?: number
-          noncurrent_versions?: string
-          offsets?: number
-          prefix: string
-          search?: string
-          sortcolumn?: string
-          sortorder?: string
-        }
-        Returns: {
-          archived_at: string
-          created_at: string
-          id: string
-          is_delete_marker: boolean
-          is_versioned: boolean
-          last_accessed_at: string
-          metadata: Json
-          name: string
-          updated_at: string
-          version: string
-        }[]
-      }
-      search_by_timestamp: {
-        Args: {
-          delete_markers?: string
-          noncurrent_versions?: string
-          p_bucket_id: string
-          p_level: number
-          p_limit: number
-          p_prefix: string
-          p_sort_column: string
-          p_sort_column_after: string
-          p_sort_order: string
-          p_start_after: string
-          p_start_after_version?: string
-        }
-        Returns: {
-          archived_at: string
-          created_at: string
-          id: string
-          is_delete_marker: boolean
-          is_versioned: boolean
-          key: string
-          last_accessed_at: string
-          metadata: Json
-          name: string
-          updated_at: string
-          version: string
-        }[]
-      }
-      search_v2: {
-        Args: {
-          bucket_name: string
-          delete_markers?: string
-          levels?: number
-          limits?: number
-          noncurrent_versions?: string
-          prefix: string
-          sort_column?: string
-          sort_column_after?: string
-          sort_order?: string
-          start_after?: string
-          start_after_archived_at?: string
-          start_after_is_continuation?: boolean
-          start_after_version?: string
-        }
-        Returns: {
-          archived_at: string
-          created_at: string
-          id: string
-          is_delete_marker: boolean
-          is_versioned: boolean
-          key: string
-          last_accessed_at: string
-          metadata: Json
-          name: string
-          updated_at: string
-          version: string
-        }[]
-      }
-    }
-    Enums: {
-      buckettype: "STANDARD" | "ANALYTICS" | "VECTOR"
-    }
-    CompositeTypes: {
-      [_ in never]: never
-    }
-  }
 }
 
 type DatabaseWithoutInternals = Omit<Database, "__InternalSupabase">
@@ -4426,11 +4361,6 @@ export const Constants = {
         "verified",
         "cancelled",
       ],
-    },
-  },
-  storage: {
-    Enums: {
-      buckettype: ["STANDARD", "ANALYTICS", "VECTOR"],
     },
   },
 } as const

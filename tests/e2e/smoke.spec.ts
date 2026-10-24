@@ -1,12 +1,13 @@
 import { expect, test } from '@playwright/test'
 
-test('shows a safe setup boundary when no backend credentials are provided', async ({ page }) => {
+test('shows the invitation-only sign-in boundary when configured', async ({ page }) => {
   await page.goto('/')
-  await expect(page.getByRole('heading', { name: 'Connect the application to Supabase' })).toBeVisible()
-  await expect(page.getByText('Setup required')).toBeVisible()
-  await expect(page.getByText('BuildTrack')).toBeVisible()
-  await expect(page.locator('main')).toHaveCount(1)
-  await expect(page.locator('input, textarea, select')).toHaveCount(0)
+  await expect(page.getByRole('heading', { name: 'Sign in to your workspace' })).toBeVisible()
+  await expect(page.getByText('Access is invitation-only')).toBeVisible()
+  await expect(page.getByText('BuildTrack', { exact: true })).toBeVisible()
+  await expect(page.getByLabel('Email address')).toBeVisible()
+  await expect(page.getByLabel('Password')).toBeVisible()
+  await expect(page.getByRole('link', { name: 'Forgot password?' })).toBeVisible()
 })
 
 test('publishes an installable manifest and active service worker', async ({ page, request }) => {
@@ -38,8 +39,15 @@ test('reopens the application shell without internet after the first visit', asy
   await page.evaluate(async () => { await navigator.serviceWorker.ready })
   await context.setOffline(true)
   await page.reload({ waitUntil: 'domcontentloaded' })
-  await expect(page.getByRole('heading', { name: 'Connect the application to Supabase' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Sign in to your workspace' })).toBeVisible()
   await context.setOffline(false)
+})
+
+test('offers a privacy-preserving password recovery flow', async ({ page }) => {
+  await page.goto('/forgot-password')
+  await expect(page.getByRole('heading', { name: 'Reset your password' })).toBeVisible()
+  await expect(page.getByLabel('Email address')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Send reset link' })).toBeVisible()
 })
 
 test('fits the viewport without horizontal overflow', async ({ page }) => {

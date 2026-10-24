@@ -27,7 +27,7 @@ export function HomePage() {
   const work = useWorkItems(org)
   const inspections = useInspections(org)
   const neighborhoods = useNeighborhoods(org)
-  const { user } = useAuth()
+  const { user, can } = useAuth()
   const queryClient = useQueryClient()
   const [approvalBusy, setApprovalBusy] = useState(false)
   const [approvalMessage, setApprovalMessage] = useState('')
@@ -134,10 +134,10 @@ export function HomePage() {
   }
 
   return <div className="stack-xl">
-    <PageHeader eyebrow={`LOT ${home.lot_code}`} title={address || 'Address pending'} description={`${home.phase.replaceAll('_', ' ')} · Updated ${formatDateTime(home.updated_at)}`} actions={<div className="button-row"><button className="button secondary" disabled={!navigator.onLine || !liveHome} onClick={() => void downloadForOffline()}><Download />Download home</button><Link className="button primary" to={`/org/${org}/work/new?neighborhood=${home.neighborhood_id}&home=${home.id}`}><Plus />Add work</Link></div>} />
+    <PageHeader eyebrow={`LOT ${home.lot_code}`} title={address || 'Address pending'} description={`${home.phase.replaceAll('_', ' ')} · Updated ${formatDateTime(home.updated_at)}`} actions={<div className="button-row"><button className="button secondary" disabled={!navigator.onLine || !liveHome} onClick={() => void downloadForOffline()}><Download />Download home</button>{can('work.create') && <Link className="button primary" to={`/org/${org}/work/new?neighborhood=${home.neighborhood_id}&home=${home.id}`}><Plus />Add work</Link>}</div>} />
     {offlineMessage && <div className="notice" role="status">{offlineMessage}</div>}
     {!navigator.onLine && offlineBundle.data && <div className="notice warning"><AlertCircle />Showing the saved home package. Server readiness may have changed.</div>}
-    <section className={`readiness-hero readiness-${home.readiness}`}><div className="readiness-icon">{home.readiness === 'ready_for_review' ? <CheckCircle2 /> : home.readiness === 'not_ready' ? <AlertCircle /> : <Clock3 />}</div><div><p className="eyebrow">OPERATIONAL READINESS</p><h2>{home.readiness.replaceAll('_', ' ')}</h2><p>Calculated from current required inspections and active work. Final milestone approval is a separate human decision.</p></div><button className="button secondary" disabled={home.readiness !== 'ready_for_review' || approvalBusy} onClick={() => void approveMilestone()}><ShieldCheck />{approvalBusy ? 'Approving…' : 'Approve milestone'}</button></section>
+    <section className={`readiness-hero readiness-${home.readiness}`}><div className="readiness-icon">{home.readiness === 'ready_for_review' ? <CheckCircle2 /> : home.readiness === 'not_ready' ? <AlertCircle /> : <Clock3 />}</div><div><p className="eyebrow">OPERATIONAL READINESS</p><h2>{home.readiness.replaceAll('_', ' ')}</h2><p>Calculated from current required inspections and active work. Final milestone approval is a separate human decision.</p></div>{can('milestone.approve') && <button className="button secondary" disabled={home.readiness !== 'ready_for_review' || approvalBusy} onClick={() => void approveMilestone()}><ShieldCheck />{approvalBusy ? 'Approving…' : 'Approve milestone'}</button>}</section>
     {approvalMessage && <div className="notice" role="status">{approvalMessage}</div>}
     <div className="detail-layout wide-main">
       <div className="stack-lg">
