@@ -14,7 +14,11 @@
 .panel.chart-card > .section-heading { margin: -1.2rem -1.2rem 1.2rem; }
 .panel.messages-inbox > .section-heading { margin: 0 0 1rem; padding: 0; border-bottom: 0; background: transparent; }
 .home-row > span:nth-child(4) { display: flex; align-items: baseline; gap: .35rem; }
+.panel.checklist-question { padding: 1.25rem; grid-template-columns: minmax(0, 1fr); }
+.panel.checklist-question > * { min-width: 0; }
+.page-content .sticky-actions { position: static; }
 @media (max-width: 560px) {
   .panel { --panel-gutter: 1rem; --panel-heading-space: .9rem; }
   .panel > .section-heading { align-items: flex-start; }
+  .panel.checklist-question { padding: 1rem; }
 }
