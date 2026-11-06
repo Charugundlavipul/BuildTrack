@@ -1,0 +1,20 @@
+/* Panel headers own their inset; list rows keep full-width separators. */
+.panel { --panel-gutter: 1.25rem; --panel-heading-space: 1rem; min-width: 0; }
+.section-heading { min-width: 0; flex-wrap: wrap; }
+.section-heading > :is(h2, div) { min-width: 0; }
+.section-heading h2 { overflow-wrap: anywhere; }
+.panel:not(.form-panel) > .section-heading {
+  margin: 0;
+  padding: var(--panel-heading-space) var(--panel-gutter);
+  border-bottom: 1px solid var(--line);
+  background: #fafaf6;
+}
+.panel.detail-card > .section-heading,
+.panel.timeline-card > .section-heading { margin: -1.25rem -1.25rem 1.25rem; }
+.panel.chart-card > .section-heading { margin: -1.2rem -1.2rem 1.2rem; }
+.panel.messages-inbox > .section-heading { margin: 0 0 1rem; padding: 0; border-bottom: 0; background: transparent; }
+.home-row > span:nth-child(4) { display: flex; align-items: baseline; gap: .35rem; }
+@media (max-width: 560px) {
+  .panel { --panel-gutter: 1rem; --panel-heading-space: .9rem; }
+  .panel > .section-heading { align-items: flex-start; }
+}
