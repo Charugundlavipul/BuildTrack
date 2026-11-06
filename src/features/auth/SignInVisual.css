@@ -1,0 +1,25 @@
+.auth-page:has(.signin-visual) { grid-template-columns: minmax(0, .95fr) minmax(0, 1.05fr); }
+.auth-page .signin-visual { position: relative; isolation: isolate; display: flex; min-height: 100vh; flex-direction: column; justify-content: space-between; padding: clamp(2.25rem, 4vw, 4.5rem); overflow: hidden; background: #09271e; color: white; }
+.signin-visual-image { position: absolute; z-index: -2; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: center; }
+.auth-page .signin-visual::after { content: ""; position: absolute; z-index: -1; inset: 0; width: auto; height: auto; max-height: none; border: 0; border-radius: 0; transform: none; display: block; background: linear-gradient(180deg, rgba(5, 24, 17, .7), transparent 35%, rgba(5, 24, 17, .12) 60%, rgba(5, 24, 17, .85)); pointer-events: none; }
+.signin-visual > a { align-self: flex-start; }
+.signin-visual .brand-lockup { display: inline-flex; align-items: center; gap: .7rem; color: white; font-family: Bahnschrift, "Arial Narrow", "Segoe UI", sans-serif; font-size: 1.12rem; font-weight: 700; letter-spacing: -.02em; }
+.signin-visual .brand-mark { display: inline-grid; width: 40px; height: 40px; flex: 0 0 40px; place-items: center; border-radius: 9px; background: #103b2d; box-shadow: inset 0 0 0 1px rgba(255,255,255,.17); overflow: hidden; }
+.signin-visual .brand-mark img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.signin-visual .brand-name { display: block; line-height: 1.05; }
+.signin-visual > h2 { max-width: 440px; margin: 0; color: white; font-family: Bahnschrift, "Arial Narrow", "Segoe UI", sans-serif; font-size: clamp(2rem, 3.2vw, 3.2rem); line-height: 1.08; font-weight: 650; letter-spacing: -.035em; text-wrap: balance; }
+.auth-page:has(.signin-visual) .auth-panel { display: grid; place-items: center; padding: clamp(1.5rem, 4vw, 4rem); background: linear-gradient(135deg, #f7f6f1, #eeede6); }
+.auth-page:has(.signin-visual) .auth-card { width: min(470px, 100%); padding: clamp(1.5rem, 3vw, 2.5rem); border: 1px solid var(--line); border-top: 4px solid var(--amber); border-radius: 10px; background: var(--paper); box-shadow: var(--shadow); }
+.auth-page:has(.signin-visual) .auth-card h1 { margin-bottom: .45rem; font-family: Bahnschrift, "Arial Narrow", "Segoe UI", sans-serif; font-size: 2rem; }
+@media (max-width: 800px) {
+  .auth-page:has(.signin-visual) { min-height: 100dvh; grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+  .auth-page .signin-visual { min-height: 240px; padding: 1.25rem 1.5rem; gap: 0; }
+  .signin-visual-image { object-position: center 52%; }
+  .signin-visual > h2 { display: none; }
+  .auth-page:has(.signin-visual) .auth-panel { align-items: start; padding: 2rem 1rem; }
+  .auth-page:has(.signin-visual) .auth-card { padding: 1.75rem; }
+  .auth-page:has(.signin-visual) .auth-card h1 { font-size: 1.8rem; }
+}
+@media (max-width: 560px) {
+  .auth-page .signin-visual { min-height: 190px; }
+}

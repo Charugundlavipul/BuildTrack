@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react'
 import { Link, Navigate, useLocation } from 'react-router-dom'
-import { ArrowRight, HardHat, LockKeyhole, ShieldCheck } from 'lucide-react'
+import { ArrowRight } from 'lucide-react'
+import { SignInVisual } from './SignInVisual'
 import { supabase } from '../../lib/supabase'
 import { useAuth } from './AuthProvider'
 
@@ -29,23 +30,11 @@ export function SignInPage() {
 
   return (
     <main className="auth-page">
-      <section className="auth-story" aria-labelledby="brand-heading">
-        <div className="brand-lockup"><span className="brand-mark"><HardHat /></span><span>BuildTrack</span></div>
-        <div className="auth-story-copy">
-          <p className="eyebrow">FIELD OPERATIONS, ACCOUNTABLE</p>
-          <h1 id="brand-heading">Every issue has an owner. Every fix gets verified.</h1>
-          <p>Capture work in the field, coordinate trusted trade partners, and see exactly what stands between a home and its next milestone.</p>
-          <div className="trust-row">
-            <span><ShieldCheck /> Scoped access</span>
-            <span><LockKeyhole /> Private evidence</span>
-          </div>
-        </div>
-        <p className="auth-footnote">Authorized organization members only. Activity is recorded for security and accountability.</p>
-      </section>
+      <SignInVisual />
       <section className="auth-panel">
         <div className="auth-card">
           <p className="eyebrow">WELCOME BACK</p>
-          <h2>Sign in to your workspace</h2>
+          <h1>Sign in to your workspace</h1>
           <p className="muted">Use the verified email from your BuildTrack invitation.</p>
           <form onSubmit={submit} className="stack-lg">
             <label className="field">Email address<input type="email" required autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@company.com" /></label>
@@ -54,7 +43,7 @@ export function SignInPage() {
             {error && <div className="notice danger" role="alert">{error}</div>}
             <button className="button primary full" disabled={submitting}>{submitting ? 'Signing in…' : <>Sign in <ArrowRight size={18} /></>}</button>
           </form>
-          <p className="fine-print">Access is invitation-only. Creating an identity does not create tenant access.</p>
+          <p className="fine-print">Access is invitation-only. Contact your organization administrator if you need an invitation.</p>
         </div>
       </section>
     </main>
