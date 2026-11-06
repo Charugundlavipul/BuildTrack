@@ -31,7 +31,7 @@ npm run dev
 
 Copy only the hosted Supabase API URL and publishable key into `.env.local`. Apply migrations with the linked Supabase CLI only to the explicitly selected project. Do not place service-role, Resend, worker, or Cloudmersive secrets in a Vite variable.
 
-The optional seed dataset creates these sample accounts with password `BuildTrack-Seed-2026!`:
+Automatic fixture seeding is disabled. For a disposable local database, explicitly set `buildtrack.dev_seed_password` in the same SQL session before running `supabase/seed.sql`; use a private password of at least 12 characters. CI generates a random password for its isolated local fixtures. Existing account passwords are not changed. The optional dataset creates these sample accounts:
 
 | Persona | Email |
 | --- | --- |
