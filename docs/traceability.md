@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | FR01 | Tenant-safe divisions, neighborhoods, homes, locations, common areas, duplicate lot constraint | SEC01, AT12, migration/FK tests |
 | FR02 | Memberships, contextual role assignments, expiry, suspension, invitation acceptance | SEC02, SEC05–SEC07, AT03, AT07 |
-| FR03 | Companies, user associations, specialties, neighborhood rosters, delegation | SEC04, AT04, FLOW04 |
+| FR03 | Categorized companies, user associations, neighborhood eligibility, delegation | SEC04, AT04, FLOW04 |
 | FR04 | Standalone work capture with origin, location, priority, safety, evidence metadata | AT01, FLOW01, OFF01 |
 | FR05 | Published checklist versions, complete responses, findings, immutable submissions | AT02, AT10, FLOW02, FLOW08 |
 | FR06 | Triage, duplicates, assignment episodes, due dates, bulk contract | AT01, AT02, AT04, CON01 |

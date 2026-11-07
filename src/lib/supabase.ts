@@ -1,6 +1,9 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import type { Database } from '../types/database.generated'
 
+// PostgreSQL accepts SQL null for required RPC UUID/text arguments; generated types omit that possibility.
+export const rpcNull = null as unknown as string
+
 const url = import.meta.env.VITE_SUPABASE_URL?.trim()
 const publishableKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY?.trim()
 

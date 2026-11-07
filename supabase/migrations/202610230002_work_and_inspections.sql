@@ -31,13 +31,11 @@ create table public.checklist_questions (
   ordinal integer not null check (ordinal > 0),
   section text not null,
   label text not null,
-  category_id uuid,
   requires_response boolean not null default true,
   created_at timestamptz not null default now(),
   unique (organization_id, id),
   unique (organization_id, version_id, ordinal),
-  foreign key (organization_id, version_id) references public.checklist_versions(organization_id, id) on delete restrict,
-  foreign key (organization_id, category_id) references public.work_categories(organization_id, id) on delete restrict
+  foreign key (organization_id, version_id) references public.checklist_versions(organization_id, id) on delete restrict
 );
 
 create table public.inspections (
@@ -102,7 +100,6 @@ create table public.work_items (
   origin public.work_origin not null,
   title text not null check (length(title) between 1 and 160),
   description text not null check (length(description) between 1 and 10000),
-  category_id uuid,
   priority public.work_priority not null default 'normal',
   safety_flag boolean not null default false,
   state public.work_state not null default 'draft',
@@ -124,7 +121,6 @@ create table public.work_items (
   foreign key (organization_id, home_id) references public.homes(organization_id, id) on delete restrict,
   foreign key (organization_id, home_id, location_id) references public.home_locations(organization_id, home_id, id) on delete restrict,
   foreign key (organization_id, inspection_id) references public.inspections(organization_id, id) on delete restrict,
-  foreign key (organization_id, category_id) references public.work_categories(organization_id, id) on delete restrict,
   foreign key (organization_id, duplicate_of_id) references public.work_items(organization_id, id) on delete restrict,
   check ((home_id is not null and common_area_location is null) or (home_id is null and nullif(trim(common_area_location), '') is not null)),
   check (location_id is null or home_id is not null),

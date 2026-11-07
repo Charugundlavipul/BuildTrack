@@ -8,7 +8,8 @@ export function PageHeader({ eyebrow, title, description, actions }: { eyebrow?:
 }
 
 export function StateBadge({ state }: { state: WorkState | string }) {
-  return <span className={cn('state-badge', `state-${state}`)}><span />{humanize(state)}</span>
+  const label = state === 'ready_for_verification' ? 'Awaiting supervisor review' : state === 'verified' ? 'Closed' : humanize(state)
+  return <span className={cn('state-badge', `state-${state}`)}><span />{label}</span>
 }
 
 export function PriorityBadge({ priority }: { priority: string }) {
@@ -16,7 +17,7 @@ export function PriorityBadge({ priority }: { priority: string }) {
 }
 
 export function LoadingState({ label = 'Loading' }: { label?: string }) {
-  return <div className="loading-state"><LoaderCircle className="spin" /><span>{label}</span></div>
+  return <div className="loading-state" role="status"><LoaderCircle className="spin" aria-hidden="true" /><span>{label}</span></div>
 }
 
 export function EmptyState({ title, description, action }: { title: string; description: string; action?: ReactNode }) {

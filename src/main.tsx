@@ -6,6 +6,7 @@ import { Toaster } from 'sonner'
 import { registerSW } from 'virtual:pwa-register'
 import App from './App'
 import { AuthProvider } from './features/auth/AuthProvider'
+import { AutomaticSync } from './features/sync/AutomaticSync'
 import './styles/index.css'
 
 const queryClient = new QueryClient({
@@ -13,6 +14,17 @@ const queryClient = new QueryClient({
     queries: { staleTime: 30_000, retry: 1, refetchOnWindowFocus: true },
     mutations: { retry: false }
   }
+})
+
+// Numeric fields are typing-only. Scrolling over a focused number input can
+// otherwise change saved values accidentally while the page is being scrolled.
+document.addEventListener('wheel', (event) => {
+  const target = event.target
+  if (target instanceof HTMLInputElement && target.type === 'number' && document.activeElement === target) target.blur()
+}, { capture: true, passive: true })
+document.addEventListener('keydown', (event) => {
+  const target = event.target
+  if (target instanceof HTMLInputElement && target.type === 'number' && ['ArrowUp', 'ArrowDown'].includes(event.key)) event.preventDefault()
 })
 
 const updateServiceWorker = registerSW({
@@ -26,7 +38,7 @@ createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
-        <AuthProvider><App /></AuthProvider>
+        <AuthProvider><AutomaticSync /><App /></AuthProvider>
       </BrowserRouter>
       <Toaster richColors position="top-right" />
     </QueryClientProvider>

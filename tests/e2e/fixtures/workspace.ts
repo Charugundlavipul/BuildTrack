@@ -59,7 +59,7 @@ export async function mockWorkspace(page: Page, options: { permissions?: string[
       project_chat_people: [],
       observation_activity: { entries: [{ key: 'event:1', at: now, kind: 'event', actor_id: userId, actor_name: member.display_name, event_type: 'work.started', from_state: 'acknowledged', to_state: 'in_progress', details: {}, visibility: 'shared' }, { key: 'comment:1', at: now, kind: 'comment', actor_id: userId, actor_name: member.display_name, event_type: 'comment.added', details: {}, body: 'Replacement panel arrives Monday. Access through the garage.', visibility: 'shared' }], has_more: false },
       company_delegation_options: null,
-      notifications: [{ id: 'notice-1', title: 'Correction is ready for verification', body: 'Lot 104 Â· Kitchen cabinetry. Review the correction and evidence before accepting the work.', deep_link: `/org/${org}/work/work-1`, created_at: now, read_at: null }],
+      notifications: [{ id: 'notice-1', title: 'Correction is ready for verification', body: 'Lot 104 · Kitchen cabinetry. Review the correction and evidence before accepting the work.', deep_link: `/org/${org}/work/work-1`, created_at: now, read_at: null }],
       comments: [{ id: 'comment-1', author_id: userId, body: 'Replacement panel arrives Monday. Access through the garage.', visibility: 'shared', created_at: now }],
       work_events: [{ id: 'event-1', event_type: 'work_started', from_state: 'acknowledged', to_state: 'in_progress', server_at: now }],
       companies: [{ id: 'company-1', name: 'Cedar Finish Carpentry', status: 'active' }],

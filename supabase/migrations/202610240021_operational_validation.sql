@@ -6,7 +6,7 @@ select
   nullif(concat_ws(', ', h.address_line1, h.city, h.state_code), '') as address,
   w.title, w.description, w.priority, w.state, w.safety_flag, w.due_at,
   coalesce(c.name, p.display_name) as assigned_party_name,
-  w.updated_at, w.version, w.created_at, w.category_id
+  w.updated_at, w.version, w.created_at
 from public.work_items w
 left join public.homes h on h.organization_id = w.organization_id and h.id = w.home_id
 left join public.assignment_episodes ae on ae.organization_id = w.organization_id and ae.id = w.current_assignment_id

@@ -1,10 +1,11 @@
 import { Database, KeyRound, Settings } from 'lucide-react'
+import { Brand } from '../../components/Brand'
 
 export function SetupPage() {
   return (
     <main className="setup-page">
       <div className="setup-card">
-        <div className="brand-lockup dark"><span className="brand-mark"><Database /></span><span>BuildTrack</span></div>
+        <Brand dark />
         <p className="eyebrow">SETUP REQUIRED</p>
         <h1>Connect the application to Supabase</h1>
         <p className="lead">BuildTrack needs browser-safe Supabase project credentials before users can sign in.</p>

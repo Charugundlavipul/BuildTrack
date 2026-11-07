@@ -26,7 +26,7 @@ export function ForgotPasswordPage() {
     <span className="icon-tile"><KeyRound /></span>
     <p className="eyebrow">ACCOUNT RECOVERY</p>
     <h1>Reset your password</h1>
-    <p className="lead">Enter the verified email attached to your BuildTrack identity.</p>
+    <p className="lead">Enter the verified email you use to sign in to BuildTrack.</p>
     {sent ? <div className="notice"><Mail />If that account exists, a secure reset link has been sent. Check spam before requesting another link.</div> : <form className="stack-lg" onSubmit={submit}>
       <label className="field">Email address<input name="email" type="email" autoComplete="email" required /></label>
       {error && <div className="notice danger" role="alert">{error}</div>}

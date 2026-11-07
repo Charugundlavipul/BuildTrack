@@ -1,0 +1,1416 @@
+begin;
+
+-- Starter checklist categories for the user's existing project organization.
+-- Names follow the authoritative live space-type labels. Existing published
+-- categories are reused; no existing questions or plan assignments are changed.
+do $seed$
+declare
+ target_org constant uuid:='e46a5e61-db90-4053-b92d-defd077839eb';
+ catalog constant jsonb:=$catalog${
+  "kitchen": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Cabinet doors and drawers are aligned and operate correctly",
+    "Countertops, backsplash joints, and sink seals are finished",
+    "Sink fixtures and accessible connections show no leaks during normal use",
+    "Installed appliances and extraction have handover or commissioning records"
+  ],
+  "living": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Floor transitions and room openings match the approved layout",
+    "Specified ceiling features, lighting positions, and fitted joinery are complete"
+  ],
+  "dining": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Floor transitions and room openings match the approved layout",
+    "Specified ceiling features, lighting positions, and fitted joinery are complete"
+  ],
+  "great_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Floor transitions and room openings match the approved layout",
+    "Specified ceiling features, lighting positions, and fitted joinery are complete"
+  ],
+  "family_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Floor transitions and room openings match the approved layout",
+    "Specified ceiling features, lighting positions, and fitted joinery are complete"
+  ],
+  "breakfast_nook": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Floor transitions and room openings match the approved layout",
+    "Specified ceiling features, lighting positions, and fitted joinery are complete"
+  ],
+  "formal_dining_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Floor transitions and room openings match the approved layout",
+    "Specified ceiling features, lighting positions, and fitted joinery are complete"
+  ],
+  "sitting_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Floor transitions and room openings match the approved layout",
+    "Specified ceiling features, lighting positions, and fitted joinery are complete"
+  ],
+  "sunroom": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Glazing, window seals, and visible frame joints are complete",
+    "Operable windows and shading systems function where installed"
+  ],
+  "conservatory": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Glazing, roof panels, and visible seals show no damage",
+    "Ventilation and installed shading controls operate"
+  ],
+  "den": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Floor transitions and room openings match the approved layout",
+    "Specified ceiling features, lighting positions, and fitted joinery are complete"
+  ],
+  "library": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Bookcases, shelf supports, and end panels are securely installed",
+    "Aisles and access to upper storage are clear"
+  ],
+  "home_office": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Desk-area power and data points match the approved layout",
+    "Installed desk, shelving, and cable-management fittings are secure"
+  ],
+  "study": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Study shelving and work surfaces are securely installed",
+    "Task lighting and specified data points are complete"
+  ],
+  "playroom": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Accessible built-ins and play fittings have no loose or sharp edges",
+    "Storage units and protective floor finishes are complete"
+  ],
+  "game_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Equipment locations and associated power points match the plan",
+    "Installed game-room storage and fixtures are secure"
+  ],
+  "media_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Media power, data, and cable outlets are identified and finished",
+    "Installed media cabinets and wall mounts are secure"
+  ],
+  "home_theater": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Installed seating, screen supports, and acoustic finishes are secure",
+    "Record the audio-visual installer demonstration and unresolved issues"
+  ],
+  "music_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Acoustic panels and instrument-storage fittings are secure",
+    "Specified power and audio connection plates are installed"
+  ],
+  "craft_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Craft worktops and storage are secure and finished",
+    "Specified sink, task lighting, and extraction fittings are complete"
+  ],
+  "hobby_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Hobby work surfaces and storage fittings are complete",
+    "Specified service connections are identified and finished"
+  ],
+  "home_gym": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Installed equipment supports and floor finishes are complete",
+    "Record supplied equipment installation and handover details"
+  ],
+  "yoga_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Floor finish is continuous and free of raised edges",
+    "Installed mirrors and storage are securely fixed"
+  ],
+  "prayer_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Built-in storage and specified room fittings are complete",
+    "Floor finish and any designated washing-area transition are finished"
+  ],
+  "guest_lounge": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Guest seating-area lighting and fitted storage are complete",
+    "Installed service points and shared access hardware match the plan"
+  ],
+  "bedroom": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, windows, and installed hardware operate correctly",
+    "Lights, switches, and accessible outlets are complete and visibly undamaged",
+    "Ventilation openings are installed and unobstructed",
+    "Installed storage, accessories, and trim are secure and finished",
+    "Closet doors, shelves, and hanging rails are secure and operate correctly",
+    "Window hardware and any designated escape opening are accessible"
+  ],
+  "primary_bedroom": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, windows, and installed hardware operate correctly",
+    "Lights, switches, and accessible outlets are complete and visibly undamaged",
+    "Ventilation openings are installed and unobstructed",
+    "Installed storage, accessories, and trim are secure and finished",
+    "Primary closet and any connecting bathroom access match the plan",
+    "Bed-area lighting and bedside outlets match the approved layout"
+  ],
+  "guest_bedroom": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, windows, and installed hardware operate correctly",
+    "Lights, switches, and accessible outlets are complete and visibly undamaged",
+    "Ventilation openings are installed and unobstructed",
+    "Installed storage, accessories, and trim are secure and finished",
+    "Guest storage and window coverings are complete where specified",
+    "Guest-room locks and connecting doors operate correctly"
+  ],
+  "childrens_bedroom": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, windows, and installed hardware operate correctly",
+    "Lights, switches, and accessible outlets are complete and visibly undamaged",
+    "Ventilation openings are installed and unobstructed",
+    "Installed storage, accessories, and trim are secure and finished",
+    "Accessible trim, fittings, and built-ins have no sharp or loose edges",
+    "Window hardware and installed restrictors are complete where specified"
+  ],
+  "nursery": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, windows, and installed hardware operate correctly",
+    "Lights, switches, and accessible outlets are complete and visibly undamaged",
+    "Ventilation openings are installed and unobstructed",
+    "Installed storage, accessories, and trim are secure and finished",
+    "Built-in storage and accessible fittings are securely fixed",
+    "Window coverings and their installed operating hardware are complete"
+  ],
+  "bunk_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, windows, and installed hardware operate correctly",
+    "Lights, switches, and accessible outlets are complete and visibly undamaged",
+    "Ventilation openings are installed and unobstructed",
+    "Installed storage, accessories, and trim are secure and finished",
+    "Built-in bunks, ladders, and guards are securely fixed where supplied",
+    "Access around each installed bunk is clear"
+  ],
+  "bathroom": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, windows, and installed hardware operate correctly",
+    "Lights, switches, and accessible outlets are complete and visibly undamaged",
+    "Ventilation openings are installed and unobstructed",
+    "Installed storage, accessories, and trim are secure and finished",
+    "Sink, toilet, bath, and shower fixtures operate during normal use",
+    "Visible supply and waste connections show no leaks",
+    "Wet-area joints, grout, and sealant are complete",
+    "Extract fan and installed bathroom accessories are complete"
+  ],
+  "primary_bathroom": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, windows, and installed hardware operate correctly",
+    "Lights, switches, and accessible outlets are complete and visibly undamaged",
+    "Ventilation openings are installed and unobstructed",
+    "Installed storage, accessories, and trim are secure and finished",
+    "Vanities, mirrors, and accessories match the approved layout",
+    "Bath, shower, and toilet fixtures have no visible leaks during normal use"
+  ],
+  "guest_bathroom": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, windows, and installed hardware operate correctly",
+    "Lights, switches, and accessible outlets are complete and visibly undamaged",
+    "Ventilation openings are installed and unobstructed",
+    "Installed storage, accessories, and trim are secure and finished",
+    "Guest bathroom fittings and accessories are complete",
+    "All installed sanitary fixtures operate without visible leakage"
+  ],
+  "powder_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, windows, and installed hardware operate correctly",
+    "Lights, switches, and accessible outlets are complete and visibly undamaged",
+    "Ventilation openings are installed and unobstructed",
+    "Installed storage, accessories, and trim are secure and finished",
+    "Toilet and hand basin operate with no visible leaks",
+    "Basin seals, mirror, and accessories are finished"
+  ],
+  "shower_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, windows, and installed hardware operate correctly",
+    "Lights, switches, and accessible outlets are complete and visibly undamaged",
+    "Ventilation openings are installed and unobstructed",
+    "Installed storage, accessories, and trim are secure and finished",
+    "Shower screen, door, and fittings are secure",
+    "Shower drains during normal use without visible leakage beyond the wet area"
+  ],
+  "wet_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, windows, and installed hardware operate correctly",
+    "Lights, switches, and accessible outlets are complete and visibly undamaged",
+    "Ventilation openings are installed and unobstructed",
+    "Installed storage, accessories, and trim are secure and finished",
+    "Wet-room drains are clear and drain during normal use",
+    "Floor transitions and visible waterproofing finish details are complete"
+  ],
+  "toilet_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, windows, and installed hardware operate correctly",
+    "Lights, switches, and accessible outlets are complete and visibly undamaged",
+    "Ventilation openings are installed and unobstructed",
+    "Installed storage, accessories, and trim are secure and finished",
+    "Toilet flush, seat, and visible supply connections are complete",
+    "Handwashing facilities are complete where shown on the plan"
+  ],
+  "dressing_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, windows, and installed hardware operate correctly",
+    "Lights, switches, and accessible outlets are complete and visibly undamaged",
+    "Ventilation openings are installed and unobstructed",
+    "Installed storage, accessories, and trim are secure and finished",
+    "Mirrors, drawers, and dressing-room fittings are secure",
+    "Storage compartments and lighting match the approved layout"
+  ],
+  "walk_in_closet": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, windows, and installed hardware operate correctly",
+    "Lights, switches, and accessible outlets are complete and visibly undamaged",
+    "Ventilation openings are installed and unobstructed",
+    "Installed storage, accessories, and trim are secure and finished",
+    "Hanging rails, shelving, and drawer units are secure",
+    "Closet lighting and access around storage are complete"
+  ],
+  "linen_closet": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, windows, and installed hardware operate correctly",
+    "Lights, switches, and accessible outlets are complete and visibly undamaged",
+    "Ventilation openings are installed and unobstructed",
+    "Installed storage, accessories, and trim are secure and finished",
+    "Linen shelves are secure, smooth, and clean",
+    "Closet door and any ventilation opening are complete"
+  ],
+  "sauna": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, windows, and installed hardware operate correctly",
+    "Lights, switches, and accessible outlets are complete and visibly undamaged",
+    "Ventilation openings are installed and unobstructed",
+    "Installed storage, accessories, and trim are secure and finished",
+    "Benches, lining, door hardware, and visible heater guards are complete",
+    "Record the sauna installer handover and operating-control demonstration"
+  ],
+  "steam_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, windows, and installed hardware operate correctly",
+    "Lights, switches, and accessible outlets are complete and visibly undamaged",
+    "Ventilation openings are installed and unobstructed",
+    "Installed storage, accessories, and trim are secure and finished",
+    "Benches, glazed doors, seals, and drainage finishes are complete",
+    "Record the steam-system installer handover and commissioning report"
+  ],
+  "entry_foyer": [
+    "Walking surfaces are complete and free of trip hazards",
+    "Doors, thresholds, and access hardware operate as intended",
+    "Lighting and installed wayfinding are complete",
+    "Handrails, guards, and edge protection are present where shown on the approved plan",
+    "Routes and access points are free of stored materials and construction debris",
+    "Entry door seals, locks, and threshold are finished",
+    "Entry mat recess and adjoining floor transitions are flush and complete"
+  ],
+  "vestibule": [
+    "Walking surfaces are complete and free of trip hazards",
+    "Doors, thresholds, and access hardware operate as intended",
+    "Lighting and installed wayfinding are complete",
+    "Handrails, guards, and edge protection are present where shown on the approved plan",
+    "Routes and access points are free of stored materials and construction debris",
+    "Inner and outer door sets open and close without interference",
+    "Door seals and floor transitions are complete"
+  ],
+  "hallway": [
+    "Walking surfaces are complete and free of trip hazards",
+    "Doors, thresholds, and access hardware operate as intended",
+    "Lighting and installed wayfinding are complete",
+    "Handrails, guards, and edge protection are present where shown on the approved plan",
+    "Routes and access points are free of stored materials and construction debris",
+    "Wall projections and service covers are flush and finished",
+    "Connecting door swings do not obstruct the planned route"
+  ],
+  "corridor": [
+    "Walking surfaces are complete and free of trip hazards",
+    "Doors, thresholds, and access hardware operate as intended",
+    "Lighting and installed wayfinding are complete",
+    "Handrails, guards, and edge protection are present where shown on the approved plan",
+    "Routes and access points are free of stored materials and construction debris",
+    "Corridor signage and door identification match the plan",
+    "Installed wall protection and service access covers are finished"
+  ],
+  "landing": [
+    "Walking surfaces are complete and free of trip hazards",
+    "Doors, thresholds, and access hardware operate as intended",
+    "Lighting and installed wayfinding are complete",
+    "Handrails, guards, and edge protection are present where shown on the approved plan",
+    "Routes and access points are free of stored materials and construction debris",
+    "Stair-to-landing floor transitions are complete",
+    "Landing guards and adjacent door swings match the plan"
+  ],
+  "staircase": [
+    "Walking surfaces are complete and free of trip hazards",
+    "Doors, thresholds, and access hardware operate as intended",
+    "Lighting and installed wayfinding are complete",
+    "Handrails, guards, and edge protection are present where shown on the approved plan",
+    "Routes and access points are free of stored materials and construction debris",
+    "Treads, risers, nosings, and visible fixings are complete",
+    "Handrails and balustrade fittings are securely installed"
+  ],
+  "stairwell": [
+    "Walking surfaces are complete and free of trip hazards",
+    "Doors, thresholds, and access hardware operate as intended",
+    "Lighting and installed wayfinding are complete",
+    "Handrails, guards, and edge protection are present where shown on the approved plan",
+    "Routes and access points are free of stored materials and construction debris",
+    "Stairwell doors and installed closing hardware operate",
+    "Stairwell lighting and visible guard fixings are complete"
+  ],
+  "elevator_lobby": [
+    "Walking surfaces are complete and free of trip hazards",
+    "Doors, thresholds, and access hardware operate as intended",
+    "Lighting and installed wayfinding are complete",
+    "Handrails, guards, and edge protection are present where shown on the approved plan",
+    "Routes and access points are free of stored materials and construction debris",
+    "Landing door surrounds and call-button plates are complete",
+    "Record elevator handover status from the responsible specialist"
+  ],
+  "elevator_shaft": [
+    "Walking surfaces are complete and free of trip hazards",
+    "Doors, thresholds, and access hardware operate as intended",
+    "Lighting and installed wayfinding are complete",
+    "Handrails, guards, and edge protection are present where shown on the approved plan",
+    "Routes and access points are free of stored materials and construction debris",
+    "Record specialist shaft inspection and elevator commissioning status",
+    "Shaft access doors and visible exclusion controls are complete; assess from authorized accessible areas"
+  ],
+  "mudroom": [
+    "Walking surfaces are complete and free of trip hazards",
+    "Doors, thresholds, and access hardware operate as intended",
+    "Lighting and installed wayfinding are complete",
+    "Handrails, guards, and edge protection are present where shown on the approved plan",
+    "Routes and access points are free of stored materials and construction debris",
+    "Boot storage, hooks, and any bench are securely installed",
+    "Entry seals and floor finishes are complete"
+  ],
+  "breezeway": [
+    "Walking surfaces are complete and free of trip hazards",
+    "Doors, thresholds, and access hardware operate as intended",
+    "Lighting and installed wayfinding are complete",
+    "Handrails, guards, and edge protection are present where shown on the approved plan",
+    "Routes and access points are free of stored materials and construction debris",
+    "Roof-to-wall junctions and visible weather seals are finished",
+    "Openings and floor transitions are free of debris"
+  ],
+  "accessibility_ramp": [
+    "Walking surfaces are complete and free of trip hazards",
+    "Doors, thresholds, and access hardware operate as intended",
+    "Lighting and installed wayfinding are complete",
+    "Handrails, guards, and edge protection are present where shown on the approved plan",
+    "Routes and access points are free of stored materials and construction debris",
+    "Ramp surface transitions and landings match the approved plan",
+    "Installed handrails and edge protection are secure"
+  ],
+  "laundry": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Washer connections and accessible valves are complete and show no visible leaks",
+    "Dryer vent termination and laundry extraction are complete where specified"
+  ],
+  "utility_room": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Utility sink and visible plumbing connections are complete",
+    "Installed appliance service points are identified and accessible"
+  ],
+  "pantry": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Food-storage shelving and worktops are smooth and finished",
+    "Pantry door and ventilation openings are complete"
+  ],
+  "walk_in_pantry": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Shelving, counters, and appliance niches match the plan",
+    "Access around shelves and installed appliances is clear"
+  ],
+  "butlers_pantry": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Cabinetry and countertop joints are finished",
+    "Sink and supplied appliance connections show no visible leaks"
+  ],
+  "scullery": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Wash-up fixtures and work surfaces are complete",
+    "Accessible supply and waste connections show no visible leaks"
+  ],
+  "storage_room": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Storage racks and specified load-identification labels are complete",
+    "Access to all installed storage bays is clear"
+  ],
+  "closet": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Closet shelves, hanging rails, and brackets are secure",
+    "Closet doors and installed lighting operate correctly"
+  ],
+  "coat_closet": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Coat hooks, hanging rails, and shelves are secure",
+    "Closet door clears stored-coat fittings"
+  ],
+  "under_stair_storage": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Under-stair doors and any pull-out storage operate freely",
+    "Accessible stair-enclosure lining and storage finishes are complete"
+  ],
+  "attic": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Access hatch, ladder, and visible guards are complete where supplied",
+    "Record visible insulation gaps or moisture from accessible areas"
+  ],
+  "basement": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Accessible basement surfaces show no visible water ingress",
+    "Installed sump or drainage equipment has handover records where specified"
+  ],
+  "crawl_space": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Access hatch and visible ground-cover edges are complete",
+    "Record visible moisture, standing water, or damaged supports from accessible areas"
+  ],
+  "wine_cellar": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Wine racks and bottle-storage fittings are securely installed",
+    "Record cellar temperature-control equipment handover where supplied"
+  ],
+  "cold_storage": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Insulated doors, seals, and visible lining joints are finished",
+    "Record refrigeration commissioning and temperature display demonstration"
+  ],
+  "safe_room": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Door, lock, and visible enclosure fittings match the approved specification",
+    "Record installer handover and outstanding enclosure defects"
+  ],
+  "storm_shelter": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Shelter door, visible anchorage details, and ventilation openings are complete",
+    "Record the responsible specialist inspection and handover documentation"
+  ],
+  "workshop": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Workbenches, fixed storage, and tool-mount supports are secure",
+    "Specified extraction fittings and service points are complete"
+  ],
+  "garage": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Garage door, visible tracks, and controls have installer handover records",
+    "Garage floor, door seals, and visible wall junctions are complete"
+  ],
+  "carport": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Visible roof supports, fixings, and rainwater goods are complete",
+    "Vehicle clearance and parking layout match the plan"
+  ],
+  "bicycle_storage": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Bicycle racks and wall mounts are securely installed",
+    "Access and maneuvering space around installed racks are clear"
+  ],
+  "refuse_room": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Refuse storage surfaces and visible drainage details are complete",
+    "Refuse doors, ventilation openings, and washdown points are installed"
+  ],
+  "janitor_closet": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Mop sink and visible service connections are complete",
+    "Cleaning-equipment shelving and door hardware are secure"
+  ],
+  "package_room": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Parcel lockers or shelving are securely installed and identified",
+    "Installed access-control hardware has handover records"
+  ],
+  "mechanical_room": [
+    "Equipment identification and service labels are installed and readable",
+    "Visible equipment supports, enclosures, and covers are complete and undamaged",
+    "Access doors and service routes are clear",
+    "Visible pipes, cables, and penetrations are supported and finished",
+    "Record the responsible specialist commissioning or inspection report and outstanding issues",
+    "Visible pipe insulation, equipment labels, and drip trays are complete",
+    "Record mechanical-system commissioning and outstanding defects"
+  ],
+  "electrical_room": [
+    "Equipment identification and service labels are installed and readable",
+    "Visible equipment supports, enclosures, and covers are complete and undamaged",
+    "Access doors and service routes are clear",
+    "Visible pipes, cables, and penetrations are supported and finished",
+    "Record the responsible specialist commissioning or inspection report and outstanding issues",
+    "Electrical enclosures and labels are visibly complete; do not open energized equipment",
+    "Record the qualified electrician inspection and commissioning report"
+  ],
+  "hvac_closet": [
+    "Equipment identification and service labels are installed and readable",
+    "Visible equipment supports, enclosures, and covers are complete and undamaged",
+    "Access doors and service routes are clear",
+    "Visible pipes, cables, and penetrations are supported and finished",
+    "Record the responsible specialist commissioning or inspection report and outstanding issues",
+    "Air-handler enclosure, filter access, and visible condensate routing are complete",
+    "Record HVAC commissioning and filter handover details"
+  ],
+  "air_handler_room": [
+    "Equipment identification and service labels are installed and readable",
+    "Visible equipment supports, enclosures, and covers are complete and undamaged",
+    "Access doors and service routes are clear",
+    "Visible pipes, cables, and penetrations are supported and finished",
+    "Record the responsible specialist commissioning or inspection report and outstanding issues",
+    "Visible duct joints, filter access, and condensate fittings are complete",
+    "Record air-handler commissioning and balancing report status"
+  ],
+  "boiler_room": [
+    "Equipment identification and service labels are installed and readable",
+    "Visible equipment supports, enclosures, and covers are complete and undamaged",
+    "Access doors and service routes are clear",
+    "Visible pipes, cables, and penetrations are supported and finished",
+    "Record the responsible specialist commissioning or inspection report and outstanding issues",
+    "Visible boiler casing, pipe labels, and insulation are complete",
+    "Record boiler commissioning and specialist inspection status"
+  ],
+  "water_heater_closet": [
+    "Equipment identification and service labels are installed and readable",
+    "Visible equipment supports, enclosures, and covers are complete and undamaged",
+    "Access doors and service routes are clear",
+    "Visible pipes, cables, and penetrations are supported and finished",
+    "Record the responsible specialist commissioning or inspection report and outstanding issues",
+    "Visible heater connections, labeling, and drain-pan fittings are complete",
+    "Record water-heater commissioning and handover status"
+  ],
+  "pump_room": [
+    "Equipment identification and service labels are installed and readable",
+    "Visible equipment supports, enclosures, and covers are complete and undamaged",
+    "Access doors and service routes are clear",
+    "Visible pipes, cables, and penetrations are supported and finished",
+    "Record the responsible specialist commissioning or inspection report and outstanding issues",
+    "Visible pump mounts, pipe labels, and guards are complete",
+    "Record pump-system commissioning and operating demonstration"
+  ],
+  "fire_sprinkler_room": [
+    "Equipment identification and service labels are installed and readable",
+    "Visible equipment supports, enclosures, and covers are complete and undamaged",
+    "Access doors and service routes are clear",
+    "Visible pipes, cables, and penetrations are supported and finished",
+    "Record the responsible specialist commissioning or inspection report and outstanding issues",
+    "Visible valve identification, pipe labels, and access provisions are complete",
+    "Record fire-protection specialist inspection and acceptance-test status"
+  ],
+  "communications_room": [
+    "Equipment identification and service labels are installed and readable",
+    "Visible equipment supports, enclosures, and covers are complete and undamaged",
+    "Access doors and service routes are clear",
+    "Visible pipes, cables, and penetrations are supported and finished",
+    "Record the responsible specialist commissioning or inspection report and outstanding issues",
+    "Data racks, cable labels, and cable-management fittings are complete",
+    "Record communications-system test and handover report status"
+  ],
+  "server_room": [
+    "Equipment identification and service labels are installed and readable",
+    "Visible equipment supports, enclosures, and covers are complete and undamaged",
+    "Access doors and service routes are clear",
+    "Visible pipes, cables, and penetrations are supported and finished",
+    "Record the responsible specialist commissioning or inspection report and outstanding issues",
+    "Installed rack fixings, cable routes, and access hardware are complete",
+    "Record cooling and supplied IT-infrastructure commissioning status"
+  ],
+  "solar_equipment_area": [
+    "Equipment identification and service labels are installed and readable",
+    "Visible equipment supports, enclosures, and covers are complete and undamaged",
+    "Access doors and service routes are clear",
+    "Visible pipes, cables, and penetrations are supported and finished",
+    "Record the responsible specialist commissioning or inspection report and outstanding issues",
+    "Visible solar equipment enclosures and identification labels are complete",
+    "Record solar installer commissioning and handover documentation"
+  ],
+  "battery_storage_room": [
+    "Equipment identification and service labels are installed and readable",
+    "Visible equipment supports, enclosures, and covers are complete and undamaged",
+    "Access doors and service routes are clear",
+    "Visible pipes, cables, and penetrations are supported and finished",
+    "Record the responsible specialist commissioning or inspection report and outstanding issues",
+    "Visible battery enclosures, labels, and access controls are complete",
+    "Record battery-system installer commissioning and handover status"
+  ],
+  "generator_room": [
+    "Equipment identification and service labels are installed and readable",
+    "Visible equipment supports, enclosures, and covers are complete and undamaged",
+    "Access doors and service routes are clear",
+    "Visible pipes, cables, and penetrations are supported and finished",
+    "Record the responsible specialist commissioning or inspection report and outstanding issues",
+    "Visible generator enclosure, supports, and identification labels are complete",
+    "Record generator installer testing and handover status"
+  ],
+  "meter_room": [
+    "Equipment identification and service labels are installed and readable",
+    "Visible equipment supports, enclosures, and covers are complete and undamaged",
+    "Access doors and service routes are clear",
+    "Visible pipes, cables, and penetrations are supported and finished",
+    "Record the responsible specialist commissioning or inspection report and outstanding issues",
+    "Meter labels and visible service covers are complete",
+    "Record provider installation or connection status for each supplied meter"
+  ],
+  "service_shaft": [
+    "Equipment identification and service labels are installed and readable",
+    "Visible equipment supports, enclosures, and covers are complete and undamaged",
+    "Access doors and service routes are clear",
+    "Visible pipes, cables, and penetrations are supported and finished",
+    "Record the responsible specialist commissioning or inspection report and outstanding issues",
+    "Accessible service-shaft doors and visible penetration finishes are complete",
+    "Record concealed-services inspection evidence supplied by the responsible specialist"
+  ],
+  "exterior": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Visible cladding, exterior trim, and penetration seals are complete",
+    "External doors, windows, and rainwater goods show no unresolved visible defects"
+  ],
+  "patio": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Surface joints, thresholds, and adjoining weather seals are complete",
+    "Visible railing, screen, or perimeter fittings are secure where supplied"
+  ],
+  "porch": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Surface joints, thresholds, and adjoining weather seals are complete",
+    "Visible railing, screen, or perimeter fittings are secure where supplied"
+  ],
+  "front_porch": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Surface joints, thresholds, and adjoining weather seals are complete",
+    "Visible railing, screen, or perimeter fittings are secure where supplied"
+  ],
+  "rear_porch": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Surface joints, thresholds, and adjoining weather seals are complete",
+    "Visible railing, screen, or perimeter fittings are secure where supplied"
+  ],
+  "screened_porch": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Surface joints, thresholds, and adjoining weather seals are complete",
+    "Visible railing, screen, or perimeter fittings are secure where supplied"
+  ],
+  "deck": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Surface joints, thresholds, and adjoining weather seals are complete",
+    "Visible railing, screen, or perimeter fittings are secure where supplied"
+  ],
+  "balcony": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Surface joints, thresholds, and adjoining weather seals are complete",
+    "Visible railing, screen, or perimeter fittings are secure where supplied"
+  ],
+  "terrace": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Surface joints, thresholds, and adjoining weather seals are complete",
+    "Visible railing, screen, or perimeter fittings are secure where supplied"
+  ],
+  "roof_terrace": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Surface joints, thresholds, and adjoining weather seals are complete",
+    "Visible railing, screen, or perimeter fittings are secure where supplied"
+  ],
+  "courtyard": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Visible posts, overhead framing, and connection finishes are complete",
+    "Installed paving and adjoining landscape transitions are finished"
+  ],
+  "front_yard": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Planting, topsoil, and landscape edging match the approved layout",
+    "Visible irrigation fittings are complete where specified"
+  ],
+  "back_yard": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Planting, topsoil, and landscape edging match the approved layout",
+    "Visible irrigation fittings are complete where specified"
+  ],
+  "side_yard": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Planting, topsoil, and landscape edging match the approved layout",
+    "Visible irrigation fittings are complete where specified"
+  ],
+  "garden": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Planting, topsoil, and landscape edging match the approved layout",
+    "Visible irrigation fittings are complete where specified"
+  ],
+  "landscape_area": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Planting, topsoil, and landscape edging match the approved layout",
+    "Visible irrigation fittings are complete where specified"
+  ],
+  "driveway": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Paving joints and transitions are finished without visible displacement",
+    "Installed markings, bollards, and drainage fittings match the plan"
+  ],
+  "walkway": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Paving joints and transitions are finished without visible displacement",
+    "Installed markings, bollards, and drainage fittings match the plan"
+  ],
+  "sidewalk": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Paving joints and transitions are finished without visible displacement",
+    "Installed markings, bollards, and drainage fittings match the plan"
+  ],
+  "parking_area": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Paving joints and transitions are finished without visible displacement",
+    "Installed markings, bollards, and drainage fittings match the plan"
+  ],
+  "loading_area": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Paving joints and transitions are finished without visible displacement",
+    "Installed markings, bollards, and drainage fittings match the plan"
+  ],
+  "pool": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Visible pool lining, fittings, and edge finishes are complete",
+    "Record pool-system commissioning and barrier-inspection status"
+  ],
+  "pool_deck": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Surface joints, thresholds, and adjoining weather seals are complete",
+    "Visible railing, screen, or perimeter fittings are secure where supplied"
+  ],
+  "spa": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Visible spa lining, fittings, and access covers are complete",
+    "Record spa-system commissioning and operating-control demonstration"
+  ],
+  "outdoor_kitchen": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Outdoor cabinets, counters, and weather-exposed joints are finished",
+    "Record supplied appliance and utility-connection installer handover"
+  ],
+  "barbecue_area": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Barbecue supports, counters, and surrounding finishes are complete",
+    "Record supplied cooking-appliance installer handover"
+  ],
+  "pergola": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Visible posts, overhead framing, and connection finishes are complete",
+    "Installed paving and adjoining landscape transitions are finished"
+  ],
+  "gazebo": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Visible posts, overhead framing, and connection finishes are complete",
+    "Installed paving and adjoining landscape transitions are finished"
+  ],
+  "shed": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Shed roof, cladding, and visible fixings are complete",
+    "Shed door locks and floor finishes are complete"
+  ],
+  "greenhouse": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Greenhouse glazing, frames, and visible seals are complete",
+    "Doors, ventilation openings, and supplied controls operate"
+  ],
+  "playground": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Visible play-equipment fixings and protective surfaces are complete",
+    "Record playground installer inspection and equipment handover"
+  ],
+  "pet_area": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Pet-area fencing, gates, and installed fixtures are complete",
+    "Visible drainage and washable surfaces are clear and finished"
+  ],
+  "retaining_wall_area": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Visible wall faces, joints, and drainage outlets are complete",
+    "Record retaining-wall specialist inspection status where specified"
+  ],
+  "fence_and_gate_area": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Fence panels, posts, and visible fixings are complete",
+    "Gate hinges, latches, and supplied controls operate as demonstrated"
+  ],
+  "drainage_area": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Visible drainage inlets, channels, and outlets are clear",
+    "Record drainage installation testing or specialist inspection status"
+  ],
+  "septic_area": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Visible access covers and location identification are complete",
+    "Record septic installer commissioning and inspection documentation"
+  ],
+  "well_house": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Visible well equipment enclosure and access fittings are complete",
+    "Record well-system commissioning and handover documentation"
+  ],
+  "dock": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Visible dock surfaces, edge fittings, and access connections are complete",
+    "Record dock installer or specialist inspection and handover status"
+  ],
+  "roof": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Record visible roof covering and rainwater-goods defects from accessible inspection points",
+    "Record roofing installer completion and any specialist inspection evidence"
+  ],
+  "foundation_perimeter": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Visible perimeter surfaces and penetrations show no unresolved damage",
+    "Drainage and finished-ground transitions match the approved details"
+  ],
+  "reception": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, access hardware, and installed signage are complete",
+    "Lighting and accessible electrical fixtures are complete and visibly undamaged",
+    "Installed furniture, storage, and fixed equipment are secure and finished",
+    "Circulation and service access are clear of construction debris",
+    "Built-in counters, workstations, or shared storage match the approved layout",
+    "Specified data, access-control, and communication points are complete"
+  ],
+  "lobby": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, access hardware, and installed signage are complete",
+    "Lighting and accessible electrical fixtures are complete and visibly undamaged",
+    "Installed furniture, storage, and fixed equipment are secure and finished",
+    "Circulation and service access are clear of construction debris",
+    "Built-in counters, workstations, or shared storage match the approved layout",
+    "Specified data, access-control, and communication points are complete"
+  ],
+  "mail_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, access hardware, and installed signage are complete",
+    "Lighting and accessible electrical fixtures are complete and visibly undamaged",
+    "Installed furniture, storage, and fixed equipment are secure and finished",
+    "Circulation and service access are clear of construction debris",
+    "Built-in counters, workstations, or shared storage match the approved layout",
+    "Specified data, access-control, and communication points are complete"
+  ],
+  "community_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, access hardware, and installed signage are complete",
+    "Lighting and accessible electrical fixtures are complete and visibly undamaged",
+    "Installed furniture, storage, and fixed equipment are secure and finished",
+    "Circulation and service access are clear of construction debris",
+    "Built-in counters, workstations, or shared storage match the approved layout",
+    "Specified data, access-control, and communication points are complete"
+  ],
+  "meeting_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, access hardware, and installed signage are complete",
+    "Lighting and accessible electrical fixtures are complete and visibly undamaged",
+    "Installed furniture, storage, and fixed equipment are secure and finished",
+    "Circulation and service access are clear of construction debris",
+    "Built-in counters, workstations, or shared storage match the approved layout",
+    "Specified data, access-control, and communication points are complete"
+  ],
+  "coworking_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, access hardware, and installed signage are complete",
+    "Lighting and accessible electrical fixtures are complete and visibly undamaged",
+    "Installed furniture, storage, and fixed equipment are secure and finished",
+    "Circulation and service access are clear of construction debris",
+    "Built-in counters, workstations, or shared storage match the approved layout",
+    "Specified data, access-control, and communication points are complete"
+  ],
+  "fitness_center": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, access hardware, and installed signage are complete",
+    "Lighting and accessible electrical fixtures are complete and visibly undamaged",
+    "Installed furniture, storage, and fixed equipment are secure and finished",
+    "Circulation and service access are clear of construction debris",
+    "Installed equipment supports and mirrors are secure",
+    "Record supplied fitness-equipment installation and handover status"
+  ],
+  "locker_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, access hardware, and installed signage are complete",
+    "Lighting and accessible electrical fixtures are complete and visibly undamaged",
+    "Installed furniture, storage, and fixed equipment are secure and finished",
+    "Circulation and service access are clear of construction debris",
+    "Locker doors, locks, benches, and visible fixings are complete",
+    "Wet-area finishes and drains are complete where supplied"
+  ],
+  "shared_restroom": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, access hardware, and installed signage are complete",
+    "Lighting and accessible electrical fixtures are complete and visibly undamaged",
+    "Installed furniture, storage, and fixed equipment are secure and finished",
+    "Circulation and service access are clear of construction debris",
+    "Sanitary fixtures operate without visible supply or waste leaks",
+    "Cubicle doors, locks, accessories, and extraction fittings are complete"
+  ],
+  "shared_kitchen": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, access hardware, and installed signage are complete",
+    "Lighting and accessible electrical fixtures are complete and visibly undamaged",
+    "Installed furniture, storage, and fixed equipment are secure and finished",
+    "Circulation and service access are clear of construction debris",
+    "Shared cabinetry, counters, and sink seals are finished",
+    "Accessible appliance and plumbing connections have no visible defects"
+  ],
+  "security_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, access hardware, and installed signage are complete",
+    "Lighting and accessible electrical fixtures are complete and visibly undamaged",
+    "Installed furniture, storage, and fixed equipment are secure and finished",
+    "Circulation and service access are clear of construction debris",
+    "Security console, access-control fittings, and cable outlets are complete",
+    "Record supplied security-system test and handover status"
+  ],
+  "management_office": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, access hardware, and installed signage are complete",
+    "Lighting and accessible electrical fixtures are complete and visibly undamaged",
+    "Installed furniture, storage, and fixed equipment are secure and finished",
+    "Circulation and service access are clear of construction debris",
+    "Built-in counters, workstations, or shared storage match the approved layout",
+    "Specified data, access-control, and communication points are complete"
+  ],
+  "maintenance_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, access hardware, and installed signage are complete",
+    "Lighting and accessible electrical fixtures are complete and visibly undamaged",
+    "Installed furniture, storage, and fixed equipment are secure and finished",
+    "Circulation and service access are clear of construction debris",
+    "Maintenance worktops, racks, and fixed storage are secure",
+    "Specified service points and equipment access are complete"
+  ],
+  "leasing_office": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, access hardware, and installed signage are complete",
+    "Lighting and accessible electrical fixtures are complete and visibly undamaged",
+    "Installed furniture, storage, and fixed equipment are secure and finished",
+    "Circulation and service access are clear of construction debris",
+    "Built-in counters, workstations, or shared storage match the approved layout",
+    "Specified data, access-control, and communication points are complete"
+  ],
+  "retail_unit": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, access hardware, and installed signage are complete",
+    "Lighting and accessible electrical fixtures are complete and visibly undamaged",
+    "Installed furniture, storage, and fixed equipment are secure and finished",
+    "Circulation and service access are clear of construction debris",
+    "Shopfront, entry hardware, and visible fit-out finishes match the plan",
+    "Meter identification and tenant service handover information are complete"
+  ],
+  "guest_suite": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, access hardware, and installed signage are complete",
+    "Lighting and accessible electrical fixtures are complete and visibly undamaged",
+    "Installed furniture, storage, and fixed equipment are secure and finished",
+    "Circulation and service access are clear of construction debris",
+    "Sleeping, storage, and kitchenette fittings match the approved layout",
+    "Supplied bathroom fixtures operate without visible leaks"
+  ],
+  "other": [
+    "Space name, intended use, and approved layout are recorded",
+    "Visible surfaces, fixtures, and installed finishes are complete",
+    "Doors and access points operate correctly",
+    "Accessible services and lighting are complete and visibly undamaged",
+    "Space is clear of construction debris and outstanding defects are recorded",
+    "Any items specific to this space use are recorded on the plan or property checklist"
+  ]
+}$catalog$::jsonb;
+ creator uuid; space record; template uuid; ver uuid; item text; position integer;
+ created_templates integer:=0; created_versions integer:=0;
+begin
+ perform 1 from public.organizations where id=target_org and status='active' for update;
+ if not found then return; end if;
+ select a.user_id into creator
+ from public.role_assignments a
+ join public.organization_memberships m on m.organization_id=a.organization_id and m.user_id=a.user_id
+ join public.role_permissions rp on rp.role_code=a.role_code and rp.permission_code='config.manage'
+ where a.organization_id=target_org and a.scope_kind='organization'
+  and a.revoked_at is null and a.starts_at<=now() and (a.ends_at is null or a.ends_at>now())
+  and m.status='active' and private.role_grant_enabled(a)
+ order by (a.role_code='org_admin') desc,a.user_id limit 1;
+ if creator is null then raise exception 'No active organization checklist administrator is available for category ownership'; end if;
+ for space in select code,label from public.space_types where active order by code loop
+  if not catalog ? space.code then raise exception 'Missing starter checklist content for active space type %',space.code; end if;
+  select t.id into template from public.checklist_templates t
+   where t.organization_id=target_org and t.active and t.snapshot_home_id is null and lower(trim(t.name))=lower(trim(space.label))
+   order by t.created_at,t.id limit 1;
+  if template is null then
+   insert into public.checklist_templates(organization_id,name) values(target_org,space.label) returning id into template;
+   created_templates:=created_templates+1;
+  end if;
+  if exists(select 1 from public.checklist_versions where organization_id=target_org and template_id=template and published_at is not null) then continue; end if;
+  insert into public.checklist_versions(organization_id,template_id,number,created_by)
+   select target_org,template,coalesce(max(number),0)+1,creator from public.checklist_versions where organization_id=target_org and template_id=template returning id into ver;
+  position:=0;
+  for item in select jsonb_array_elements_text(catalog->space.code) loop
+   if length(trim(item)) not between 2 and 1000 then raise exception 'Invalid starter item for %',space.code; end if;
+   position:=position+1;
+   insert into public.checklist_questions(organization_id,version_id,ordinal,section,label,requires_response)
+    values(target_org,ver,position,space.label,item,true);
+  end loop;
+  if position=0 then raise exception 'Cannot publish empty checklist for %',space.code; end if;
+  update public.checklist_versions set published_at=now() where id=ver;
+  created_versions:=created_versions+1;
+ end loop;
+ if created_templates>0 or created_versions>0 then
+  perform private.append_audit(target_org,null,'checklist.space_catalog_seeded','organization',target_org,null,null,
+   jsonb_build_object('categories_created',created_templates,'versions_published',created_versions),
+   jsonb_build_object('source','migration_060','starter_content',true,'version_owner',creator));
+ end if;
+end; $seed$;
+commit;

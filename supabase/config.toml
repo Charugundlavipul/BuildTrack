@@ -13,7 +13,7 @@ shadow_port = 54320
 major_version = 17
 
 [db.seed]
-enabled = true
+enabled = false
 sql_paths = ["./seed.sql"]
 
 [studio]
@@ -49,18 +49,21 @@ enabled = true
 policy = "per_worker"
 
 [functions.command]
-verify_jwt = true
+verify_jwt = false
 [functions.request-upload]
-verify_jwt = true
+verify_jwt = false
 [functions.finalize-upload]
-verify_jwt = true
+verify_jwt = false
 [functions.request-download]
-verify_jwt = true
+verify_jwt = false
 [functions.invite-user]
-verify_jwt = true
+verify_jwt = false
 [functions.request-export]
-verify_jwt = true
+verify_jwt = false
 [functions.dispatch-notifications]
 verify_jwt = false
 [functions.scheduled-cleanup]
+verify_jwt = false
+
+[functions.platform-invite]
 verify_jwt = false

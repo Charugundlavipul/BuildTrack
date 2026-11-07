@@ -24,7 +24,7 @@ export default defineConfig({
     tailwindcss(),
     VitePWA({
       registerType: 'prompt',
-      includeAssets: ['buildtrack-mark.svg', 'buildtrack-192.png', 'buildtrack-512.png'],
+      includeAssets: ['buildtrack-symbol-v2.png', 'buildtrack-favicon-v2.png', 'buildtrack-icon-v2-192.png', 'buildtrack-icon-v2-512.png', 'buildtrack-maskable-v2-512.png'],
       manifest: {
         name: 'BuildTrack',
         short_name: 'BuildTrack',
@@ -36,10 +36,9 @@ export default defineConfig({
         scope: '/',
         start_url: '/',
         icons: [
-          { src: '/buildtrack-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
-          { src: '/buildtrack-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
-          { src: '/buildtrack-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
-          { src: '/buildtrack-mark.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any maskable' }
+          { src: '/buildtrack-icon-v2-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+          { src: '/buildtrack-icon-v2-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+          { src: '/buildtrack-maskable-v2-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' }
         ]
       },
       workbox: {

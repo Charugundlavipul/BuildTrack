@@ -17,7 +17,7 @@ npm run dev
 
 Copy only the hosted Supabase URL and publishable key into `.env.local`. Never expose a database password, service-role key, Resend key, worker secret, or Cloudmersive key through a `VITE_` variable.
 
-The optional seed dataset uses the sample identities documented in the repository README. Apply destructive fixtures only to a verified disposable test project, never an active tenant.
+The optional seed dataset uses the sample identities documented in the repository README. Automatic seeding is disabled. Set the SQL session setting `buildtrack.dev_seed_password` to a private password of at least 12 characters before explicitly running the fixture script. Apply fixtures only to a verified disposable test project, never an active tenant. CI supplies a random fixture password to its local database without printing it.
 
 ## Required validation
 

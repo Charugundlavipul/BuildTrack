@@ -1,5 +1,6 @@
 import { authenticatedUser, errorResponse, handleOptions, json, serviceClient } from '../_shared/http.ts'
 import { csvCell } from '../_shared/files.ts'
+import { readExportRows } from '../_shared/query.ts'
 
 const headers = ['record_id','lot_code','address','title','priority','state','due_at_utc','due_at_local','assigned_party','created_at_utc','created_at_local','updated_at_utc','updated_at_local']
 
@@ -25,16 +26,14 @@ Deno.serve(async (request) => {
     if (jobError) throw jobError
     jobId = job.id
 
-    let query = client.from('work_item_list').select('*').eq('organization_id', body.organization_id).order('updated_at', { ascending: false })
+    let query = client.from('work_item_list').select('*').eq('organization_id', body.organization_id).order('updated_at', { ascending: false }).order('id')
     if (filters.state) query = query.eq('state', filters.state)
     if (filters.priority) query = query.eq('priority', filters.priority)
     if (filters.neighborhood_id) query = query.eq('neighborhood_id', filters.neighborhood_id)
     if (filters.home_id) query = query.eq('home_id', filters.home_id)
     if (filters.date_from) query = query.gte('created_at', `${filters.date_from}T00:00:00.000Z`)
     if (filters.date_to) query = query.lt('created_at', new Date(new Date(`${filters.date_to}T00:00:00.000Z`).getTime() + 86400000).toISOString())
-    const { data: rows, error: rowError } = await query.limit(10001)
-    if (rowError) throw rowError
-    if ((rows?.length ?? 0) > 10000) throw new Error('Export quota exceeded; narrow the report filters')
+    const rows = await readExportRows((from, to) => query.range(from, to))
     const { data: organization, error: organizationError } = await client.from('organizations').select('timezone').eq('id', body.organization_id).single()
     if (organizationError) throw organizationError
     const timezone = organization.timezone || 'UTC'
@@ -55,7 +54,8 @@ Deno.serve(async (request) => {
     const service = serviceClient()
     const { error: uploadError } = await service.storage.from('exports').upload(objectKey, new Blob([csv], { type: 'text/csv;charset=utf-8' }), { contentType: 'text/csv;charset=utf-8', upsert: false })
     if (uploadError) throw uploadError
-    await service.rpc('complete_export_job', { p_job_id: job.id, p_status: 'ready', p_object_key: objectKey, p_row_count: rows?.length ?? 0, p_error: null })
+    const { error: completionError } = await service.rpc('complete_export_job', { p_job_id: job.id, p_status: 'ready', p_object_key: objectKey, p_row_count: rows.length, p_error: null })
+    if (completionError) throw completionError
     const { data: signed, error: signedError } = await service.storage.from('exports').createSignedUrl(objectKey, 60, { download: 'buildtrack-work-items.csv' })
     if (signedError) throw signedError
     return json(request, { job_id: job.id, row_count: rows?.length ?? 0, url: signed.signedUrl, expires_in: 60 })

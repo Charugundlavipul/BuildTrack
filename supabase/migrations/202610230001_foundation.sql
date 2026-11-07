@@ -259,19 +259,6 @@ create table public.inspection_engagements (
   check (ends_at > starts_at)
 );
 
-create table public.work_categories (
-  id uuid primary key default gen_random_uuid(),
-  organization_id uuid not null references public.organizations(id) on delete restrict,
-  code text not null,
-  name text not null,
-  active boolean not null default true,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  version bigint not null default 1,
-  unique (organization_id, id),
-  unique (organization_id, code)
-);
-
 create table public.business_calendars (
   id uuid primary key default gen_random_uuid(),
   organization_id uuid not null references public.organizations(id) on delete restrict,

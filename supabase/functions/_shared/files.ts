@@ -18,7 +18,7 @@ export function detectMime(bytes: Uint8Array) {
 }
 
 export async function sha256Hex(bytes: Uint8Array) {
-  const digest = await crypto.subtle.digest('SHA-256', bytes)
+  const digest = await crypto.subtle.digest('SHA-256', Uint8Array.from(bytes))
   return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, '0')).join('')
 }
 
@@ -26,4 +26,11 @@ export function csvCell(value: unknown) {
   let text = value == null ? '' : String(value)
   if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`
   return `"${text.replaceAll('"', '""')}"`
+}
+
+export function isCleanScanResult(value: unknown) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const result = value as Record<string, unknown>
+  const unsafeFlags = ['ContainsExecutable', 'ContainsScript', 'ContainsInvalidFile', 'ContainsXmlExternalEntities', 'ContainsUnsafeArchive']
+  return result.CleanResult === true && unsafeFlags.every((key) => result[key] === undefined || result[key] === false)
 }

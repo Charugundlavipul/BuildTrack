@@ -1,13 +1,16 @@
 import { useState, type FormEvent } from 'react'
 import { Navigate, useNavigate, useSearchParams } from 'react-router-dom'
 import { ArrowRight, Building2, CheckCircle2, KeyRound, ShieldCheck } from 'lucide-react'
-import { LoadingState } from '../../components/Ui'
+import { ErrorState, LoadingState } from '../../components/Ui'
 import { supabase } from '../../lib/supabase'
 import { useAuth } from './AuthProvider'
+import { ProfileForm } from './ProfileDetails'
+import { profileComplete, useMyProfile } from './profileData'
 
 export function AcceptInvitePage() {
   const { loading, session, refreshOrganizations } = useAuth()
   const [params] = useSearchParams()
+  const profile = useMyProfile()
   const navigate = useNavigate()
   const token = params.get('token')
   const requiresPasswordSetup = params.get('setup') === '1'
@@ -48,7 +51,7 @@ export function AcceptInvitePage() {
       setAccepted(true)
       await refreshOrganizations()
       const organizationId = (data as { organization_id?: string })?.organization_id
-      setTimeout(() => navigate(organizationId ? `/org/${organizationId}` : '/organizations/select'), 800)
+      navigate(organizationId ? `/org/${organizationId}/account` : '/organizations/select', { replace: true })
     }
     setAccepting(false)
   }
@@ -57,8 +60,8 @@ export function AcceptInvitePage() {
     <span className="icon-tile">{accepted ? <CheckCircle2 /> : <Building2 />}</span>
     <p className="eyebrow">BUILDTRACK INVITATION</p>
     <h1>{accepted ? 'Access activated' : 'Review your invitation'}</h1>
-    <p className="lead">{accepted ? 'Your membership and approved scoped roles are ready.' : 'Acceptance verifies your signed-in email, activates the tenant membership, and applies only the roles approved by the administrator.'}</p>
-    <div className="notice warning"><ShieldCheck />The invitation does not grant access until server-side acceptance completes.</div>
+    <p className="lead">{accepted ? 'Your profile and workspace are ready.' : 'Set up your account, complete your basic details, then accept access to the organization.'}</p>
+    <div className="notice warning"><ShieldCheck />Only accept invitations from an organization you recognize.</div>
     {!token && <div className="notice danger">The invitation token is missing.</div>}
     {error && <div className="notice danger" role="alert">{error}</div>}
     {requiresPasswordSetup && !passwordReady && <form className="stack-lg" onSubmit={setPassword}>
@@ -67,6 +70,7 @@ export function AcceptInvitePage() {
       <label className="field">Confirm password<input name="confirmation" type="password" autoComplete="new-password" minLength={12} required /></label>
       <button className="button primary full" disabled={accepting}>{accepting ? 'Saving…' : 'Save password'}</button>
     </form>}
-    {passwordReady && <button className="button primary full" disabled={!token || accepting || accepted} onClick={() => void accept()}>{accepting ? 'Activating access…' : accepted ? 'Opening workspace…' : <>Accept invitation <ArrowRight /></>}</button>}
+    {passwordReady && (profile.isLoading ? <LoadingState label="Loading your details" /> : profile.error ? <ErrorState message={profile.error.message} retry={() => void profile.refetch()} /> : profile.data && !profileComplete(profile.data) ? <section className="stack-lg"><h2>Your basic details</h2><ProfileForm profile={profile.data} onboarding /></section> : null)}
+    {passwordReady && profileComplete(profile.data) && <button className="button primary full" disabled={!token || accepting || accepted} onClick={() => void accept()}>{accepting ? 'Activating access…' : accepted ? 'Opening workspace…' : <>Accept invitation <ArrowRight /></>}</button>}
   </section></main>
 }

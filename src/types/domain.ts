@@ -80,6 +80,8 @@ export interface OrganizationSummary {
 export type PermissionCode =
   | 'structure.manage'
   | 'access.manage'
+  | 'plan.manage'
+  | 'company.users.manage'
   | 'roster.manage'
   | 'work.read_scope'
   | 'work.create'
@@ -89,6 +91,7 @@ export type PermissionCode =
   | 'work.verify'
   | 'inspection.manage'
   | 'inspection.perform'
+  | 'inspection.findings.create'
   | 'comment.internal'
   | 'comment.create_shared'
   | 'evidence.upload'
@@ -100,7 +103,11 @@ export type PermissionCode =
 export interface AccessRole {
   id: UUID
   role_code: string
-  scope_kind: 'organization' | 'neighborhood' | 'home'
+  role_label?: string
+  scope_kind: 'organization' | 'division' | 'neighborhood' | 'home' | 'company'
+  division_id?: UUID | null
+  company_id?: UUID | null
+  authority_level?: number
   neighborhood_id: UUID | null
   home_id: UUID | null
   starts_at: string
@@ -122,6 +129,7 @@ export interface WorkItemSummary {
   organization_id: UUID
   neighborhood_id: UUID
   home_id: UUID | null
+  inspection_id?: UUID | null
   lot_code?: string | null
   address?: string | null
   title: string
@@ -129,8 +137,11 @@ export interface WorkItemSummary {
   priority: 'low' | 'normal' | 'high' | 'critical'
   state: WorkState
   safety_flag: boolean
-  category_id: UUID | null
   due_at: string | null
+  reinspection_status?: string | null
+  reinspection_assignee_user_id?: UUID | null
+  reinspection_assigned_at?: string | null
+  reinspection_completed_at?: string | null
   assigned_party_name?: string | null
   updated_at: string
   version: number
@@ -156,6 +167,8 @@ export interface OfflineOperation {
   dependencies: UUID[]
   retries: number
   last_error?: string
+  retryable?: boolean
+  upload_attachment_id?: UUID
   created_at: string
   updated_at: string
 }

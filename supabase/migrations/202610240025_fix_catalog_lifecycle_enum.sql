@@ -8,7 +8,7 @@ begin
   required_permission := case
     when p_entity in ('division','neighborhood','home') then 'structure.manage'
     when p_entity in ('company','specialty','roster') then 'roster.manage'
-    when p_entity in ('work_category','checklist_template','escalation_route','notification_rule','inspection_engagement') then 'config.manage'
+    when p_entity in ('checklist_template','escalation_route','notification_rule','inspection_engagement') then 'config.manage'
     else null end;
   if required_permission is null then raise exception using errcode='22023',message='unsupported catalog entity'; end if;
   perform private.require_admin_permission(p_organization_id,required_permission);
@@ -34,9 +34,6 @@ begin
   elsif p_entity='roster' then
     select to_jsonb(t) into before_row from public.neighborhood_trade_rosters t where t.organization_id=p_organization_id and t.id=p_id for update;
     update public.neighborhood_trade_rosters set status=(case when p_active then 'active' else 'archived' end)::public.organization_status,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(neighborhood_trade_rosters.*) into after_row;
-  elsif p_entity='work_category' then
-    select to_jsonb(t) into before_row from public.work_categories t where t.organization_id=p_organization_id and t.id=p_id for update;
-    update public.work_categories set active=p_active,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(work_categories.*) into after_row;
   elsif p_entity='checklist_template' then
     select to_jsonb(t) into before_row from public.checklist_templates t where t.organization_id=p_organization_id and t.id=p_id for update;
     update public.checklist_templates set active=p_active,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(checklist_templates.*) into after_row;

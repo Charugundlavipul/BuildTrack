@@ -3,6 +3,10 @@ dist/
 coverage/
 playwright-report/
 test-results/
+artifacts/
+.playwright-mcp/
+docs/.role-reference-render/
+~$*
 .env
 .env.*
 !.env.example

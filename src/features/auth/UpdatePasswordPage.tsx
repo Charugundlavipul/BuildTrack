@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { CheckCircle2, KeyRound } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
 import { LoadingState } from '../../components/Ui'
@@ -8,6 +8,8 @@ import { useAuth } from './AuthProvider'
 export function UpdatePasswordPage() {
   const { loading, session } = useAuth()
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const destination = searchParams.get('next') === '/platform' ? '/platform' : '/organizations/select'
   const [busy, setBusy] = useState(false)
   const [complete, setComplete] = useState(false)
   const [error, setError] = useState('')
@@ -34,11 +36,11 @@ export function UpdatePasswordPage() {
     <p className="eyebrow">SECURE ACCOUNT</p>
     <h1>{complete ? 'Password updated' : 'Choose a new password'}</h1>
     {!session && !complete ? <>
-      <div className="notice danger">This recovery link is invalid or expired. Request a new one without revealing whether an account exists.</div>
+      <div className="notice danger">This recovery link is invalid or expired. Request a new link to continue.</div>
       <Link className="button primary full" to="/forgot-password">Request another link</Link>
     </> : complete ? <>
       <p className="lead">Your new password is active.</p>
-      <button className="button primary full" onClick={() => navigate('/organizations/select')}>Continue to BuildTrack</button>
+      <button className="button primary full" onClick={() => navigate(destination)}>Continue to BuildTrack</button>
     </> : <form className="stack-lg" onSubmit={submit}>
       <label className="field">New password<input name="password" type="password" autoComplete="new-password" minLength={12} required /></label>
       <label className="field">Confirm password<input name="confirmation" type="password" autoComplete="new-password" minLength={12} required /></label>

@@ -1,32 +1,18 @@
 import { useState, type FormEvent } from 'react'
+import { Link, useParams } from 'react-router-dom'
 import { CheckCircle2, KeyRound, UserRound } from 'lucide-react'
-import { PageHeader } from '../../components/Ui'
+import { ErrorState, LoadingState, PageHeader } from '../../components/Ui'
 import { requireSupabase } from '../../lib/supabase'
 import { useAuth } from './AuthProvider'
+import { ProfileForm } from './ProfileDetails'
+import { useMyProfile } from './profileData'
 
 export function AccountPage() {
-  const { user, access, refreshAccess } = useAuth()
-  const [profileMessage, setProfileMessage] = useState('')
+  const { user, access } = useAuth()
+  const { org } = useParams()
+  const profile = useMyProfile()
   const [passwordMessage, setPasswordMessage] = useState('')
   const [busy, setBusy] = useState(false)
-
-  async function updateProfile(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    const form = new FormData(event.currentTarget)
-    setBusy(true)
-    setProfileMessage('')
-    const { error } = await requireSupabase().rpc('update_my_profile', {
-      p_display_name: String(form.get('display_name')).trim(),
-      p_preferred_locale: 'en',
-      p_timezone: String(form.get('timezone')).trim() || undefined
-    })
-    setBusy(false)
-    if (error) setProfileMessage(error.message)
-    else {
-      await refreshAccess()
-      setProfileMessage('Profile updated.')
-    }
-  }
 
   async function changePassword(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -47,16 +33,11 @@ export function AccountPage() {
   }
 
   return <div className="stack-xl">
-    <PageHeader eyebrow="MY ACCOUNT" title={access?.profile.display_name ?? 'BuildTrack user'} description={user?.email ?? ''} />
-    <div className="detail-layout">
+    {!org && <Link className="text-button" to="/organizations/select">← Organization workspaces</Link>}
+    <PageHeader eyebrow="MY ACCOUNT" title={profile.data?.display_name ?? access?.profile.display_name ?? 'BuildTrack user'} description={user?.email ?? ''} />
+    <div className={access ? "detail-layout" : "narrow-page"}>
       <div className="stack-lg">
-        <form className="panel form-panel stack-lg" onSubmit={updateProfile}>
-          <div className="section-heading"><div><h2><UserRound />Profile</h2><p>These details identify you in authorized participant lists and audit views.</p></div></div>
-          <label className="field">Display name<input name="display_name" defaultValue={access?.profile.display_name ?? ''} minLength={2} maxLength={120} required /></label>
-          <label className="field">Timezone<input name="timezone" defaultValue={access?.profile.timezone ?? ''} placeholder="America/New_York" /></label>
-          {profileMessage && <div className="notice" role="status"><CheckCircle2 />{profileMessage}</div>}
-          <button className="button primary" disabled={busy}>Save profile</button>
-        </form>
+        <section className="panel form-panel stack-lg"><div className="section-heading"><div><h2><UserRound />Profile</h2><p>Your name appears on assignments, comments, and activity.</p></div></div>{profile.isLoading ? <LoadingState label="Loading profile" /> : profile.error ? <ErrorState message={profile.error.message} retry={() => void profile.refetch()} /> : profile.data && <ProfileForm profile={profile.data} />}</section>
         <form className="panel form-panel stack-lg" onSubmit={changePassword}>
           <div className="section-heading"><div><h2><KeyRound />Change password</h2><p>Your current password is required for an authenticated account change.</p></div></div>
           <label className="field">Current password<input name="current_password" type="password" autoComplete="current-password" required /></label>
@@ -66,11 +47,11 @@ export function AccountPage() {
           <button className="button primary" disabled={busy}>Change password</button>
         </form>
       </div>
-      <aside className="panel timeline-card">
+      {access && <aside className="panel timeline-card">
         <div className="section-heading"><h2>Active access</h2></div>
         <p><strong>{access?.membership.affiliation ?? '—'}</strong> organization member</p>
-        <div className="decision-list">{access?.roles.map((role) => <div key={role.id}><CheckCircle2 /><span><strong>{role.role_code.replaceAll('_', ' ')}</strong><small>{role.scope_kind}{role.neighborhood_id ? ` · ${role.neighborhood_id.slice(0, 8)}` : ''}</small></span></div>)}</div>
-      </aside>
+        <div className="access-list">{access?.roles.map((role) => <div key={role.id}><CheckCircle2 /><span><strong>{role.role_label ?? role.role_code.replaceAll('_', ' ')}</strong><small>{role.scope_kind}{role.neighborhood_id ? ` · ${role.neighborhood_id.slice(0, 8)}` : ''}</small></span></div>)}</div>
+      </aside>}
     </div>
   </div>
 }

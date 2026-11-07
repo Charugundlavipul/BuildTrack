@@ -21,13 +21,28 @@ jobs:
       - run: npm ci
       - run: npx supabase start
       - run: npx supabase db reset
-      - run: npx supabase test db
+      - name: Configure browser-safe local Supabase connection
+        shell: bash
+        run: |
+          npx supabase status -o env > /tmp/buildtrack-supabase.env
+          source /tmp/buildtrack-supabase.env
+          printf 'VITE_SUPABASE_URL=%s\nVITE_SUPABASE_PUBLISHABLE_KEY=%s\n' "$API_URL" "$ANON_KEY" > .env.local
+      - name: Load fixtures only into the disposable local database
+        shell: bash
+        run: |
+          source /tmp/buildtrack-supabase.env
+          fixture_password="$(openssl rand -hex 24)"
+          psql "$DB_URL" -v ON_ERROR_STOP=1 -v fixture_password="$fixture_password" <<'SQL'
+          select set_config('buildtrack.dev_seed_password', :'fixture_password', false) as configured \gset
+          \i supabase/seed.sql
+          SQL
+      - run: npx supabase test db supabase/tests/authorization.test.sql supabase/tests/invariants.test.sql supabase/tests/platform_roles.test.sql
       - run: npm run lint
       - run: npm run typecheck
       - run: npm run test
       - run: npm run build
-      - run: npx playwright install --with-deps chromium
-      - run: npm run test:e2e -- --project=desktop-chromium
+      - run: npx playwright install --with-deps chrome
+      - run: npm run test:e2e
 
   secret-scan:
     runs-on: ubuntu-latest

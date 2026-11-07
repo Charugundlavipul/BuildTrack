@@ -156,22 +156,6 @@ end; $$;
 revoke all on function public.admin_save_roster(uuid,uuid,uuid,uuid,uuid,public.organization_status,timestamptz,timestamptz) from public,anon;
 grant execute on function public.admin_save_roster(uuid,uuid,uuid,uuid,uuid,public.organization_status,timestamptz,timestamptz) to authenticated;
 
-create or replace function public.admin_save_work_category(p_organization_id uuid,p_id uuid,p_code text,p_name text,p_active boolean default true)
-returns public.work_categories language plpgsql security definer set search_path = '' as $$
-declare result public.work_categories; before_row jsonb;
-begin
-  perform private.require_admin_permission(p_organization_id, 'config.manage');
-  if length(trim(coalesce(p_code,''))) not between 1 and 40 or length(trim(coalesce(p_name,''))) not between 1 and 160 then raise exception using errcode='22023', message='category code and name are required'; end if;
-  if p_id is null then insert into public.work_categories(organization_id,code,name,active) values(p_organization_id,upper(trim(p_code)),trim(p_name),p_active) returning * into result;
-  else select to_jsonb(c) into before_row from public.work_categories c where c.organization_id=p_organization_id and c.id=p_id for update;
-    update public.work_categories set code=upper(trim(p_code)),name=trim(p_name),active=p_active,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning * into result;
-    if not found then raise exception using errcode='02000', message='work category not found'; end if;
-  end if;
-  perform private.append_audit(p_organization_id,auth.uid(),'work_category.saved','work_category',result.id,null,before_row,to_jsonb(result)); return result;
-end; $$;
-revoke all on function public.admin_save_work_category(uuid,uuid,text,text,boolean) from public,anon;
-grant execute on function public.admin_save_work_category(uuid,uuid,text,text,boolean) to authenticated;
-
 create or replace function public.admin_save_business_calendar(p_organization_id uuid,p_id uuid,p_name text,p_timezone text,p_working_weekdays smallint[],p_local_start_time time,p_local_end_time time,p_holiday_dates date[] default '{}')
 returns public.business_calendars language plpgsql security definer set search_path = '' as $$
 declare result public.business_calendars; before_row jsonb;
@@ -208,9 +192,8 @@ begin
   for question in select value from jsonb_array_elements(p_questions) loop
     position:=position+1;
     if length(trim(coalesce(question->>'label','')))<2 then raise exception using errcode='22023', message='every checklist question requires a label'; end if;
-    if nullif(question->>'category_id','') is not null and not exists(select 1 from public.work_categories where organization_id=p_organization_id and id=(question->>'category_id')::uuid and active) then raise exception using errcode='22023', message='checklist category is unavailable'; end if;
-    insert into public.checklist_questions(organization_id,version_id,ordinal,section,label,category_id,requires_response)
-      values(p_organization_id,version_row.id,position,coalesce(nullif(trim(question->>'section'),''),'General'),trim(question->>'label'),nullif(question->>'category_id','')::uuid,coalesce((question->>'requires_response')::boolean,true));
+    insert into public.checklist_questions(organization_id,version_id,ordinal,section,label,requires_response)
+      values(p_organization_id,version_row.id,position,coalesce(nullif(trim(question->>'section'),''),'General'),trim(question->>'label'),coalesce((question->>'requires_response')::boolean,true));
   end loop;
   perform private.append_audit(p_organization_id,auth.uid(),'checklist.version_created','checklist_version',version_row.id,null,null,to_jsonb(version_row),jsonb_build_object('question_count',position));
   return jsonb_build_object('template_id',template_row.id,'version_id',version_row.id,'number',version_row.number,'question_count',position);

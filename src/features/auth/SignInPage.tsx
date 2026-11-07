@@ -2,11 +2,14 @@ import { useState, type FormEvent } from 'react'
 import { Link, Navigate, useLocation } from 'react-router-dom'
 import { ArrowRight } from 'lucide-react'
 import { SignInVisual } from './SignInVisual'
+import { LoadingState } from '../../components/Ui'
 import { supabase } from '../../lib/supabase'
+import { usePlatformAccess } from '../platform/platformData'
 import { useAuth } from './AuthProvider'
 
 export function SignInPage() {
   const { session, activeOrganization } = useAuth()
+  const platform = usePlatformAccess()
   const location = useLocation()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -14,8 +17,9 @@ export function SignInPage() {
   const [submitting, setSubmitting] = useState(false)
 
   if (session) {
+    if (platform.isLoading) return <main className="centered-page"><LoadingState label="Opening your workspace" /></main>
     const requested = (location.state as { from?: { pathname?: string } } | null)?.from?.pathname
-    return <Navigate replace to={requested ?? (activeOrganization ? `/org/${activeOrganization.id}` : '/organizations/select')} />
+    return <Navigate replace to={requested ?? (platform.data?.administrator ? '/platform' : activeOrganization ? `/org/${activeOrganization.id}` : '/organizations/select')} />
   }
 
   async function submit(event: FormEvent) {

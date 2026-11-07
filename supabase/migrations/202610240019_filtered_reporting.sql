@@ -26,7 +26,7 @@ declare
   date_from_filter date := nullif(p_filters->>'date_from', '')::date;
   date_to_filter date := nullif(p_filters->>'date_to', '')::date;
 begin
-  if not private.active_member(p_organization_id, auth.uid()) then
+  if not exists (select 1 from public.my_organizations where id = p_organization_id) then
     raise exception using errcode = '42501', message = 'forbidden';
   end if;
   if state_filter is not null and state_filter not in ('draft','submitted','assigned','acknowledged','in_progress','blocked','ready_for_verification','rework_required','verified','cancelled') then

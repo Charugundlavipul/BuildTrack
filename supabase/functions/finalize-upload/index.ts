@@ -1,5 +1,5 @@
 import { authenticatedUser, errorResponse, handleOptions, json, serviceClient } from '../_shared/http.ts'
-import { detectMime, sha256Hex } from '../_shared/files.ts'
+import { detectMime, isCleanScanResult, sha256Hex } from '../_shared/files.ts'
 
 async function cloudmersiveScan(blob: Blob, name: string, apiKey: string) {
   const form = new FormData()
@@ -26,6 +26,7 @@ Deno.serve(async (request) => {
     const body = await request.json()
     const { data: attachment, error } = await client.from('attachments').select('*').eq('id', body.attachment_id).single()
     if (error || !attachment || attachment.uploader_id !== user.id) throw new Error('Attachment not found')
+    if (attachment.status === 'ready') return json(request, { attachment })
     if (!['pending_upload', 'quarantined'].includes(attachment.status)) throw new Error('Attachment is not awaiting finalization')
 
     const cloudmersiveKey = Deno.env.get('CLOUDMERSIVE_API_KEY')
@@ -33,6 +34,7 @@ Deno.serve(async (request) => {
     const service = serviceClient()
     const { data: object, error: downloadError } = await service.storage.from('evidence').download(attachment.object_key)
     if (downloadError || !object) throw new Error('Uploaded object was not found')
+    if (object.size !== attachment.byte_size) throw new Error('Uploaded size does not match the reservation')
     const bytes = new Uint8Array(await object.arrayBuffer())
     if (bytes.byteLength !== attachment.byte_size) throw new Error('Uploaded size does not match the reservation')
     const actualMime = detectMime(bytes)
@@ -40,9 +42,10 @@ Deno.serve(async (request) => {
     const reservedMime = attachment.mime_type === 'image/heif' ? 'image/heic' : attachment.mime_type
     if (actualMime !== reservedMime) throw new Error('File signature does not match the reserved content type')
 
-    await service.rpc('mark_attachment_quarantined', { p_attachment_id: attachment.id })
+    const { error: quarantineError } = await service.rpc('mark_attachment_quarantined', { p_attachment_id: attachment.id })
+    if (quarantineError) throw quarantineError
     const scan = await cloudmersiveScan(object, attachment.original_name, cloudmersiveKey)
-    const clean = Boolean(scan.CleanResult) && !scan.ContainsExecutable && !scan.ContainsScript && !scan.ContainsInvalidFile && !scan.ContainsXmlExternalEntities && !scan.ContainsUnsafeArchive
+    const clean = isCleanScanResult(scan)
     let derivativeKey: string | null = null
     if (clean && actualMime === 'image/heic') {
       const derivative = await convertHeic(object, attachment.original_name, cloudmersiveKey)

@@ -220,7 +220,7 @@ begin
   foreach table_name in array array[
     'profiles','organizations','divisions','neighborhoods','homes','home_locations','organization_memberships',
     'roles','permissions','role_permissions','role_assignments','companies','company_memberships','trade_specialties',
-    'neighborhood_trade_rosters','invites','inspection_engagements','work_categories','business_calendars','home_milestones',
+    'neighborhood_trade_rosters','invites','inspection_engagements','business_calendars','home_milestones',
     'checklist_templates','checklist_versions','checklist_questions','inspections','inspection_participants','inspection_responses',
     'inspection_submissions','work_items','assignment_episodes','evidence_exceptions','correction_attempts','verifications',
     'blocker_events','comments','attachments','work_events','milestone_requirements','milestone_approvals','escalation_routes',
@@ -286,7 +286,7 @@ create policy engagements_self_or_manager_select on public.inspection_engagement
 do $$
 declare table_name text;
 begin
-  foreach table_name in array array['work_categories','business_calendars','home_milestones','checklist_templates','checklist_versions','checklist_questions','milestone_requirements','escalation_routes','escalation_route_steps','notification_rules'] loop
+  foreach table_name in array array['business_calendars','home_milestones','checklist_templates','checklist_versions','checklist_questions','milestone_requirements','escalation_routes','escalation_route_steps','notification_rules'] loop
     execute format(
       'create policy %I_config_select on public.%I for select to authenticated using (private.has_active_role(organization_id, auth.uid()) or private.has_permission(organization_id, auth.uid(), ''config.manage'', null, null))',
       table_name, table_name
@@ -395,7 +395,7 @@ returns jsonb language plpgsql stable security invoker set search_path = ''
 as $$
 declare result jsonb;
 begin
-  if not private.active_member(p_organization_id, auth.uid()) then
+  if not exists (select 1 from public.my_organizations where id = p_organization_id) then
     raise exception using errcode = '42501', message = 'forbidden';
   end if;
   select jsonb_build_object(

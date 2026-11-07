@@ -50,10 +50,17 @@ async function stillEligible(service: ReturnType<typeof serviceClient>, job: Not
     if ((count ?? 0) === 0) return false
   }
   if (recipientKind === 'org_admin' || recipientKind === 'area_manager') {
-    const { data: assignments } = await service.from('role_assignments').select('scope_kind,neighborhood_id,home_id').eq('organization_id', job.organization_id).eq('user_id', job.recipient_user_id).eq('role_code', recipientKind).is('revoked_at', null).lte('starts_at', new Date().toISOString()).or(`ends_at.is.null,ends_at.gt.${new Date().toISOString()}`)
+    const roleCode = recipientKind === 'area_manager' ? 'division_admin' : 'org_admin'
+    const [{ data: assignments }, { data: neighborhood }, { count: enabled }, { count: activeRole }] = await Promise.all([
+      service.from('role_assignments').select('scope_kind,division_id,neighborhood_id,home_id').eq('organization_id', job.organization_id).eq('user_id', job.recipient_user_id).eq('role_code', roleCode).is('revoked_at', null).lte('starts_at', new Date().toISOString()).or(`ends_at.is.null,ends_at.gt.${new Date().toISOString()}`),
+      service.from('neighborhoods').select('division_id').eq('organization_id', job.organization_id).eq('id', payload.neighborhood_id).maybeSingle(),
+      service.from('organization_roles').select('role_code', { count: 'exact', head: true }).eq('organization_id', job.organization_id).eq('role_code', roleCode).eq('enabled', true),
+      service.from('roles').select('code', { count: 'exact', head: true }).eq('code', roleCode).eq('active', true)
+    ])
+    if (!enabled || !activeRole) return false
     const scoped = (assignments ?? []).some((assignment) => recipientKind === 'org_admin'
       ? assignment.scope_kind === 'organization'
-      : assignment.scope_kind === 'organization' || (assignment.scope_kind === 'neighborhood' && assignment.neighborhood_id === payload.neighborhood_id) || (assignment.scope_kind === 'home' && assignment.home_id === payload.home_id))
+      : assignment.scope_kind === 'organization' || (assignment.scope_kind === 'division' && assignment.division_id === neighborhood?.division_id) || (assignment.scope_kind === 'neighborhood' && assignment.neighborhood_id === payload.neighborhood_id) || (assignment.scope_kind === 'home' && assignment.home_id === payload.home_id))
     if (!scoped) return false
   }
   if (recipientKind === 'supervisor') {

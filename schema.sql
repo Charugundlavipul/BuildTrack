@@ -1,6 +1,6 @@
 -- BuildTrack consolidated Supabase schema
 -- Generated from versioned migrations. Safe for an empty Supabase project.
--- Contains the fixed permission/role catalog, but no tenant users or fixture data.
+-- Contains the initial permission/role catalog, but no tenant users or fixture data.
 -- Rebuild with: npm run schema:build
 
 -- ============================================================================
@@ -268,19 +268,6 @@ create table public.inspection_engagements (
   check (ends_at > starts_at)
 );
 
-create table public.work_categories (
-  id uuid primary key default gen_random_uuid(),
-  organization_id uuid not null references public.organizations(id) on delete restrict,
-  code text not null,
-  name text not null,
-  active boolean not null default true,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  version bigint not null default 1,
-  unique (organization_id, id),
-  unique (organization_id, code)
-);
-
 create table public.business_calendars (
   id uuid primary key default gen_random_uuid(),
   organization_id uuid not null references public.organizations(id) on delete restrict,
@@ -353,13 +340,11 @@ create table public.checklist_questions (
   ordinal integer not null check (ordinal > 0),
   section text not null,
   label text not null,
-  category_id uuid,
   requires_response boolean not null default true,
   created_at timestamptz not null default now(),
   unique (organization_id, id),
   unique (organization_id, version_id, ordinal),
-  foreign key (organization_id, version_id) references public.checklist_versions(organization_id, id) on delete restrict,
-  foreign key (organization_id, category_id) references public.work_categories(organization_id, id) on delete restrict
+  foreign key (organization_id, version_id) references public.checklist_versions(organization_id, id) on delete restrict
 );
 
 create table public.inspections (
@@ -424,7 +409,6 @@ create table public.work_items (
   origin public.work_origin not null,
   title text not null check (length(title) between 1 and 160),
   description text not null check (length(description) between 1 and 10000),
-  category_id uuid,
   priority public.work_priority not null default 'normal',
   safety_flag boolean not null default false,
   state public.work_state not null default 'draft',
@@ -446,7 +430,6 @@ create table public.work_items (
   foreign key (organization_id, home_id) references public.homes(organization_id, id) on delete restrict,
   foreign key (organization_id, home_id, location_id) references public.home_locations(organization_id, home_id, id) on delete restrict,
   foreign key (organization_id, inspection_id) references public.inspections(organization_id, id) on delete restrict,
-  foreign key (organization_id, category_id) references public.work_categories(organization_id, id) on delete restrict,
   foreign key (organization_id, duplicate_of_id) references public.work_items(organization_id, id) on delete restrict,
   check ((home_id is not null and common_area_location is null) or (home_id is null and nullif(trim(common_area_location), '') is not null)),
   check (location_id is null or home_id is not null),
@@ -1083,7 +1066,7 @@ begin
   foreach table_name in array array[
     'profiles','organizations','divisions','neighborhoods','homes','home_locations','organization_memberships',
     'roles','permissions','role_permissions','role_assignments','companies','company_memberships','trade_specialties',
-    'neighborhood_trade_rosters','invites','inspection_engagements','work_categories','business_calendars','home_milestones',
+    'neighborhood_trade_rosters','invites','inspection_engagements','business_calendars','home_milestones',
     'checklist_templates','checklist_versions','checklist_questions','inspections','inspection_participants','inspection_responses',
     'inspection_submissions','work_items','assignment_episodes','evidence_exceptions','correction_attempts','verifications',
     'blocker_events','comments','attachments','work_events','milestone_requirements','milestone_approvals','escalation_routes',
@@ -1149,7 +1132,7 @@ create policy engagements_self_or_manager_select on public.inspection_engagement
 do $$
 declare table_name text;
 begin
-  foreach table_name in array array['work_categories','business_calendars','home_milestones','checklist_templates','checklist_versions','checklist_questions','milestone_requirements','escalation_routes','escalation_route_steps','notification_rules'] loop
+  foreach table_name in array array['business_calendars','home_milestones','checklist_templates','checklist_versions','checklist_questions','milestone_requirements','escalation_routes','escalation_route_steps','notification_rules'] loop
     execute format(
       'create policy %I_config_select on public.%I for select to authenticated using (private.has_active_role(organization_id, auth.uid()) or private.has_permission(organization_id, auth.uid(), ''config.manage'', null, null))',
       table_name, table_name
@@ -1258,7 +1241,7 @@ returns jsonb language plpgsql stable security invoker set search_path = ''
 as $$
 declare result jsonb;
 begin
-  if not private.active_member(p_organization_id, auth.uid()) then
+  if not exists (select 1 from public.my_organizations where id = p_organization_id) then
     raise exception using errcode = '42501', message = 'forbidden';
   end if;
   select jsonb_build_object(
@@ -1486,13 +1469,13 @@ begin
     v_id := coalesce(nullif(v_payload ->> 'id', '')::uuid, gen_random_uuid());
     insert into public.work_items(
       id, organization_id, neighborhood_id, home_id, location_id, common_area_location, inspection_id,
-      origin, title, description, category_id, priority, safety_flag, created_by, client_captured_at
+      origin, title, description, priority, safety_flag, created_by, client_captured_at
     ) values (
       v_id, v_organization_id, (v_payload ->> 'neighborhood_id')::uuid,
       nullif(v_payload ->> 'home_id','')::uuid, nullif(v_payload ->> 'location_id','')::uuid,
       nullif(trim(v_payload ->> 'common_area_location'), ''), nullif(v_payload ->> 'inspection_id','')::uuid,
       coalesce(v_payload ->> 'origin', 'internal_observation')::public.work_origin,
-      trim(v_payload ->> 'title'), trim(v_payload ->> 'description'), nullif(v_payload ->> 'category_id','')::uuid,
+      trim(v_payload ->> 'title'), trim(v_payload ->> 'description'),
       coalesce(v_payload ->> 'priority','normal')::public.work_priority, coalesce((v_payload ->> 'safety_flag')::boolean, false),
       v_actor, v_captured_at
     ) returning * into v_item;
@@ -1521,7 +1504,6 @@ begin
       update public.work_items set
         title = coalesce(nullif(trim(v_payload ->> 'title'), ''), title),
         description = coalesce(nullif(trim(v_payload ->> 'description'), ''), description),
-        category_id = coalesce(nullif(v_payload ->> 'category_id','')::uuid, category_id),
         priority = coalesce(nullif(v_payload ->> 'priority','')::public.work_priority, priority),
         safety_flag = coalesce((v_payload ->> 'safety_flag')::boolean, safety_flag)
       where id = v_item.id returning * into v_item;
@@ -1543,7 +1525,6 @@ begin
         return private.command_error(v_operation_id, 'FORBIDDEN', 'Triage permission is required.');
       end if;
       update public.work_items set
-        category_id = coalesce(nullif(v_payload ->> 'category_id','')::uuid, category_id),
         priority = coalesce(nullif(v_payload ->> 'priority','')::public.work_priority, priority)
       where id = v_item.id returning * into v_item;
       perform private.append_work_event(v_item, 'work.triaged', v_old_state, v_item.state, v_actor, v_operation_id, jsonb_build_object('notes', v_payload ->> 'notes'));
@@ -3102,22 +3083,6 @@ end; $$;
 revoke all on function public.admin_save_roster(uuid,uuid,uuid,uuid,uuid,public.organization_status,timestamptz,timestamptz) from public,anon;
 grant execute on function public.admin_save_roster(uuid,uuid,uuid,uuid,uuid,public.organization_status,timestamptz,timestamptz) to authenticated;
 
-create or replace function public.admin_save_work_category(p_organization_id uuid,p_id uuid,p_code text,p_name text,p_active boolean default true)
-returns public.work_categories language plpgsql security definer set search_path = '' as $$
-declare result public.work_categories; before_row jsonb;
-begin
-  perform private.require_admin_permission(p_organization_id, 'config.manage');
-  if length(trim(coalesce(p_code,''))) not between 1 and 40 or length(trim(coalesce(p_name,''))) not between 1 and 160 then raise exception using errcode='22023', message='category code and name are required'; end if;
-  if p_id is null then insert into public.work_categories(organization_id,code,name,active) values(p_organization_id,upper(trim(p_code)),trim(p_name),p_active) returning * into result;
-  else select to_jsonb(c) into before_row from public.work_categories c where c.organization_id=p_organization_id and c.id=p_id for update;
-    update public.work_categories set code=upper(trim(p_code)),name=trim(p_name),active=p_active,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning * into result;
-    if not found then raise exception using errcode='02000', message='work category not found'; end if;
-  end if;
-  perform private.append_audit(p_organization_id,auth.uid(),'work_category.saved','work_category',result.id,null,before_row,to_jsonb(result)); return result;
-end; $$;
-revoke all on function public.admin_save_work_category(uuid,uuid,text,text,boolean) from public,anon;
-grant execute on function public.admin_save_work_category(uuid,uuid,text,text,boolean) to authenticated;
-
 create or replace function public.admin_save_business_calendar(p_organization_id uuid,p_id uuid,p_name text,p_timezone text,p_working_weekdays smallint[],p_local_start_time time,p_local_end_time time,p_holiday_dates date[] default '{}')
 returns public.business_calendars language plpgsql security definer set search_path = '' as $$
 declare result public.business_calendars; before_row jsonb;
@@ -3154,9 +3119,8 @@ begin
   for question in select value from jsonb_array_elements(p_questions) loop
     position:=position+1;
     if length(trim(coalesce(question->>'label','')))<2 then raise exception using errcode='22023', message='every checklist question requires a label'; end if;
-    if nullif(question->>'category_id','') is not null and not exists(select 1 from public.work_categories where organization_id=p_organization_id and id=(question->>'category_id')::uuid and active) then raise exception using errcode='22023', message='checklist category is unavailable'; end if;
-    insert into public.checklist_questions(organization_id,version_id,ordinal,section,label,category_id,requires_response)
-      values(p_organization_id,version_row.id,position,coalesce(nullif(trim(question->>'section'),''),'General'),trim(question->>'label'),nullif(question->>'category_id','')::uuid,coalesce((question->>'requires_response')::boolean,true));
+    insert into public.checklist_questions(organization_id,version_id,ordinal,section,label,requires_response)
+      values(p_organization_id,version_row.id,position,coalesce(nullif(trim(question->>'section'),''),'General'),trim(question->>'label'),coalesce((question->>'requires_response')::boolean,true));
   end loop;
   perform private.append_audit(p_organization_id,auth.uid(),'checklist.version_created','checklist_version',version_row.id,null,null,to_jsonb(version_row),jsonb_build_object('question_count',position));
   return jsonb_build_object('template_id',template_row.id,'version_id',version_row.id,'number',version_row.number,'question_count',position);
@@ -3519,7 +3483,7 @@ declare
   date_from_filter date := nullif(p_filters->>'date_from', '')::date;
   date_to_filter date := nullif(p_filters->>'date_to', '')::date;
 begin
-  if not private.active_member(p_organization_id, auth.uid()) then
+  if not exists (select 1 from public.my_organizations where id = p_organization_id) then
     raise exception using errcode = '42501', message = 'forbidden';
   end if;
   if state_filter is not null and state_filter not in ('draft','submitted','assigned','acknowledged','in_progress','blocked','ready_for_verification','rework_required','verified','cancelled') then
@@ -3792,7 +3756,7 @@ select
   nullif(concat_ws(', ', h.address_line1, h.city, h.state_code), '') as address,
   w.title, w.description, w.priority, w.state, w.safety_flag, w.due_at,
   coalesce(c.name, p.display_name) as assigned_party_name,
-  w.updated_at, w.version, w.created_at, w.category_id
+  w.updated_at, w.version, w.created_at
 from public.work_items w
 left join public.homes h on h.organization_id = w.organization_id and h.id = w.home_id
 left join public.assignment_episodes ae on ae.organization_id = w.organization_id and ae.id = w.current_assignment_id
@@ -3917,7 +3881,7 @@ begin
   required_permission := case
     when p_entity in ('division','neighborhood','home') then 'structure.manage'
     when p_entity in ('company','specialty','roster') then 'roster.manage'
-    when p_entity in ('work_category','checklist_template','escalation_route','notification_rule','inspection_engagement') then 'config.manage'
+    when p_entity in ('checklist_template','escalation_route','notification_rule','inspection_engagement') then 'config.manage'
     else null end;
   if required_permission is null then raise exception using errcode='22023',message='unsupported catalog entity'; end if;
   perform private.require_admin_permission(p_organization_id,required_permission);
@@ -3943,9 +3907,6 @@ begin
   elsif p_entity='roster' then
     select to_jsonb(t) into before_row from public.neighborhood_trade_rosters t where t.organization_id=p_organization_id and t.id=p_id for update;
     update public.neighborhood_trade_rosters set status=case when p_active then 'active' else 'inactive' end,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(neighborhood_trade_rosters.*) into after_row;
-  elsif p_entity='work_category' then
-    select to_jsonb(t) into before_row from public.work_categories t where t.organization_id=p_organization_id and t.id=p_id for update;
-    update public.work_categories set active=p_active,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(work_categories.*) into after_row;
   elsif p_entity='checklist_template' then
     select to_jsonb(t) into before_row from public.checklist_templates t where t.organization_id=p_organization_id and t.id=p_id for update;
     update public.checklist_templates set active=p_active,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(checklist_templates.*) into after_row;
@@ -3985,7 +3946,7 @@ begin
   required_permission := case
     when p_entity in ('division','neighborhood','home') then 'structure.manage'
     when p_entity in ('company','specialty','roster') then 'roster.manage'
-    when p_entity in ('work_category','checklist_template','escalation_route','notification_rule','inspection_engagement') then 'config.manage'
+    when p_entity in ('checklist_template','escalation_route','notification_rule','inspection_engagement') then 'config.manage'
     else null end;
   if required_permission is null then raise exception using errcode='22023',message='unsupported catalog entity'; end if;
   perform private.require_admin_permission(p_organization_id,required_permission);
@@ -4011,9 +3972,6 @@ begin
   elsif p_entity='roster' then
     select to_jsonb(t) into before_row from public.neighborhood_trade_rosters t where t.organization_id=p_organization_id and t.id=p_id for update;
     update public.neighborhood_trade_rosters set status=(case when p_active then 'active' else 'archived' end)::public.organization_status,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(neighborhood_trade_rosters.*) into after_row;
-  elsif p_entity='work_category' then
-    select to_jsonb(t) into before_row from public.work_categories t where t.organization_id=p_organization_id and t.id=p_id for update;
-    update public.work_categories set active=p_active,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(work_categories.*) into after_row;
   elsif p_entity='checklist_template' then
     select to_jsonb(t) into before_row from public.checklist_templates t where t.organization_id=p_organization_id and t.id=p_id for update;
     update public.checklist_templates set active=p_active,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(checklist_templates.*) into after_row;
@@ -4057,5 +4015,9705 @@ begin;
 alter table public.attachments add column storage_deleted_at timestamptz;
 alter table public.export_jobs add column storage_deleted_at timestamptz;
 
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202610250028_inspector_grant_revocation.sql
+-- ============================================================================
+
+begin;
+
+-- Revocation must remain possible after a home is archived or a member is suspended.
+-- Restoring access still goes through admin_save_inspector_engagement validation.
+create or replace function public.admin_revoke_inspector_engagement(p_organization_id uuid, p_id uuid)
+returns public.inspection_engagements
+language plpgsql security definer set search_path = '' as $$
+declare result public.inspection_engagements; before_row jsonb;
+begin
+  perform private.require_admin_permission(p_organization_id, 'config.manage');
+  select to_jsonb(e) into before_row from public.inspection_engagements e
+    where e.organization_id = p_organization_id and e.id = p_id for update;
+  if not found then raise exception using errcode = '02000', message = 'inspector engagement not found'; end if;
+  update public.inspection_engagements set revoked_at = coalesce(revoked_at, now())
+    where organization_id = p_organization_id and id = p_id returning * into result;
+  perform private.append_audit(p_organization_id, auth.uid(), 'inspector_engagement.revoked', 'inspection_engagement', result.id, null, before_row, to_jsonb(result));
+  return result;
+end; $$;
+revoke all on function public.admin_revoke_inspector_engagement(uuid, uuid) from public, anon;
+grant execute on function public.admin_revoke_inspector_engagement(uuid, uuid) to authenticated;
+
+create or replace function public.inspection_lead_options(p_organization_id uuid, p_home_id uuid)
+returns table(user_id uuid, display_name text)
+language plpgsql stable security definer set search_path = '' as $$
+declare neighborhood uuid;
+begin
+  select h.neighborhood_id into neighborhood from public.homes h
+    where h.organization_id = p_organization_id and h.id = p_home_id and h.archived_at is null;
+  if not found or not private.has_permission(p_organization_id, auth.uid(), 'inspection.manage', neighborhood, p_home_id) then
+    raise exception using errcode = '42501', message = 'inspection management permission is required for this home';
+  end if;
+  return query select m.user_id, p.display_name from public.organization_memberships m
+    join public.profiles p on p.id = m.user_id
+    where m.organization_id = p_organization_id and m.status = 'active' and (
+      private.has_permission(p_organization_id, m.user_id, 'inspection.perform', neighborhood, p_home_id)
+      or private.has_permission(p_organization_id, m.user_id, 'inspection.manage', neighborhood, p_home_id)
+      or exists (select 1 from public.inspection_engagements e where e.organization_id = p_organization_id
+        and e.home_id = p_home_id and e.inspector_user_id = m.user_id and e.revoked_at is null
+        and e.starts_at <= now() and e.ends_at > now())
+    ) order by p.display_name, m.user_id;
+end; $$;
+revoke all on function public.inspection_lead_options(uuid, uuid) from public, anon;
+grant execute on function public.inspection_lead_options(uuid, uuid) to authenticated;
+
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202610260029_platform_role_catalog.sql
+-- ============================================================================
+
+begin;
+
+-- Platform access is provisioned by a trusted operator, never by a tenant role.
+create table public.platform_administrators (
+  user_id uuid primary key references auth.users(id) on delete restrict,
+  active boolean not null default true,
+  created_at timestamptz not null default now()
+);
+create table public.platform_audit_events (
+  id uuid primary key default gen_random_uuid(), actor_id uuid references auth.users(id),
+  organization_id uuid references public.organizations(id), action text not null,
+  entity_id text, details jsonb not null default '{}', created_at timestamptz not null default now()
+);
+alter table public.roles add column organization_id uuid references public.organizations(id),
+  add column description text not null default '', add column active boolean not null default true,
+  add column default_for_new_organizations boolean not null default true,
+  add column requires_company boolean not null default false,
+  add column version bigint not null default 1, add column updated_at timestamptz not null default now();
+update public.roles set requires_company = true where code in ('trade_manager','trade_technician');
+alter table public.organizations add column onboarding_status text not null default 'pending_admin'
+  check (onboarding_status in ('pending_admin','ready'));
+update public.organizations set onboarding_status = 'ready';
+create table public.organization_roles (
+  organization_id uuid not null references public.organizations(id),
+  role_code text not null references public.roles(code), enabled boolean not null default true,
+  updated_at timestamptz not null default now(), primary key (organization_id, role_code)
+);
+insert into public.organization_roles(organization_id,role_code)
+  select o.id,r.code from public.organizations o cross join public.roles r;
+update public.roles set default_for_new_organizations = code in
+  ('org_admin','superintendent','internal_quality','trade_manager','trade_technician','leadership_viewer');
+create table public.organization_onboarding (
+  organization_id uuid primary key references public.organizations(id),
+  request_id uuid unique not null, administrator_email text not null,
+  administrator_role_code text not null references public.roles(code),
+  created_by uuid not null references auth.users(id), created_at timestamptz not null default now()
+);
+
+create function private.is_platform_admin(p_user_id uuid) returns boolean
+language sql stable security definer set search_path = '' as $$
+  select exists(select 1 from public.platform_administrators a join auth.users u on u.id=a.user_id where a.user_id=p_user_id and a.active and u.email_confirmed_at is not null);
+$$;
+create function private.require_platform_admin() returns void
+language plpgsql stable security definer set search_path = '' as $$
+begin
+  if not private.is_platform_admin(auth.uid()) or not private.require_aal2() then
+    raise exception using errcode='42501',message='MFA-verified platform administrator access required';
+  end if;
+end; $$;
+create function public.platform_access() returns jsonb language sql stable security definer set search_path = '' as $$
+  select jsonb_build_object('administrator',private.is_platform_admin(auth.uid()),'verified',private.require_aal2());
+$$;
+create function private.role_enabled(p_organization_id uuid,p_role_code text) returns boolean
+language sql stable security definer set search_path = '' as $$
+  select exists(select 1 from public.roles r join public.organization_roles a on a.role_code=r.code
+    where a.organization_id=p_organization_id and r.code=p_role_code and a.enabled and r.active
+      and (r.organization_id is null or r.organization_id=p_organization_id));
+$$;
+create function private.role_grant_enabled(p_assignment public.role_assignments) returns boolean
+language sql stable security definer set search_path = '' as $$
+  select private.role_enabled(p_assignment.organization_id,p_assignment.role_code) and exists(
+    select 1 from public.roles r where r.code=p_assignment.role_code and p_assignment.scope_kind=any(r.allowed_scope_kinds)
+      and (not r.requires_company or exists(select 1 from public.company_memberships cm
+        where cm.organization_id=p_assignment.organization_id and cm.user_id=p_assignment.user_id and cm.revoked_at is null
+          and cm.active_from<=now() and (cm.active_to is null or cm.active_to>now()))));
+$$;
+
+-- Role definitions and availability are read-only through ordinary table APIs.
+alter table public.platform_administrators enable row level security;
+alter table public.platform_audit_events enable row level security;
+alter table public.organization_roles enable row level security;
+alter table public.organization_onboarding enable row level security;
+revoke all on public.platform_administrators,public.platform_audit_events,public.organization_roles,public.organization_onboarding from anon,authenticated;
+grant select on public.organization_roles to authenticated;
+create policy organization_role_read on public.organization_roles for select to authenticated
+  using(private.active_member(organization_id,auth.uid()));
+drop policy role_catalog_select on public.roles;
+create policy role_catalog_select on public.roles for select to authenticated
+  using(organization_id is null or private.active_member(organization_id,auth.uid()));
+drop policy role_permission_catalog_select on public.role_permissions;
+create policy role_permission_catalog_select on public.role_permissions for select to authenticated
+  using(exists(select 1 from public.roles r where r.code=role_code));
+grant all on public.platform_administrators,public.platform_audit_events,public.organization_roles,public.organization_onboarding to service_role;
+
+create function private.populate_default_roles() returns trigger
+language plpgsql security definer set search_path = '' as $$
+begin
+  insert into public.organization_roles(organization_id,role_code)
+    select new.id,code from public.roles where organization_id is null and active and default_for_new_organizations;
+  return new;
+end; $$;
+create trigger organization_default_roles after insert on public.organizations for each row execute function private.populate_default_roles();
+
+create function private.validate_role_assignment() returns trigger
+language plpgsql security definer set search_path = '' as $$
+begin
+  if new.revoked_at is null and (tg_op='INSERT' or (new.role_code,new.scope_kind,new.neighborhood_id,new.home_id,new.user_id,new.organization_id)
+      is distinct from (old.role_code,old.scope_kind,old.neighborhood_id,old.home_id,old.user_id,old.organization_id)) then
+    if not private.role_enabled(new.organization_id,new.role_code) or not exists(
+      select 1 from public.roles r where r.code=new.role_code and new.scope_kind=any(r.allowed_scope_kinds)) then
+      raise exception using errcode='22023',message='role is unavailable in this organization or does not allow this scope';
+    end if;
+  end if;
+  return new;
+end; $$;
+create trigger role_assignment_catalog_guard before insert or update on public.role_assignments
+  for each row execute function private.validate_role_assignment();
+
+-- A deferred guard sees the complete handover transaction, not its intermediate revocations.
+-- Organization row locks serialize competing attempts to remove the final administrator.
+create function private.ensure_access_administrator(p_org uuid) returns void
+language plpgsql security definer set search_path = '' as $$
+declare state text; ready text; has_administrator boolean;
+begin
+  select status::text,onboarding_status into state,ready from public.organizations where id=p_org for update;
+  if not found then return; end if;
+  select exists(select 1 from public.role_assignments ra
+    join public.organization_memberships m on m.organization_id=ra.organization_id and m.user_id=ra.user_id
+    join public.role_permissions rp on rp.role_code=ra.role_code and rp.permission_code='access.manage'
+    where ra.organization_id=p_org and ra.scope_kind='organization' and ra.revoked_at is null
+      and ra.starts_at<=now() and ra.ends_at is null and m.status='active' and m.ended_at is null
+      and private.role_grant_enabled(ra)) into has_administrator;
+  if ready='pending_admin' and has_administrator then
+    update public.organizations set onboarding_status='ready' where id=p_org;
+  elsif ready='ready' and state='active' and not has_administrator then
+    raise exception using errcode='23514',message='retain at least one active organization-wide access administrator without an expiry before removing this access';
+  end if;
+end; $$;
+create function private.guard_access_administrator() returns trigger
+language plpgsql security definer set search_path = '' as $$
+declare org uuid; codes text[];
+begin
+  if tg_table_name='roles' then
+    codes:=array[coalesce(new.code,old.code)];
+  elsif tg_table_name='role_permissions' then
+    codes:=array[coalesce(new.role_code,old.role_code)];
+  elsif tg_table_name='organizations' then
+    perform private.ensure_access_administrator(coalesce(new.id,old.id)); return null;
+  else
+    perform private.ensure_access_administrator(coalesce(new.organization_id,old.organization_id)); return null;
+  end if;
+  for org in select distinct organization_id from public.role_assignments where role_code=any(codes) order by organization_id loop
+    perform private.ensure_access_administrator(org);
+  end loop;
+  return null;
+end; $$;
+create constraint trigger preserve_access_admin after insert or update or delete on public.role_assignments
+  deferrable initially deferred for each row execute function private.guard_access_administrator();
+create constraint trigger preserve_access_admin after insert or update or delete on public.organization_memberships
+  deferrable initially deferred for each row execute function private.guard_access_administrator();
+create constraint trigger preserve_access_admin after insert or update or delete on public.organization_roles
+  deferrable initially deferred for each row execute function private.guard_access_administrator();
+create constraint trigger preserve_access_admin after insert or update or delete on public.role_permissions
+  deferrable initially deferred for each row execute function private.guard_access_administrator();
+create constraint trigger preserve_access_admin after update on public.roles
+  deferrable initially deferred for each row execute function private.guard_access_administrator();
+create constraint trigger preserve_access_admin after update on public.organizations
+  deferrable initially deferred for each row execute function private.guard_access_administrator();
+
+create function public.available_roles(p_organization_id uuid) returns jsonb
+language plpgsql stable security definer set search_path = '' as $$
+begin
+  if not private.active_member(p_organization_id,auth.uid()) then raise exception using errcode='42501',message='active organization membership required'; end if;
+  return (select coalesce(jsonb_agg(to_jsonb(r) order by r.label),'[]') from public.roles r where private.role_enabled(p_organization_id,r.code));
+end; $$;
+
+create function public.manage_role_catalog(p_organization_id uuid default null) returns jsonb
+language plpgsql stable security definer set search_path = '' as $$
+begin
+  if p_organization_id is null then perform private.require_platform_admin();
+  elsif not private.is_platform_admin(auth.uid()) then
+    if not private.has_permission(p_organization_id,auth.uid(),'access.manage',null,null) then raise exception using errcode='42501',message='organization access management permission required'; end if;
+  else perform private.require_platform_admin(); end if;
+  return jsonb_build_object('roles',(select coalesce(jsonb_agg(to_jsonb(r)||jsonb_build_object(
+    'enabled',case when p_organization_id is null then r.active else coalesce((select a.enabled from public.organization_roles a where a.organization_id=p_organization_id and a.role_code=r.code),false) end,
+    'permissions',(select coalesce(jsonb_agg(permission_code order by permission_code),'[]') from public.role_permissions where role_code=r.code),
+    'assignment_count',(select count(*) from public.role_assignments a where a.role_code=r.code and a.revoked_at is null and (p_organization_id is null or a.organization_id=p_organization_id))
+  ) order by r.label),'[]') from public.roles r where (p_organization_id is null and r.organization_id is null) or
+    (p_organization_id is not null and (r.organization_id is null or r.organization_id=p_organization_id))),
+    'permissions',(select coalesce(jsonb_agg(to_jsonb(p) order by p.code),'[]') from public.permissions p));
+end; $$;
+
+create function public.save_role_definition(p_organization_id uuid,p_code text,p_label text,p_description text,
+  p_scopes public.scope_kind[],p_permissions text[],p_active boolean,p_default boolean,p_requires_company boolean,p_expected_version bigint default null)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare v_code text; previous public.roles; result public.roles;
+begin
+  if p_organization_id is null or private.is_platform_admin(auth.uid()) then perform private.require_platform_admin();
+  else perform private.require_admin_permission(p_organization_id,'access.manage'); end if;
+  if p_organization_id is not null then perform 1 from public.organizations where id=p_organization_id for update; end if;
+  if length(trim(coalesce(p_label,''))) not between 2 and 120 or length(coalesce(p_description,''))>2000 or coalesce(cardinality(p_scopes),0)<1
+    or coalesce(cardinality(p_permissions),0)<1 or cardinality(p_permissions)>30
+    or exists(select 1 from unnest(p_permissions) v where not exists(select 1 from public.permissions where code=v)) then
+    raise exception using errcode='22023',message='a role needs a name, valid scopes, and at least one catalog permission';
+  end if;
+  if p_permissions && array['structure.manage','access.manage','roster.manage','config.manage'] and
+    (p_scopes<>array['organization']::public.scope_kind[] or p_requires_company) then
+    raise exception using errcode='22023',message='administrative permissions require organization-only scope and cannot require a trade company';
+  end if;
+  if p_code is not null then
+    select * into previous from public.roles where roles.code=p_code for update;
+    if not found or previous.organization_id is distinct from p_organization_id then raise exception using errcode='42501',message='this role belongs to a different catalog'; end if;
+    if previous.version is distinct from p_expected_version then raise exception using errcode='40001',message='role changed; reload before saving'; end if;
+    if exists(select 1 from public.role_assignments where role_code=p_code and revoked_at is null and (ends_at is null or ends_at>now()) and not(scope_kind=any(p_scopes))) then
+      raise exception using errcode='23514',message='reassign existing grants before removing their allowed scope';
+    end if;
+    v_code:=p_code;
+    update public.roles r set label=trim(p_label),description=trim(p_description),allowed_scope_kinds=p_scopes,
+      active=p_active,default_for_new_organizations=(p_organization_id is null and p_default),requires_company=p_requires_company,
+      version=r.version+1,updated_at=now() where r.code=p_code returning * into result;
+    delete from public.role_permissions where role_code=p_code;
+  else
+    v_code:='custom_'||replace(gen_random_uuid()::text,'-','');
+    insert into public.roles(code,label,description,allowed_scope_kinds,organization_id,active,default_for_new_organizations,requires_company,immutable_seed)
+      values(v_code,trim(p_label),trim(p_description),p_scopes,p_organization_id,p_active,p_organization_id is null and p_default,p_requires_company,false) returning * into result;
+    if p_organization_id is not null then insert into public.organization_roles(organization_id,role_code) values(p_organization_id,v_code); end if;
+  end if;
+  insert into public.role_permissions(role_code,permission_code) select v_code,v from (select distinct unnest(p_permissions) v) p;
+  insert into public.platform_audit_events(actor_id,organization_id,action,entity_id,details)
+    values(auth.uid(),p_organization_id,'role.saved',v_code,jsonb_build_object('before',to_jsonb(previous),'after',to_jsonb(result),'permissions',p_permissions));
+  if p_organization_id is not null then perform private.append_audit(p_organization_id,auth.uid(),'role.saved','role',null,null,to_jsonb(previous),to_jsonb(result),jsonb_build_object('code',v_code,'permissions',p_permissions)); end if;
+  return to_jsonb(result);
+end; $$;
+
+create function public.set_organization_role(p_organization_id uuid,p_role_code text,p_enabled boolean) returns jsonb
+language plpgsql security definer set search_path = '' as $$
+begin
+  if private.is_platform_admin(auth.uid()) then perform private.require_platform_admin();
+  else perform private.require_admin_permission(p_organization_id,'access.manage'); end if;
+  perform 1 from public.organizations where id=p_organization_id for update;
+  if not exists(select 1 from public.roles where code=p_role_code and (organization_id is null or organization_id=p_organization_id) and (active or not p_enabled)) then
+    raise exception using errcode='22023',message='role is unavailable for this organization';
+  end if;
+  insert into public.organization_roles(organization_id,role_code,enabled) values(p_organization_id,p_role_code,p_enabled)
+    on conflict(organization_id,role_code) do update set enabled=excluded.enabled,updated_at=now();
+  insert into public.platform_audit_events(actor_id,organization_id,action,entity_id,details)
+    values(auth.uid(),p_organization_id,'organization.role_availability_changed',p_role_code,jsonb_build_object('enabled',p_enabled));
+  perform private.append_audit(p_organization_id,auth.uid(),'role.availability_changed','role',null,null,null,null,jsonb_build_object('code',p_role_code,'enabled',p_enabled));
+  return jsonb_build_object('role_code',p_role_code,'enabled',p_enabled);
+end; $$;
+
+revoke all on function public.platform_access(), public.available_roles(uuid), public.manage_role_catalog(uuid),
+  public.save_role_definition(uuid,text,text,text,public.scope_kind[],text[],boolean,boolean,boolean,bigint), public.set_organization_role(uuid,text,boolean) from public,anon;
+grant execute on function public.platform_access(), public.available_roles(uuid), public.manage_role_catalog(uuid),
+  public.save_role_definition(uuid,text,text,text,public.scope_kind[],text[],boolean,boolean,boolean,bigint), public.set_organization_role(uuid,text,boolean) to authenticated;
+
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202610260030_effective_role_enforcement.sql
+-- ============================================================================
+
+begin;
+
+-- Keep every authorization surface consistent with organization role availability.
+
+create or replace function private.has_permission(
+  p_organization_id uuid,
+  p_user_id uuid,
+  p_permission text,
+  p_neighborhood_id uuid default null,
+  p_home_id uuid default null
+)
+returns boolean
+language sql stable security definer set search_path = ''
+as $$
+  select private.active_member(p_organization_id, p_user_id) and exists (
+    select 1
+    from public.role_assignments ra
+    join public.role_permissions rp on rp.role_code = ra.role_code
+    where private.role_grant_enabled(ra) and ra.organization_id = p_organization_id
+      and ra.user_id = p_user_id
+      and rp.permission_code = p_permission
+      and ra.starts_at <= now()
+      and (ra.ends_at is null or ra.ends_at > now())
+      and ra.revoked_at is null
+      and (
+        ra.scope_kind = 'organization'
+        or (ra.scope_kind = 'neighborhood' and ra.neighborhood_id = p_neighborhood_id)
+        or (ra.scope_kind = 'home' and ra.neighborhood_id = p_neighborhood_id and ra.home_id = p_home_id)
+      )
+  );
+$$;
+
+create or replace function private.has_any_scope(
+  p_organization_id uuid,
+  p_user_id uuid,
+  p_neighborhood_id uuid default null,
+  p_home_id uuid default null
+)
+returns boolean
+language sql stable security definer set search_path = ''
+as $$
+  select private.active_member(p_organization_id, p_user_id) and exists (
+    select 1 from public.role_assignments ra
+    where private.role_grant_enabled(ra) and ra.organization_id = p_organization_id and ra.user_id = p_user_id
+      and ra.starts_at <= now() and (ra.ends_at is null or ra.ends_at > now()) and ra.revoked_at is null
+      and (
+        ra.scope_kind = 'organization'
+        or (ra.scope_kind = 'neighborhood' and ra.neighborhood_id = p_neighborhood_id)
+        or (ra.scope_kind = 'home' and ra.neighborhood_id = p_neighborhood_id and ra.home_id = p_home_id)
+      )
+  );
+$$;
+
+create or replace function private.has_active_role(p_organization_id uuid, p_user_id uuid)
+returns boolean
+language sql stable security definer set search_path = ''
+as $$
+  select private.active_member(p_organization_id, p_user_id) and exists (
+    select 1 from public.role_assignments ra
+    where private.role_grant_enabled(ra) and ra.organization_id = p_organization_id and ra.user_id = p_user_id
+      and ra.starts_at <= now() and (ra.ends_at is null or ra.ends_at > now()) and ra.revoked_at is null
+  );
+$$;
+
+create or replace function public.current_access(p_organization_id uuid)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+declare result jsonb;
+begin
+  if auth.uid() is null or not private.active_member(p_organization_id, auth.uid()) then
+    raise exception using errcode = '42501', message = 'active membership required';
+  end if;
+  select jsonb_build_object(
+    'organization_id', p_organization_id,
+    'user_id', auth.uid(),
+    'membership', jsonb_build_object('affiliation', m.affiliation, 'status', m.status),
+    'profile', jsonb_build_object('display_name', p.display_name, 'preferred_locale', p.preferred_locale, 'timezone', p.timezone),
+    'roles', coalesce((
+      select jsonb_agg(jsonb_build_object(
+        'id', ra.id,
+        'role_code', ra.role_code,
+        'role_label', (select label from public.roles where code=ra.role_code),
+        'scope_kind', ra.scope_kind,
+        'neighborhood_id', ra.neighborhood_id,
+        'home_id', ra.home_id,
+        'starts_at', ra.starts_at,
+        'ends_at', ra.ends_at
+      ) order by ra.role_code, ra.scope_kind, ra.neighborhood_id, ra.home_id)
+      from public.role_assignments ra
+      where ra.organization_id = p_organization_id and ra.user_id = auth.uid()
+        and private.role_grant_enabled(ra) and ra.revoked_at is null and ra.starts_at <= now() and (ra.ends_at is null or ra.ends_at > now())
+    ), '[]'::jsonb),
+    'permissions', coalesce((
+      select jsonb_agg(permission_code order by permission_code)
+      from (
+        select distinct rp.permission_code
+        from public.role_assignments ra
+        join public.role_permissions rp on rp.role_code = ra.role_code
+        where ra.organization_id = p_organization_id and ra.user_id = auth.uid()
+          and private.role_grant_enabled(ra) and ra.revoked_at is null and ra.starts_at <= now() and (ra.ends_at is null or ra.ends_at > now())
+      ) permissions
+    ), '[]'::jsonb),
+    'companies', coalesce((
+      select jsonb_agg(jsonb_build_object('company_id', cm.company_id, 'kind', cm.kind) order by cm.company_id)
+      from public.company_memberships cm
+      where cm.organization_id = p_organization_id and cm.user_id = auth.uid()
+        and cm.revoked_at is null and cm.active_from <= now() and (cm.active_to is null or cm.active_to > now())
+    ), '[]'::jsonb)
+  ) into result
+  from public.organization_memberships m
+  join public.profiles p on p.id = m.user_id
+  where m.organization_id = p_organization_id and m.user_id = auth.uid() and m.status = 'active';
+  return result;
+end;
+$$;
+
+create or replace function public.admin_set_member_access(
+  p_organization_id uuid,
+  p_user_id uuid,
+  p_affiliation public.affiliation_kind,
+  p_assignments jsonb,
+  p_company_id uuid default null,
+  p_company_kind text default null
+)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare
+  assignment jsonb;
+  role_row public.roles%rowtype;
+  v_role_code text;
+  v_requested_scope public.scope_kind;
+  v_neighborhood_id uuid;
+  v_home_id uuid;
+  previous_access jsonb;
+  new_access jsonb;
+  retains_org_admin boolean := false;
+begin
+  if auth.uid() is null or not private.require_aal2() or not private.has_permission(p_organization_id, auth.uid(), 'access.manage', null, null) then
+    raise exception using errcode = '42501', message = 'aal2 access management permission required';
+  end if;
+  if jsonb_typeof(p_assignments) <> 'array' or jsonb_array_length(p_assignments) < 1 or jsonb_array_length(p_assignments) > 20 then
+    raise exception using errcode = '22023', message = 'one to twenty role assignments are required';
+  end if;
+  if not exists (select 1 from auth.users where id = p_user_id) then raise exception using errcode = '22023', message = 'identity does not exist'; end if;
+  if p_company_id is not null then
+    if p_company_kind not in ('manager','technician') then raise exception using errcode = '22023', message = 'company kind must be manager or technician'; end if;
+    if not exists (select 1 from public.companies c where c.organization_id = p_organization_id and c.id = p_company_id and c.status = 'active') then raise exception using errcode = '22023', message = 'company is unavailable'; end if;
+  elsif p_company_kind is not null then raise exception using errcode = '22023', message = 'company is required for company kind';
+  end if;
+
+  select jsonb_build_object(
+    'membership', to_jsonb(m),
+    'roles', coalesce((select jsonb_agg(to_jsonb(ra)) from public.role_assignments ra where ra.organization_id=p_organization_id and ra.user_id=p_user_id and ra.revoked_at is null),'[]'::jsonb),
+    'companies', coalesce((select jsonb_agg(to_jsonb(cm)) from public.company_memberships cm where cm.organization_id=p_organization_id and cm.user_id=p_user_id and cm.revoked_at is null),'[]'::jsonb)
+  ) into previous_access from public.organization_memberships m where m.organization_id=p_organization_id and m.user_id=p_user_id;
+
+  insert into public.organization_memberships(organization_id,user_id,affiliation,status,joined_at)
+    values(p_organization_id,p_user_id,p_affiliation,'active',now())
+    on conflict(organization_id,user_id) do update set affiliation=excluded.affiliation,status='active',joined_at=coalesce(public.organization_memberships.joined_at,now()),ended_at=null;
+
+  for assignment in select value from jsonb_array_elements(p_assignments) loop
+    v_role_code:=nullif(assignment->>'role_code','');
+    v_requested_scope:=nullif(assignment->>'scope_kind','')::public.scope_kind;
+    v_neighborhood_id:=nullif(assignment->>'neighborhood_id','')::uuid;
+    v_home_id:=nullif(assignment->>'home_id','')::uuid;
+    select * into role_row from public.roles r where r.code=v_role_code and private.role_enabled(p_organization_id,r.code);
+    if not found or v_requested_scope is null or not(v_requested_scope=any(role_row.allowed_scope_kinds)) then raise exception using errcode='22023',message='role and scope are incompatible'; end if;
+    if (v_requested_scope='organization' and (v_neighborhood_id is not null or v_home_id is not null))
+      or (v_requested_scope='neighborhood' and (v_neighborhood_id is null or v_home_id is not null))
+      or (v_requested_scope='home' and (v_neighborhood_id is null or v_home_id is null)) then raise exception using errcode='22023',message='invalid role scope identifiers'; end if;
+    if v_neighborhood_id is not null and not exists(select 1 from public.neighborhoods n where n.organization_id=p_organization_id and n.id=v_neighborhood_id and n.status='active') then raise exception using errcode='22023',message='neighborhood is unavailable'; end if;
+    if v_home_id is not null and not exists(select 1 from public.homes h where h.organization_id=p_organization_id and h.neighborhood_id=v_neighborhood_id and h.id=v_home_id and h.archived_at is null) then raise exception using errcode='22023',message='home is unavailable'; end if;
+    if role_row.requires_company and p_company_id is null then raise exception using errcode='22023',message='trade roles require a company association'; end if;
+    if v_role_code='org_admin' and v_requested_scope='organization' then retains_org_admin:=true; end if;
+  end loop;
+
+  update public.role_assignments set revoked_at=now() where organization_id=p_organization_id and user_id=p_user_id and revoked_at is null;
+  update public.company_memberships set revoked_at=now() where organization_id=p_organization_id and user_id=p_user_id and revoked_at is null;
+  for assignment in select value from jsonb_array_elements(p_assignments) loop
+    insert into public.role_assignments(organization_id,user_id,role_code,scope_kind,neighborhood_id,home_id,starts_at,ends_at,granted_by)
+    values(p_organization_id,p_user_id,assignment->>'role_code',(assignment->>'scope_kind')::public.scope_kind,nullif(assignment->>'neighborhood_id','')::uuid,nullif(assignment->>'home_id','')::uuid,coalesce(nullif(assignment->>'starts_at','')::timestamptz,now()),nullif(assignment->>'ends_at','')::timestamptz,auth.uid());
+  end loop;
+  if p_company_id is not null then insert into public.company_memberships(organization_id,company_id,user_id,kind) values(p_organization_id,p_company_id,p_user_id,p_company_kind); end if;
+
+  select jsonb_build_object(
+    'membership',to_jsonb(m),
+    'roles',coalesce((select jsonb_agg(to_jsonb(ra)) from public.role_assignments ra where ra.organization_id=p_organization_id and ra.user_id=p_user_id and ra.revoked_at is null),'[]'::jsonb),
+    'companies',coalesce((select jsonb_agg(to_jsonb(cm)) from public.company_memberships cm where cm.organization_id=p_organization_id and cm.user_id=p_user_id and cm.revoked_at is null),'[]'::jsonb)
+  ) into new_access from public.organization_memberships m where m.organization_id=p_organization_id and m.user_id=p_user_id;
+  perform private.append_audit(p_organization_id,auth.uid(),'membership.access_changed','user',p_user_id,null,previous_access,new_access);
+  return new_access;
+end; $$;
+
+create or replace function public.admin_suspend_member(p_organization_id uuid, p_user_id uuid, p_reason text)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare orphaned jsonb;
+begin
+  if auth.uid() is null or not private.require_aal2() or not private.has_permission(p_organization_id, auth.uid(), 'access.manage', null, null) then
+    raise exception using errcode = '42501', message = 'aal2 access management permission required';
+  end if;
+  update public.organization_memberships set status = 'suspended', ended_at = now() where organization_id = p_organization_id and user_id = p_user_id and status = 'active';
+  if not found then raise exception using errcode = '02000', message = 'active membership not found'; end if;
+  update public.role_assignments set revoked_at = now() where organization_id = p_organization_id and user_id = p_user_id and revoked_at is null;
+  update public.company_memberships set revoked_at = now() where organization_id = p_organization_id and user_id = p_user_id and revoked_at is null;
+  select coalesce(jsonb_agg(jsonb_build_object('work_item_id', w.id, 'title', w.title)), '[]'::jsonb) into orphaned
+  from public.work_items w join public.assignment_episodes ae on ae.organization_id = w.organization_id and ae.id = w.current_assignment_id
+  where w.organization_id = p_organization_id and ae.internal_assignee_user_id = p_user_id and ae.ended_at is null;
+  perform private.append_audit(p_organization_id, auth.uid(), 'membership.suspended', 'user', p_user_id, null, null, jsonb_build_object('reason', p_reason, 'orphaned_work', orphaned));
+  return jsonb_build_object('user_id', p_user_id, 'orphaned_work', orphaned);
+end;
+$$;
+
+create or replace function public.bootstrap_organization(p_name text, p_timezone text, p_admin_user_id uuid)
+returns uuid language plpgsql security definer set search_path = '' as $$
+declare org_id uuid; calendar_id uuid;
+begin
+  if auth.role() <> 'service_role' then raise exception using errcode = '42501', message = 'service role required'; end if;
+  insert into public.organizations(name, timezone) values (trim(p_name), p_timezone) returning id into org_id;
+  insert into public.organization_roles(organization_id,role_code,enabled) values(org_id,'org_admin',true) on conflict(organization_id,role_code) do update set enabled=true;
+  insert into public.business_calendars(organization_id, name, timezone) values (org_id, 'Default business calendar', p_timezone) returning id into calendar_id;
+  update public.organizations set default_calendar_id = calendar_id where id = org_id;
+  insert into public.organization_memberships(organization_id, user_id, affiliation, status, joined_at)
+    values (org_id, p_admin_user_id, 'internal', 'active', now());
+  insert into public.role_assignments(organization_id, user_id, role_code, scope_kind, granted_by)
+    values (org_id, p_admin_user_id, 'org_admin', 'organization', p_admin_user_id);
+  insert into public.audit_events(organization_id, actor_id, event_type, entity_type, entity_id, metadata)
+    values (org_id, p_admin_user_id, 'organization.bootstrapped', 'organization', org_id, jsonb_build_object('controlled_operator', true));
+  return org_id;
+end;
+$$;
+
+create or replace function public.admin_list_members(p_organization_id uuid)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+declare result jsonb;
+begin
+  if auth.uid() is null or not private.has_permission(p_organization_id, auth.uid(), 'access.manage', null, null) then
+    raise exception using errcode = '42501', message = 'access management permission required';
+  end if;
+  select coalesce(jsonb_agg(jsonb_build_object(
+    'user_id', m.user_id,
+    'email', u.email,
+    'display_name', p.display_name,
+    'affiliation', m.affiliation,
+    'status', m.status,
+    'joined_at', m.joined_at,
+    'roles', coalesce((
+      select jsonb_agg(jsonb_build_object(
+        'id', ra.id,
+        'role_code', ra.role_code,
+        'role_label', (select label from public.roles where code=ra.role_code),
+        'scope_kind', ra.scope_kind,
+        'neighborhood_id', ra.neighborhood_id,
+        'home_id', ra.home_id,
+        'starts_at', ra.starts_at,
+        'ends_at', ra.ends_at
+      ) order by ra.role_code, ra.scope_kind)
+      from public.role_assignments ra
+      where ra.organization_id = m.organization_id and ra.user_id = m.user_id and ra.revoked_at is null
+        and ra.starts_at <= now() and (ra.ends_at is null or ra.ends_at > now())
+    ), '[]'::jsonb),
+    'companies', coalesce((
+      select jsonb_agg(jsonb_build_object('company_id', cm.company_id, 'company_name', c.name, 'kind', cm.kind))
+      from public.company_memberships cm
+      join public.companies c on c.organization_id = cm.organization_id and c.id = cm.company_id
+      where cm.organization_id = m.organization_id and cm.user_id = m.user_id and cm.revoked_at is null
+        and cm.active_from <= now() and (cm.active_to is null or cm.active_to > now())
+    ), '[]'::jsonb)
+  ) order by p.display_name, u.email), '[]'::jsonb) into result
+  from public.organization_memberships m
+  join auth.users u on u.id = m.user_id
+  join public.profiles p on p.id = m.user_id
+  where m.organization_id = p_organization_id;
+  return result;
+end;
+$$;
+
+create or replace function private.can_read_work(p_user_id uuid, p_work_item_id uuid)
+returns boolean
+language sql stable security definer set search_path = ''
+as $$
+  select exists (
+    select 1
+    from public.work_items w
+    left join public.assignment_episodes ae on ae.organization_id = w.organization_id and ae.id = w.current_assignment_id
+    where w.id = p_work_item_id
+      and private.active_member(w.organization_id, p_user_id)
+      and (
+        (w.state = 'draft' and w.created_by = p_user_id and private.has_permission(w.organization_id,p_user_id,'work.create',w.neighborhood_id,w.home_id))
+        or private.has_permission(w.organization_id, p_user_id, 'work.read_scope', w.neighborhood_id, w.home_id)
+        or private.has_permission(w.organization_id, p_user_id, 'work.verify', w.neighborhood_id, w.home_id)
+        or (ae.internal_assignee_user_id = p_user_id and private.has_permission(w.organization_id,p_user_id,'work.execute_assigned',w.neighborhood_id,w.home_id))
+        or (ae.company_id is not null and private.active_company_membership(w.organization_id, ae.company_id, p_user_id, 'manager') and private.has_permission(w.organization_id,p_user_id,'work.execute_assigned',w.neighborhood_id,w.home_id))
+        or (ae.technician_user_id = p_user_id and private.active_company_membership(w.organization_id, ae.company_id, p_user_id, 'technician') and private.has_permission(w.organization_id,p_user_id,'work.execute_assigned',w.neighborhood_id,w.home_id))
+        or exists (
+          select 1 from public.inspection_participants ip
+          join public.inspections i on i.organization_id = ip.organization_id and i.id = ip.inspection_id
+          where w.inspection_id = i.id and ip.user_id = p_user_id and (private.has_permission(w.organization_id,p_user_id,'inspection.perform',w.neighborhood_id,w.home_id) or private.has_permission(w.organization_id,p_user_id,'inspection.manage',w.neighborhood_id,w.home_id))
+        )
+      )
+  );
+$$;
+
+create or replace function private.can_read_inspection(p_user_id uuid, p_inspection_id uuid)
+returns boolean
+language sql stable security definer set search_path = ''
+as $$
+  select exists (
+    select 1 from public.inspections i
+    where i.id = p_inspection_id and private.active_member(i.organization_id, p_user_id)
+      and (
+        private.has_permission(i.organization_id, p_user_id, 'inspection.manage', i.neighborhood_id, i.home_id)
+        or private.has_permission(i.organization_id, p_user_id, 'inspection.perform', i.neighborhood_id, i.home_id)
+        or exists (select 1 from public.inspection_participants ip where ip.organization_id = i.organization_id and ip.inspection_id = i.id and ip.user_id = p_user_id and private.has_permission(i.organization_id,p_user_id,'inspection.perform',i.neighborhood_id,i.home_id))
+        or exists (
+          select 1 from public.inspection_engagements ie
+          where ie.organization_id = i.organization_id and ie.home_id = i.home_id and ie.inspector_user_id = p_user_id
+            and private.has_permission(i.organization_id,p_user_id,'inspection.perform',i.neighborhood_id,i.home_id) and ie.starts_at <= now() and ie.ends_at > now() and ie.revoked_at is null
+        )
+      )
+  );
+$$;
+
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202610260031_platform_organizations.sql
+-- ============================================================================
+
+begin;
+
+create function private.validate_invitation_roles() returns trigger
+language plpgsql security definer set search_path = '' as $$
+declare item jsonb; role_row public.roles; scope public.scope_kind; neighborhood uuid; home uuid;
+begin
+  if new.status<>'pending' then return new; end if;
+  if jsonb_typeof(new.proposed_grants)<>'array' or jsonb_array_length(new.proposed_grants) not between 1 and 20 then
+    raise exception using errcode='22023',message='one to twenty role grants are required';
+  end if;
+  for item in select value from jsonb_array_elements(new.proposed_grants) loop
+    select * into role_row from public.roles where code=item->>'role_code';
+    scope:=nullif(item->>'scope_kind','')::public.scope_kind;
+    neighborhood:=nullif(item->>'neighborhood_id','')::uuid;
+    home:=nullif(item->>'home_id','')::uuid;
+    if not found or not private.role_enabled(new.organization_id,role_row.code) or scope is null or not(scope=any(role_row.allowed_scope_kinds)) then
+      raise exception using errcode='22023',message='invitation role is unavailable or has an incompatible scope';
+    end if;
+    if role_row.requires_company and new.proposed_company_id is null then raise exception using errcode='22023',message='this role requires a trade company'; end if;
+    if (scope='organization' and (neighborhood is not null or home is not null)) or
+      (scope='neighborhood' and (neighborhood is null or home is not null)) or (scope='home' and (neighborhood is null or home is null)) then
+      raise exception using errcode='22023',message='invitation scope identifiers are invalid';
+    end if;
+    if neighborhood is not null and not exists(select 1 from public.neighborhoods where organization_id=new.organization_id and id=neighborhood and status='active') then
+      raise exception using errcode='22023',message='invitation neighborhood is unavailable';
+    end if;
+    if home is not null and not exists(select 1 from public.homes where organization_id=new.organization_id and neighborhood_id=neighborhood and id=home and archived_at is null) then
+      raise exception using errcode='22023',message='invitation home is unavailable';
+    end if;
+  end loop;
+  return new;
+end; $$;
+create trigger invitation_role_catalog_guard before insert or update on public.invites
+  for each row execute function private.validate_invitation_roles();
+
+create function public.platform_list_organizations(p_search text default '',p_status text default '',p_page integer default 0)
+returns jsonb language plpgsql stable security definer set search_path = '' as $$
+declare result jsonb;
+begin
+  perform private.require_platform_admin();
+  select jsonb_build_object('total',(select count(*) from public.organizations o where
+    (p_status='' or o.status::text=p_status) and (o.name ilike '%'||p_search||'%' or o.id::text=p_search)),
+    'rows',coalesce(jsonb_agg(to_jsonb(rows) order by rows.name,rows.id),'[]')) into result from (
+      select o.*,(select count(*) from public.organization_memberships m where m.organization_id=o.id and m.status='active') as member_count,
+        b.administrator_email
+      from public.organizations o left join public.organization_onboarding b on b.organization_id=o.id
+      where (p_status='' or o.status::text=p_status) and (o.name ilike '%'||p_search||'%' or o.id::text=p_search)
+      order by o.name,o.id limit 25 offset greatest(0,least(p_page,100000))*25
+    ) rows;
+  return result;
+end; $$;
+
+create function public.platform_get_organization(p_id uuid) returns jsonb
+language plpgsql stable security definer set search_path = '' as $$
+declare result jsonb;
+begin
+  perform private.require_platform_admin();
+  select jsonb_build_object('organization',to_jsonb(o),'onboarding',(select to_jsonb(b) from public.organization_onboarding b where b.organization_id=o.id),
+    'roles',public.manage_role_catalog(o.id),
+    'invitations',(select coalesce(jsonb_agg(to_jsonb(i)),'[]') from (select id,normalized_email,status,expires_at,created_at,delivery_error from public.invites where organization_id=o.id and proposed_membership->>'platform_onboarding'='true' order by created_at desc limit 20) i),
+    'activity',(select coalesce(jsonb_agg(to_jsonb(a)),'[]') from (select action,created_at from public.platform_audit_events where organization_id=o.id order by created_at desc limit 20) a))
+  into result from public.organizations o where o.id=p_id;
+  if result is null then raise exception using errcode='02000',message='organization not found'; end if;
+  return result;
+end; $$;
+
+create function public.platform_save_organization(p_id uuid,p_name text,p_timezone text,p_status public.organization_status,
+  p_administrator_email text,p_administrator_role_code text,p_request_id uuid,p_expected_version bigint default null)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare result public.organizations; before_row public.organizations; calendar uuid; existing uuid;
+begin
+  perform private.require_platform_admin();
+  if p_id is null then
+    perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(p_request_id::text,0));
+    select organization_id into existing from public.organization_onboarding where request_id=p_request_id;
+    if existing is not null then return public.platform_get_organization(existing); end if;
+  end if;
+  if length(trim(coalesce(p_name,''))) not between 2 and 160 or not exists(select 1 from pg_catalog.pg_timezone_names where name=p_timezone) then
+    raise exception using errcode='22023',message='organization name and a valid timezone are required';
+  end if;
+  if p_id is null then
+    if p_status<>'active' or p_request_id is null or p_administrator_email !~ '^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$' or p_administrator_email is null then
+      raise exception using errcode='22023',message='a new organization requires an administrator email and an onboarding request ID';
+    end if;
+    if not exists(select 1 from public.roles r join public.role_permissions rp on rp.role_code=r.code and rp.permission_code='access.manage'
+      where r.code=p_administrator_role_code and r.organization_id is null and r.active and 'organization'=any(r.allowed_scope_kinds)) then
+      raise exception using errcode='22023',message='choose an active shared role with organization-wide access management for the initial administrator';
+    end if;
+    insert into public.organizations(name,timezone) values(trim(p_name),p_timezone) returning * into result;
+    insert into public.organization_roles(organization_id,role_code,enabled) values(result.id,p_administrator_role_code,true)
+      on conflict(organization_id,role_code) do update set enabled=true;
+    insert into public.business_calendars(organization_id,name,timezone) values(result.id,'Default business calendar',p_timezone) returning id into calendar;
+    update public.organizations set default_calendar_id=calendar where id=result.id returning * into result;
+    insert into public.organization_onboarding(organization_id,request_id,administrator_email,administrator_role_code,created_by)
+      values(result.id,p_request_id,lower(trim(p_administrator_email)),p_administrator_role_code,auth.uid());
+  else
+    select * into before_row from public.organizations where id=p_id for update;
+    if not found then raise exception using errcode='02000',message='organization not found'; end if;
+    if before_row.version is distinct from p_expected_version then raise exception using errcode='40001',message='organization changed; reload before saving'; end if;
+    update public.organizations set name=trim(p_name),timezone=p_timezone,status=p_status,version=version+1,updated_at=now()
+      where id=p_id returning * into result;
+    if before_row.onboarding_status='pending_admin' then
+      if p_administrator_email is null or p_administrator_email !~ '^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$' or not exists(
+        select 1 from public.roles r join public.role_permissions rp on rp.role_code=r.code and rp.permission_code='access.manage'
+        where r.code=p_administrator_role_code and r.active and (r.organization_id is null or r.organization_id=p_id) and 'organization'=any(r.allowed_scope_kinds)) then
+        raise exception using errcode='22023',message='a valid initial administrator email and organization-wide access role are required';
+      end if;
+      if exists(select 1 from public.organization_onboarding where organization_id=p_id and
+        (administrator_email<>lower(trim(p_administrator_email)) or administrator_role_code<>p_administrator_role_code)) then
+        update public.invites set status='revoked' where organization_id=p_id and status='pending' and proposed_membership->>'platform_onboarding'='true';
+      end if;
+      update public.organization_onboarding set administrator_email=lower(trim(p_administrator_email)),administrator_role_code=p_administrator_role_code where organization_id=p_id;
+      insert into public.organization_roles(organization_id,role_code,enabled) values(p_id,p_administrator_role_code,true)
+        on conflict(organization_id,role_code) do update set enabled=true,updated_at=now();
+    end if;
+  end if;
+  insert into public.platform_audit_events(actor_id,organization_id,action,entity_id,details)
+    values(auth.uid(),result.id,case when p_id is null then 'organization.created' else 'organization.updated' end,result.id::text,jsonb_build_object('before',to_jsonb(before_row),'after',to_jsonb(result),'initial_administrator_email',case when result.onboarding_status='pending_admin' then lower(trim(p_administrator_email)) else null end,'initial_administrator_role',case when result.onboarding_status='pending_admin' then p_administrator_role_code else null end));
+  return public.platform_get_organization(result.id);
+end; $$;
+
+create function public.platform_prepare_administrator_invitation(p_organization_id uuid,p_token_hash text,p_expires_at timestamptz)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare onboarding public.organization_onboarding; invitation public.invites;
+begin
+  perform private.require_platform_admin();
+  perform 1 from public.organizations where id=p_organization_id and status='active' and onboarding_status='pending_admin' for update;
+  if not found then raise exception using errcode='22023',message='only an active organization awaiting its first administrator can use onboarding invitations'; end if;
+  select * into onboarding from public.organization_onboarding where organization_id=p_organization_id;
+  if not found then raise exception using errcode='22023',message='administrator onboarding details are unavailable'; end if;
+  if p_token_hash !~ '^[a-f0-9]{64}$' or p_expires_at<=now() or p_expires_at>now()+interval '7 days 5 minutes' then
+    raise exception using errcode='22023',message='invalid invitation token or expiry';
+  end if;
+  if not private.role_enabled(p_organization_id,onboarding.administrator_role_code) or not exists(
+    select 1 from public.role_permissions where role_code=onboarding.administrator_role_code and permission_code='access.manage') then
+    raise exception using errcode='22023',message='enable the initial administrator role before sending this invitation';
+  end if;
+  update public.invites set status='revoked' where organization_id=p_organization_id and normalized_email=onboarding.administrator_email and status='pending';
+  insert into public.invites(organization_id,normalized_email,proposed_membership,proposed_grants,token_hash,expires_at,invited_by)
+    values(p_organization_id,onboarding.administrator_email,jsonb_build_object('affiliation','internal','platform_onboarding',true),
+      jsonb_build_array(jsonb_build_object('role_code',onboarding.administrator_role_code,'scope_kind','organization','neighborhood_id',null,'home_id',null)),
+      p_token_hash,p_expires_at,auth.uid()) returning * into invitation;
+  insert into public.platform_audit_events(actor_id,organization_id,action,entity_id)
+    values(auth.uid(),p_organization_id,'organization.administrator_invited',invitation.id::text);
+  return jsonb_build_object('id',invitation.id,'email',invitation.normalized_email,'expires_at',invitation.expires_at);
+end; $$;
+
+revoke all on function public.platform_list_organizations(text,text,integer),public.platform_get_organization(uuid),
+  public.platform_save_organization(uuid,text,text,public.organization_status,text,text,uuid,bigint),
+  public.platform_prepare_administrator_invitation(uuid,text,timestamptz) from public,anon;
+grant execute on function public.platform_list_organizations(text,text,integer),public.platform_get_organization(uuid),
+  public.platform_save_organization(uuid,text,text,public.organization_status,text,text,uuid,bigint),
+  public.platform_prepare_administrator_invitation(uuid,text,timestamptz) to authenticated;
+
+create function public.invitation_identity_exists(p_email text) returns boolean
+language plpgsql stable security definer set search_path = '' as $$
+begin
+  if auth.role()<>'service_role' then raise exception using errcode='42501',message='service role required'; end if;
+  return exists(select 1 from auth.users where lower(email)=lower(trim(p_email)));
+end; $$;
+revoke all on function public.invitation_identity_exists(text) from public,anon,authenticated;
+grant execute on function public.invitation_identity_exists(text) to service_role;
+
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202610260032_platform_operations.sql
+-- ============================================================================
+
+begin;
+
+create table public.organization_pricing (
+  organization_id uuid primary key references public.organizations(id),
+  plan_name text not null check(length(trim(plan_name)) between 1 and 120),
+  currency text not null check(currency ~ '^[A-Z]{3}$'),
+  billing_interval text not null check(billing_interval in ('monthly','annual')),
+  subscription_status text not null check(subscription_status in ('draft','trial','active','past_due','cancelled')),
+  base_rate numeric(12,2) not null default 0 check(base_rate>=0),
+  user_rate numeric(12,2) not null default 0 check(user_rate>=0),
+  home_rate numeric(12,2) not null default 0 check(home_rate>=0),
+  included_users integer not null default 0 check(included_users>=0),
+  included_homes integer not null default 0 check(included_homes>=0),
+  billing_email text not null default '', starts_on date not null,
+  ends_on date check(ends_on>=starts_on), notes text not null default '' check(length(notes)<=4000),
+  version bigint not null default 1, updated_at timestamptz not null default now()
+);
+alter table public.organization_pricing enable row level security;
+revoke all on public.organization_pricing from anon,authenticated;
+grant all on public.organization_pricing to service_role;
+
+create function public.platform_get_operations(p_organization_id uuid,p_search text default '',p_page integer default 0)
+returns jsonb language plpgsql stable security definer set search_path='' as $$
+declare result jsonb;
+begin
+  perform private.require_platform_admin();
+  if not exists(select 1 from public.organizations where id=p_organization_id) then raise exception 'organization not found'; end if;
+  select jsonb_build_object(
+    'pricing',(select to_jsonb(p) from public.organization_pricing p where organization_id=p_organization_id),
+    'usage',jsonb_build_object('users',(select count(*) from public.organization_memberships where organization_id=p_organization_id and status='active' and (ended_at is null or ended_at>now())),
+      'homes',(select count(*) from public.homes where organization_id=p_organization_id and archived_at is null)),
+    'total',(select count(*) from public.organization_memberships m join auth.users u on u.id=m.user_id left join public.profiles p on p.id=m.user_id
+      where m.organization_id=p_organization_id and (coalesce(u.email,'') ilike '%'||p_search||'%' or coalesce(p.display_name,'') ilike '%'||p_search||'%')),
+    'members',(select coalesce(jsonb_agg(to_jsonb(q) order by q.email,q.user_id),'[]') from (
+      select m.user_id,u.email,p.display_name,m.status,m.affiliation,
+        (select coalesce(jsonb_agg(jsonb_build_object('label',r.label,'scope',ra.scope_kind,'effective',private.role_grant_enabled(ra)) order by r.label),'[]')
+          from public.role_assignments ra join public.roles r on r.code=ra.role_code where ra.organization_id=m.organization_id and ra.user_id=m.user_id and ra.revoked_at is null and ra.starts_at<=now() and (ra.ends_at is null or ra.ends_at>now())) as roles,
+        (select count(*) from public.assignment_episodes a where a.organization_id=m.organization_id and a.internal_assignee_user_id=m.user_id and a.ended_at is null) as assigned_work
+      from public.organization_memberships m join auth.users u on u.id=m.user_id left join public.profiles p on p.id=m.user_id
+      where m.organization_id=p_organization_id and (coalesce(u.email,'') ilike '%'||p_search||'%' or coalesce(p.display_name,'') ilike '%'||p_search||'%')
+      order by u.email,m.user_id limit 25 offset greatest(0,least(p_page,100000))*25) q),
+    'invitations',(select coalesce(jsonb_agg(to_jsonb(q) order by q.created_at desc),'[]') from (
+      select id,normalized_email,status,expires_at,created_at,delivery_error,proposed_grants from public.invites where organization_id=p_organization_id order by created_at desc limit 50) q)
+  ) into result;
+  return result;
+end; $$;
+
+create function public.platform_save_pricing(p_organization_id uuid,p_config jsonb,p_expected_version bigint default null)
+returns jsonb language plpgsql security definer set search_path='' as $$
+declare previous public.organization_pricing; saved public.organization_pricing; billing_email text;
+begin
+  perform private.require_platform_admin();
+  perform 1 from public.organizations where id=p_organization_id for update;
+  if not found then raise exception 'organization not found'; end if;
+  select * into previous from public.organization_pricing where organization_id=p_organization_id;
+  if previous.version is distinct from p_expected_version then raise exception using errcode='40001',message='pricing changed; reload before saving'; end if;
+  billing_email:=lower(trim(coalesce(p_config->>'billing_email','')));
+  if billing_email<>'' and billing_email !~ '^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$' then raise exception 'valid billing email required'; end if;
+  insert into public.organization_pricing(organization_id,plan_name,currency,billing_interval,subscription_status,base_rate,user_rate,home_rate,included_users,included_homes,billing_email,starts_on,ends_on,notes)
+  values(p_organization_id,trim(p_config->>'plan_name'),upper(p_config->>'currency'),p_config->>'billing_interval',p_config->>'subscription_status',
+    (p_config->>'base_rate')::numeric,(p_config->>'user_rate')::numeric,(p_config->>'home_rate')::numeric,(p_config->>'included_users')::integer,(p_config->>'included_homes')::integer,
+    billing_email,(p_config->>'starts_on')::date,nullif(p_config->>'ends_on','')::date,coalesce(p_config->>'notes',''))
+  on conflict(organization_id) do update set plan_name=excluded.plan_name,currency=excluded.currency,billing_interval=excluded.billing_interval,subscription_status=excluded.subscription_status,
+    base_rate=excluded.base_rate,user_rate=excluded.user_rate,home_rate=excluded.home_rate,included_users=excluded.included_users,included_homes=excluded.included_homes,
+    billing_email=excluded.billing_email,starts_on=excluded.starts_on,ends_on=excluded.ends_on,notes=excluded.notes,version=public.organization_pricing.version+1,updated_at=now()
+  returning * into saved;
+  insert into public.platform_audit_events(actor_id,organization_id,action,entity_id,details)
+    values(auth.uid(),p_organization_id,'organization.pricing_updated',p_organization_id::text,jsonb_build_object('before',to_jsonb(previous),'after',to_jsonb(saved)));
+  return to_jsonb(saved);
+end; $$;
+
+create function public.platform_set_member_status(p_organization_id uuid,p_user_id uuid,p_status public.membership_status,p_reason text,p_expected_status public.membership_status)
+returns jsonb language plpgsql security definer set search_path='' as $$
+declare previous public.organization_memberships; assigned integer;
+begin
+  perform private.require_platform_admin();
+  if p_status not in ('active','suspended','removed') or length(trim(coalesce(p_reason,''))) not between 5 and 1000 then raise exception 'a reason of 5 to 1000 characters and a valid status are required'; end if;
+  perform 1 from public.organizations where id=p_organization_id for update;
+  select * into previous from public.organization_memberships where organization_id=p_organization_id and user_id=p_user_id for update;
+  if not found then raise exception 'organization membership not found'; end if;
+  if previous.status is distinct from p_expected_status then raise exception using errcode='40001',message='membership changed; reload before continuing'; end if;
+  if previous.status=p_status or (p_status='active' and previous.status<>'suspended') then raise exception 'removed users must be invited again with new role grants'; end if;
+  update public.organization_memberships set status=p_status,ended_at=case when p_status='active' then null else now() end where organization_id=p_organization_id and user_id=p_user_id;
+  if p_status='removed' then
+    update public.role_assignments set revoked_at=now() where organization_id=p_organization_id and user_id=p_user_id and revoked_at is null;
+    update public.company_memberships set revoked_at=now() where organization_id=p_organization_id and user_id=p_user_id and revoked_at is null;
+  end if;
+  if p_status<>'active' then
+    update public.invites set status='revoked' where organization_id=p_organization_id and status='pending' and normalized_email=(select lower(email) from auth.users where id=p_user_id);
+  end if;
+  select count(*) into assigned from public.assignment_episodes where organization_id=p_organization_id and internal_assignee_user_id=p_user_id and ended_at is null;
+  perform private.ensure_access_administrator(p_organization_id);
+  insert into public.platform_audit_events(actor_id,organization_id,action,entity_id,details)
+    values(auth.uid(),p_organization_id,'organization.member_'||p_status::text,p_user_id::text,jsonb_build_object('reason',trim(p_reason),'previous_status',previous.status,'assigned_work',assigned));
+  perform private.append_audit(p_organization_id,auth.uid(),'platform.membership_'||p_status::text,'user',p_user_id,null,null,jsonb_build_object('reason',trim(p_reason),'assigned_work',assigned));
+  return jsonb_build_object('user_id',p_user_id,'status',p_status,'assigned_work',assigned);
+end; $$;
+
+create function public.platform_set_organization_status(p_organization_id uuid,p_status public.organization_status,p_reason text,p_expected_version bigint)
+returns jsonb language plpgsql security definer set search_path='' as $$
+declare previous public.organizations; saved public.organizations;
+begin
+  perform private.require_platform_admin();
+  if length(trim(coalesce(p_reason,''))) not between 5 and 1000 then raise exception 'a reason of 5 to 1000 characters is required'; end if;
+  select * into previous from public.organizations where id=p_organization_id for update;
+  if not found then raise exception 'organization not found'; end if;
+  if previous.version is distinct from p_expected_version then raise exception using errcode='40001',message='organization changed; reload before continuing'; end if;
+  if previous.status=p_status then raise exception 'organization already has this status'; end if;
+  update public.organizations set status=p_status,version=version+1,updated_at=now() where id=p_organization_id returning * into saved;
+  if p_status<>'active' then update public.invites set status='revoked' where organization_id=p_organization_id and status='pending'; end if;
+  perform private.ensure_access_administrator(p_organization_id);
+  insert into public.platform_audit_events(actor_id,organization_id,action,entity_id,details)
+    values(auth.uid(),p_organization_id,'organization.status_changed',p_organization_id::text,jsonb_build_object('reason',trim(p_reason),'before',previous.status,'after',p_status));
+  return to_jsonb(saved);
+end; $$;
+
+create function public.platform_prepare_member_invitation(p_organization_id uuid,p_email text,p_role_code text,p_token_hash text,p_expires_at timestamptz)
+returns jsonb language plpgsql security definer set search_path='' as $$
+declare invitation public.invites; normalized text:=lower(trim(p_email));
+begin
+  perform private.require_platform_admin();
+  perform 1 from public.organizations where id=p_organization_id and status='active' for update;
+  if not found then raise exception 'invitations require an active organization'; end if;
+  if normalized is null or normalized !~ '^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$' or p_token_hash is null or p_token_hash !~ '^[a-f0-9]{64}$' or p_expires_at is null or p_expires_at<=now() or p_expires_at>now()+interval '7 days 5 minutes' then raise exception 'valid email, token and expiry required'; end if;
+  if not exists(select 1 from public.roles r where r.code=p_role_code and private.role_enabled(p_organization_id,r.code) and 'organization'=any(r.allowed_scope_kinds) and not r.requires_company) then raise exception 'choose an enabled organization-wide role without a company requirement'; end if;
+  if exists(select 1 from public.organizations where id=p_organization_id and onboarding_status='pending_admin') and not exists(select 1 from public.role_permissions where role_code=p_role_code and permission_code='access.manage') then raise exception 'invite an access administrator before adding other members'; end if;
+  if exists(select 1 from public.organization_memberships m join auth.users u on u.id=m.user_id where m.organization_id=p_organization_id and lower(u.email)=normalized and m.status='active') then raise exception 'this person is already an active member'; end if;
+  update public.invites set status='revoked' where organization_id=p_organization_id and normalized_email=normalized and status='pending';
+  insert into public.invites(organization_id,normalized_email,proposed_membership,proposed_grants,token_hash,expires_at,invited_by)
+    values(p_organization_id,normalized,jsonb_build_object('affiliation','internal','platform_managed',true),jsonb_build_array(jsonb_build_object('role_code',p_role_code,'scope_kind','organization')),p_token_hash,p_expires_at,auth.uid()) returning * into invitation;
+  insert into public.platform_audit_events(actor_id,organization_id,action,entity_id,details) values(auth.uid(),p_organization_id,'organization.member_invited',invitation.id::text,jsonb_build_object('email',normalized,'role_code',p_role_code));
+  return jsonb_build_object('id',invitation.id,'email',normalized,'expires_at',invitation.expires_at);
+end; $$;
+
+create function public.platform_revoke_invitation(p_organization_id uuid,p_invitation_id uuid,p_reason text)
+returns void language plpgsql security definer set search_path='' as $$
+begin
+  perform private.require_platform_admin();
+  if length(trim(coalesce(p_reason,''))) not between 5 and 1000 then raise exception 'a reason of 5 to 1000 characters is required'; end if;
+  perform 1 from public.organizations where id=p_organization_id for update;
+  update public.invites set status='revoked' where organization_id=p_organization_id and id=p_invitation_id and status='pending';
+  if not found then raise exception 'pending invitation not found in this organization'; end if;
+  insert into public.platform_audit_events(actor_id,organization_id,action,entity_id,details) values(auth.uid(),p_organization_id,'organization.invitation_revoked',p_invitation_id::text,jsonb_build_object('reason',trim(p_reason)));
+end; $$;
+
+revoke all on function public.platform_get_operations(uuid,text,integer),public.platform_save_pricing(uuid,jsonb,bigint),public.platform_set_member_status(uuid,uuid,public.membership_status,text,public.membership_status),public.platform_set_organization_status(uuid,public.organization_status,text,bigint),public.platform_prepare_member_invitation(uuid,text,text,text,timestamptz),public.platform_revoke_invitation(uuid,uuid,text) from public,anon;
+grant execute on function public.platform_get_operations(uuid,text,integer),public.platform_save_pricing(uuid,jsonb,bigint),public.platform_set_member_status(uuid,uuid,public.membership_status,text,public.membership_status),public.platform_set_organization_status(uuid,public.organization_status,text,bigint),public.platform_prepare_member_invitation(uuid,text,text,text,timestamptz),public.platform_revoke_invitation(uuid,uuid,text) to authenticated;
+
+create or replace function public.platform_save_organization(p_id uuid,p_name text,p_timezone text,p_status public.organization_status,
+  p_administrator_email text,p_administrator_role_code text,p_request_id uuid,p_expected_version bigint default null)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare result public.organizations; before_row public.organizations; calendar uuid; existing uuid;
+begin
+  perform private.require_platform_admin();
+  if p_id is null then
+    perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(p_request_id::text,0));
+    select organization_id into existing from public.organization_onboarding where request_id=p_request_id;
+    if existing is not null then return public.platform_get_organization(existing); end if;
+  end if;
+  if length(trim(coalesce(p_name,''))) not between 2 and 160 or not exists(select 1 from pg_catalog.pg_timezone_names where name=p_timezone) then
+    raise exception using errcode='22023',message='organization name and a valid timezone are required';
+  end if;
+  if p_id is null then
+    if p_status<>'active' or p_request_id is null or p_administrator_email !~ '^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$' or p_administrator_email is null then
+      raise exception using errcode='22023',message='a new organization requires an administrator email and an onboarding request ID';
+    end if;
+    if not exists(select 1 from public.roles r join public.role_permissions rp on rp.role_code=r.code and rp.permission_code='access.manage'
+      where r.code=p_administrator_role_code and r.organization_id is null and r.active and 'organization'=any(r.allowed_scope_kinds)) then
+      raise exception using errcode='22023',message='choose an active shared role with organization-wide access management for the initial administrator';
+    end if;
+    insert into public.organizations(name,timezone) values(trim(p_name),p_timezone) returning * into result;
+    insert into public.organization_roles(organization_id,role_code,enabled) values(result.id,p_administrator_role_code,true)
+      on conflict(organization_id,role_code) do update set enabled=true;
+    insert into public.business_calendars(organization_id,name,timezone) values(result.id,'Default business calendar',p_timezone) returning id into calendar;
+    update public.organizations set default_calendar_id=calendar where id=result.id returning * into result;
+    insert into public.organization_onboarding(organization_id,request_id,administrator_email,administrator_role_code,created_by)
+      values(result.id,p_request_id,lower(trim(p_administrator_email)),p_administrator_role_code,auth.uid());
+  else
+    select * into before_row from public.organizations where id=p_id for update;
+    if not found then raise exception using errcode='02000',message='organization not found'; end if;
+    if before_row.version is distinct from p_expected_version then raise exception using errcode='40001',message='organization changed; reload before saving'; end if;
+    if p_status is distinct from before_row.status then raise exception 'use Access & lifecycle to change organization status with a reason'; end if;
+    update public.organizations set name=trim(p_name),timezone=p_timezone,status=p_status,version=version+1,updated_at=now()
+      where id=p_id returning * into result;
+    if before_row.onboarding_status='pending_admin' then
+      if p_administrator_email is null or p_administrator_email !~ '^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$' or not exists(
+        select 1 from public.roles r join public.role_permissions rp on rp.role_code=r.code and rp.permission_code='access.manage'
+        where r.code=p_administrator_role_code and r.active and (r.organization_id is null or r.organization_id=p_id) and 'organization'=any(r.allowed_scope_kinds)) then
+        raise exception using errcode='22023',message='a valid initial administrator email and organization-wide access role are required';
+      end if;
+      if exists(select 1 from public.organization_onboarding where organization_id=p_id and
+        (administrator_email<>lower(trim(p_administrator_email)) or administrator_role_code<>p_administrator_role_code)) then
+        update public.invites set status='revoked' where organization_id=p_id and status='pending' and proposed_membership->>'platform_onboarding'='true';
+      end if;
+      update public.organization_onboarding set administrator_email=lower(trim(p_administrator_email)),administrator_role_code=p_administrator_role_code where organization_id=p_id;
+      insert into public.organization_roles(organization_id,role_code,enabled) values(p_id,p_administrator_role_code,true)
+        on conflict(organization_id,role_code) do update set enabled=true,updated_at=now();
+    end if;
+  end if;
+  insert into public.platform_audit_events(actor_id,organization_id,action,entity_id,details)
+    values(auth.uid(),result.id,case when p_id is null then 'organization.created' else 'organization.updated' end,result.id::text,jsonb_build_object('before',to_jsonb(before_row),'after',to_jsonb(result),'initial_administrator_email',case when result.onboarding_status='pending_admin' then lower(trim(p_administrator_email)) else null end,'initial_administrator_role',case when result.onboarding_status='pending_admin' then p_administrator_role_code else null end));
+  return public.platform_get_organization(result.id);
+end; $$;
+
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202610260033_blocked_organization_handover.sql
+-- ============================================================================
+
+begin;
+create or replace function public.platform_set_member_status(p_organization_id uuid,p_user_id uuid,p_status public.membership_status,p_reason text,p_expected_status public.membership_status)
+returns jsonb language plpgsql security definer set search_path='' as $$
+declare previous public.organization_memberships; assigned integer;
+begin
+  perform private.require_platform_admin();
+  if p_status not in ('active','suspended','removed') or length(trim(coalesce(p_reason,''))) not between 5 and 1000 then raise exception 'a reason of 5 to 1000 characters and a valid status are required'; end if;
+  perform 1 from public.organizations where id=p_organization_id for update;
+  select * into previous from public.organization_memberships where organization_id=p_organization_id and user_id=p_user_id for update;
+  if not found then raise exception 'organization membership not found'; end if;
+  if previous.status is distinct from p_expected_status then raise exception using errcode='40001',message='membership changed; reload before continuing'; end if;
+  if previous.status=p_status or (p_status='active' and previous.status<>'suspended') then raise exception 'removed users must be invited again with new role grants'; end if;
+  update public.organization_memberships set status=p_status,ended_at=case when p_status='active' then null else now() end where organization_id=p_organization_id and user_id=p_user_id;
+  if p_status='removed' then
+    update public.role_assignments set revoked_at=now() where organization_id=p_organization_id and user_id=p_user_id and revoked_at is null;
+    update public.company_memberships set revoked_at=now() where organization_id=p_organization_id and user_id=p_user_id and revoked_at is null;
+  end if;
+  if p_status<>'active' then
+    update public.invites set status='revoked' where organization_id=p_organization_id and status='pending' and normalized_email=(select lower(email) from auth.users where id=p_user_id);
+  end if;
+  select count(*) into assigned from public.assignment_episodes where organization_id=p_organization_id and internal_assignee_user_id=p_user_id and ended_at is null;
+  perform private.ensure_access_administrator(p_organization_id);
+  -- Keep blocked organizations recoverable without a privileged manual repair.
+  if exists(select 1 from public.organizations where id=p_organization_id and onboarding_status='ready') and not exists(
+    select 1 from public.role_assignments ra join public.organization_memberships m on m.organization_id=ra.organization_id and m.user_id=ra.user_id
+    join public.role_permissions rp on rp.role_code=ra.role_code and rp.permission_code='access.manage'
+    where ra.organization_id=p_organization_id and ra.scope_kind='organization' and ra.revoked_at is null and ra.starts_at<=now() and ra.ends_at is null
+      and m.status='active' and m.ended_at is null and private.role_grant_enabled(ra)) then
+    raise exception using errcode='23514',message='retain an active organization-wide access administrator, including while the organization is blocked';
+  end if;
+
+  insert into public.platform_audit_events(actor_id,organization_id,action,entity_id,details)
+    values(auth.uid(),p_organization_id,'organization.member_'||p_status::text,p_user_id::text,jsonb_build_object('reason',trim(p_reason),'previous_status',previous.status,'assigned_work',assigned));
+  perform private.append_audit(p_organization_id,auth.uid(),'platform.membership_'||p_status::text,'user',p_user_id,null,null,jsonb_build_object('reason',trim(p_reason),'assigned_work',assigned));
+  return jsonb_build_object('user_id',p_user_id,'status',p_status,'assigned_work',assigned);
+end; $$;
+
+
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202610260034_direct_work_assignment.sql
+-- ============================================================================
+
+begin;
+
+-- Preserve the existing command validations, idempotency, audit, and notification behavior.
+do $migration$
+declare definition text;
+begin
+  definition:=pg_get_functiondef('public.execute_command(text,jsonb)'::regprocedure);
+  definition:=replace(definition,E'\r\n',E'\n');
+  if strpos(definition,'if p_command_name = ''create_work_item'' then')=0 or
+    strpos(definition,'if v_item.state not in (''submitted'',''assigned'',''acknowledged'',''in_progress'',''blocked'',''rework_required'') then')=0 then
+    raise exception 'execute_command changed; direct-assignment migration requires review';
+  end if;
+  definition:=replace(definition,'if p_command_name = ''create_work_item'' then',
+    'if p_command_name in (''create_work_item'',''create_and_assign_work_item'') then');
+  definition:=replace(definition,
+    'v_result := private.command_success(v_operation_id, jsonb_build_object(''id'', v_item.id, ''version'', v_item.version, ''state'', v_item.state));',
+    $patch$
+    if p_command_name='create_and_assign_work_item' then
+      v_row_result:=public.execute_command('assign_work_item',jsonb_build_object(
+        'operation_id',gen_random_uuid(),'expected_version',v_item.version,'captured_at',v_captured_at,
+        'payload',coalesce(v_payload->'assignment','{}'::jsonb)||jsonb_build_object('organization_id',v_organization_id,'item_id',v_item.id)));
+      if not coalesce((v_row_result->>'ok')::boolean,false) then
+        raise exception using errcode='BT001',message='Assignment failed',detail=v_row_result::text;
+      end if;
+      select * into v_item from public.work_items where id=v_item.id;
+    end if;
+    v_result := private.command_success(v_operation_id, jsonb_build_object('id', v_item.id, 'version', v_item.version, 'state', v_item.state));
+    $patch$);
+  definition:=replace(definition,
+    'if v_item.state not in (''submitted'',''assigned'',''acknowledged'',''in_progress'',''blocked'',''rework_required'') then',
+    'if v_item.state not in (''draft'',''submitted'',''assigned'',''acknowledged'',''in_progress'',''blocked'',''rework_required'') then');
+  definition:=replace(definition,
+    'v_internal_user := nullif(v_payload ->> ''accountable_internal_user_id'','''')::uuid;',
+    $patch$
+      if v_item.state='draft' and v_item.inspection_id is not null then
+        return private.command_error(v_operation_id,'INVALID_TRANSITION','Submit the inspection before assigning its findings.');
+      end if;
+      v_internal_user := nullif(v_payload ->> 'accountable_internal_user_id','')::uuid;
+    $patch$);
+  definition:=replace(definition,
+    'update public.work_items set current_assignment_id = v_episode.id, due_at = v_due_at, state = ''assigned'',',
+    'update public.work_items set submitted_at=coalesce(submitted_at,now()), current_assignment_id = v_episode.id, due_at = v_due_at, state = ''assigned'',');
+  definition:=replace(definition,
+    'perform private.append_work_event(v_item, ''work.assigned'',',
+    $patch$
+      if v_old_state='draft' then
+        perform private.item_readiness_invalidate(v_item,'A new work item was assigned.',v_actor,v_operation_id);
+      end if;
+      perform private.append_work_event(v_item, 'work.assigned',
+    $patch$);
+  definition:=replace(definition,E'exception\n  when unique_violation then',
+    $patch$exception
+  when sqlstate 'BT001' then
+    get stacked diagnostics v_row_result = PG_EXCEPTION_DETAIL;
+    return jsonb_set(v_row_result,'{operation_id}',to_jsonb(v_operation_id));
+  when unique_violation then$patch$);
+  -- Diagnostic detail is text; collect it separately before parsing JSON.
+  definition:=replace(definition,'get stacked diagnostics v_row_result = PG_EXCEPTION_DETAIL;',
+    'get stacked diagnostics v_request_hash = PG_EXCEPTION_DETAIL; v_row_result:=v_request_hash::jsonb;');
+  if strpos(definition,'when sqlstate ''BT001'' then')=0 or strpos(definition,'submitted_at=coalesce(submitted_at,now())')=0 then
+    raise exception 'execute_command changed; atomic assignment patch did not apply';
+  end if;
+  execute definition;
+end;
+$migration$;
+
+create or replace view public.work_item_list with (security_invoker = true) as
+select
+  w.id, w.organization_id, w.neighborhood_id, w.home_id, h.lot_code,
+  nullif(concat_ws(', ', h.address_line1, h.city, h.state_code), '') as address,
+  w.title, w.description, w.priority, w.state, w.safety_flag, w.due_at,
+  coalesce(c.name, p.display_name) as assigned_party_name,
+  w.updated_at, w.version, w.created_at, w.inspection_id
+from public.work_items w
+left join public.homes h on h.organization_id = w.organization_id and h.id = w.home_id
+left join public.assignment_episodes ae on ae.organization_id = w.organization_id and ae.id = w.current_assignment_id
+left join public.companies c on c.organization_id = ae.organization_id and c.id = ae.company_id
+left join public.profiles p on p.id = ae.internal_assignee_user_id;
+
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202610260035_profile_onboarding.sql
+-- ============================================================================
+
+begin;
+
+alter table public.profiles
+  add column first_name text not null default '' check(length(first_name)<=80),
+  add column last_name text not null default '' check(length(last_name)<=80),
+  add column phone_number text check(length(phone_number)<=40),
+  add column contact_email text check(length(contact_email)<=254),
+  add column completed_at timestamptz,
+  add column version bigint not null default 1,
+  add constraint profiles_complete_names check(completed_at is null or (length(trim(first_name))>0 and length(trim(last_name))>0));
+alter table public.profiles drop constraint profiles_display_name_check;
+alter table public.profiles add constraint profiles_display_name_check check(length(display_name) between 1 and 161);
+
+create function public.my_profile() returns jsonb
+language plpgsql stable security definer set search_path='' as $$
+begin
+  if auth.uid() is null then raise exception using errcode='42501',message='sign in required'; end if;
+  return (select coalesce(to_jsonb(p),'{}'::jsonb)||jsonb_build_object('account_email',u.email,'email_verified',u.email_confirmed_at is not null)
+    from auth.users u left join public.profiles p on p.id=u.id where u.id=auth.uid());
+end; $$;
+
+create function public.save_my_profile(p_first_name text,p_last_name text,p_phone_number text default '',p_contact_email text default '',p_timezone text default '',p_expected_version bigint default null)
+returns jsonb language plpgsql security definer set search_path='' as $$
+declare previous public.profiles; first_name text:=trim(coalesce(p_first_name,'')); last_name text:=trim(coalesce(p_last_name,''));
+  phone text:=nullif(trim(coalesce(p_phone_number,'')),''); email text:=nullif(lower(trim(coalesce(p_contact_email,''))),''); timezone text:=nullif(trim(coalesce(p_timezone,'')),'');
+begin
+  if auth.uid() is null or not exists(select 1 from auth.users where id=auth.uid() and email_confirmed_at is not null) then
+    raise exception using errcode='42501',message='verify your account email before completing your profile';
+  end if;
+  -- Lock the identity as well as the profile, including users without a profile row yet.
+  perform 1 from auth.users where id=auth.uid() for update;
+  select * into previous from public.profiles where id=auth.uid() for update;
+  if previous.version is distinct from p_expected_version then raise exception using errcode='40001',message='your profile changed; reload before saving'; end if;
+  if length(first_name) not between 1 and 80 or length(last_name) not between 1 and 80 then raise exception using errcode='22023',message='first and last names are required, up to 80 characters each'; end if;
+  if phone is not null and (phone !~ '^[+0-9() .-]{7,40}$' or length(regexp_replace(phone,'[^0-9]','','g')) not between 7 and 15) then raise exception using errcode='22023',message='enter a valid phone number with 7 to 15 digits, or leave it blank'; end if;
+  if email is not null and (length(email)>254 or email !~ '^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$') then raise exception using errcode='22023',message='enter a valid contact email or leave it blank'; end if;
+  if timezone is not null and not exists(select 1 from pg_catalog.pg_timezone_names where name=timezone) then raise exception using errcode='22023',message='choose a valid timezone'; end if;
+  insert into public.profiles(id,display_name,first_name,last_name,phone_number,contact_email,timezone,completed_at)
+    values(auth.uid(),first_name||' '||last_name,first_name,last_name,phone,email,timezone,now())
+  on conflict(id) do update set display_name=excluded.display_name,first_name=excluded.first_name,last_name=excluded.last_name,
+    phone_number=excluded.phone_number,contact_email=excluded.contact_email,timezone=excluded.timezone,
+    completed_at=coalesce(public.profiles.completed_at,now()),version=public.profiles.version+1,updated_at=now();
+  return public.my_profile();
+end; $$;
+
+revoke all on function public.my_profile(),public.save_my_profile(text,text,text,text,text,bigint) from public,anon;
+grant execute on function public.my_profile(),public.save_my_profile(text,text,text,text,text,bigint) to authenticated;
+
+-- A verified identity must supply its own basic details before accepting tenant access.
+do $migration$
+declare definition text; needle text:='insert into public.organization_memberships(organization_id, user_id, affiliation, status, joined_at)';
+begin
+  definition:=pg_get_functiondef('public.accept_invitation(text)'::regprocedure);
+  if strpos(definition,needle)=0 then raise exception 'accept_invitation changed; profile guard requires review'; end if;
+  definition:=replace(definition,needle,$patch$
+  if not exists(select 1 from public.profiles where id=auth.uid() and completed_at is not null and length(trim(first_name))>0 and length(trim(last_name))>0) then
+    raise exception using errcode='22023',message='complete your first and last name before accepting this invitation';
+  end if;
+  insert into public.organization_memberships(organization_id, user_id, affiliation, status, joined_at)
+  $patch$);
+  execute definition;
+end;
+$migration$;
+
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202610260036_offline_upload_reservations.sql
+-- ============================================================================
+
+begin;
+
+alter table public.attachments add column client_operation_id uuid;
+create unique index attachments_uploader_operation_unique on public.attachments (uploader_id, client_operation_id) where client_operation_id is not null;
+
+create function public.request_offline_work_attachment_slot(
+  p_operation_id uuid, p_organization_id uuid, p_neighborhood_id uuid, p_home_id uuid,
+  p_work_item_id uuid, p_visibility public.comment_visibility, p_original_name text,
+  p_mime_type text, p_byte_size bigint, p_purpose text
+) returns public.attachments language plpgsql security definer set search_path = '' as $$
+declare result public.attachments;
+begin
+  if auth.uid() is null or p_operation_id is null or p_work_item_id is null
+    or not private.active_member(p_organization_id, auth.uid())
+    or not private.can_read_work(auth.uid(), p_work_item_id)
+    or not private.has_permission(p_organization_id, auth.uid(), 'evidence.upload', p_neighborhood_id, p_home_id) then
+    raise exception using errcode = '42501', message = 'forbidden';
+  end if;
+  perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(auth.uid()::text || ':' || p_operation_id::text, 0));
+  select * into result from public.attachments where uploader_id = auth.uid() and client_operation_id = p_operation_id;
+  if found then
+    if result.organization_id is distinct from p_organization_id or result.neighborhood_id is distinct from p_neighborhood_id
+      or result.home_id is distinct from p_home_id or result.work_item_id is distinct from p_work_item_id
+      or result.visibility is distinct from p_visibility or result.original_name is distinct from pg_catalog.regexp_replace(p_original_name, '[\\/\x00-\x1f]', '_', 'g')
+      or result.mime_type is distinct from p_mime_type or result.byte_size is distinct from p_byte_size or result.purpose is distinct from p_purpose then
+      raise exception using errcode = '22023', message = 'upload operation does not match its original reservation';
+    end if;
+    return result;
+  end if;
+  result := public.request_attachment_slot(p_organization_id, p_neighborhood_id, p_home_id, p_work_item_id, null, null, p_visibility, p_original_name, p_mime_type, p_byte_size, p_purpose);
+  update public.attachments set client_operation_id = p_operation_id where id = result.id returning * into result;
+  return result;
+end;
+$$;
+revoke all on function public.request_offline_work_attachment_slot(uuid,uuid,uuid,uuid,uuid,public.comment_visibility,text,text,bigint,text) from public, anon;
+grant execute on function public.request_offline_work_attachment_slot(uuid,uuid,uuid,uuid,uuid,public.comment_visibility,text,text,bigint,text) to authenticated;
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202610260037_hierarchy_scope_kinds.sql
+-- ============================================================================
+
+-- Enum values must be committed before the following migration uses them.
+alter type public.scope_kind add value if not exists 'division';
+alter type public.scope_kind add value if not exists 'company';
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202610260038_hierarchical_administration.sql
+-- ============================================================================
+
+begin;
+
+alter table public.role_assignments
+  add column division_id uuid,
+  add column company_id uuid,
+  add column authority_level smallint not null default 1 check(authority_level between 1 and 4),
+  add foreign key(organization_id,division_id) references public.divisions(organization_id,id),
+  add foreign key(organization_id,company_id) references public.companies(organization_id,id);
+alter table public.role_assignments drop constraint role_assignments_check;
+alter table public.role_assignments add constraint role_assignment_scope_identifiers check(
+  (scope_kind='organization' and division_id is null and neighborhood_id is null and home_id is null and company_id is null) or
+  (scope_kind='division' and division_id is not null and neighborhood_id is null and home_id is null and company_id is null) or
+  (scope_kind='neighborhood' and division_id is null and neighborhood_id is not null and home_id is null) or
+  (scope_kind='home' and division_id is null and neighborhood_id is not null and home_id is not null) or
+  (scope_kind='company' and company_id is not null and division_id is null and neighborhood_id is null and home_id is null)
+);
+create index role_assignments_division on public.role_assignments(organization_id,division_id) where revoked_at is null;
+
+alter table public.companies
+  add column owner_scope_kind public.scope_kind not null default 'organization',
+  add column owner_division_id uuid,
+  add column owner_neighborhood_id uuid,
+  add column owner_authority_level smallint not null default 1 check(owner_authority_level between 1 and 3),
+  add column created_by uuid references auth.users(id),
+  add foreign key(organization_id,owner_division_id) references public.divisions(organization_id,id),
+  add foreign key(organization_id,owner_neighborhood_id) references public.neighborhoods(organization_id,id),
+  add constraint company_owner_scope check(
+    (owner_scope_kind='organization' and owner_division_id is null and owner_neighborhood_id is null) or
+    (owner_scope_kind='division' and owner_division_id is not null and owner_neighborhood_id is null) or
+    (owner_scope_kind='neighborhood' and owner_division_id is null and owner_neighborhood_id is not null));
+create table public.company_access_grants(
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id), company_id uuid not null,
+  scope_kind public.scope_kind not null, division_id uuid, neighborhood_id uuid,
+  authority_level smallint not null check(authority_level between 1 and 3),
+  granted_by uuid references auth.users(id), created_at timestamptz not null default now(), revoked_at timestamptz,
+  revocation_level smallint check(revocation_level between 1 and 3), revoked_by uuid references auth.users(id),
+  foreign key(organization_id,company_id) references public.companies(organization_id,id),
+  foreign key(organization_id,division_id) references public.divisions(organization_id,id),
+  foreign key(organization_id,neighborhood_id) references public.neighborhoods(organization_id,id),
+  check((scope_kind='organization' and division_id is null and neighborhood_id is null) or
+    (scope_kind='division' and division_id is not null and neighborhood_id is null) or
+    (scope_kind='neighborhood' and division_id is null and neighborhood_id is not null))
+);
+create unique index company_access_current on public.company_access_grants(organization_id,company_id,scope_kind,coalesce(division_id,'00000000-0000-0000-0000-000000000000'::uuid),coalesce(neighborhood_id,'00000000-0000-0000-0000-000000000000'::uuid)) where revoked_at is null;
+insert into public.company_access_grants(organization_id,company_id,scope_kind,authority_level)
+  select organization_id,id,'organization',1 from public.companies;
+alter table public.company_memberships add column granted_by uuid references auth.users(id),
+  add column authority_level smallint not null default 1 check(authority_level between 1 and 4);
+alter table public.neighborhood_trade_rosters add column granted_by uuid references auth.users(id),
+  add column authority_level smallint not null default 1 check(authority_level between 1 and 3);
+alter table public.invites add column authority_level smallint not null default 1 check(authority_level between 1 and 4);
+
+insert into public.permissions(code,description) values('company.users.manage','Manage users of an authorized vendor company');
+insert into public.roles(code,label,allowed_scope_kinds,description,requires_company,default_for_new_organizations) values
+  ('division_admin','Division admin','{division}','Manage users, neighborhoods, homes, vendors, and operations inside assigned divisions.',false,true),
+  ('neighborhood_admin','Neighborhood admin','{neighborhood}','Manage local users, homes, vendors, and operations inside assigned neighborhoods.',false,true),
+  ('vendor_admin','Vendor admin','{company,neighborhood}','Manage users and assigned work of the linked vendor company.',true,true);
+insert into public.role_permissions(role_code,permission_code)
+  select 'org_admin',code from public.permissions on conflict do nothing;
+insert into public.role_permissions(role_code,permission_code)
+  select r,code from unnest(array['division_admin','neighborhood_admin']) r cross join public.permissions
+  where code not in ('config.manage','company.users.manage');
+insert into public.role_permissions(role_code,permission_code) values
+  ('vendor_admin','company.users.manage'),('vendor_admin','work.execute_assigned'),('vendor_admin','comment.create_shared'),('vendor_admin','evidence.upload');
+insert into public.organization_roles(organization_id,role_code,enabled)
+  select o.id,r,true from public.organizations o cross join unnest(array['division_admin','neighborhood_admin','vendor_admin']) r;
+update public.roles set label=case code when 'org_admin' then 'Organization admin' when 'superintendent' then 'Field manager'
+  when 'operations_coordinator' then 'Field coordinator' when 'internal_contributor' then 'Field contributor'
+  when 'internal_quality' then 'Internal inspector' when 'trade_technician' then 'Vendor technician'
+  when 'leadership_viewer' then 'Viewer' else label end,version=version+1,updated_at=now();
+update public.roles set allowed_scope_kinds=array_append(allowed_scope_kinds,'division'::public.scope_kind)
+  where code in ('superintendent','operations_coordinator','internal_contributor','internal_quality','external_inspector','verifier','leadership_viewer','auditor');
+update public.roles set allowed_scope_kinds='{company,neighborhood}' where code='trade_technician';
+
+create function private.scope_contains(p_org uuid,p_outer public.scope_kind,p_division uuid,p_neighborhood uuid,p_home uuid,
+  p_inner public.scope_kind,p_inner_division uuid,p_inner_neighborhood uuid,p_inner_home uuid)
+returns boolean language sql stable security definer set search_path='' as $$
+  select case
+    when p_outer='organization' then p_inner in ('organization','division','neighborhood','home')
+    when p_outer='division' then (p_inner='division' and p_division=p_inner_division) or
+      (p_inner in ('neighborhood','home') and exists(select 1 from public.neighborhoods n where n.organization_id=p_org and n.id=p_inner_neighborhood and n.division_id=p_division))
+    when p_outer='neighborhood' then p_inner in ('neighborhood','home') and p_neighborhood=p_inner_neighborhood
+    when p_outer='home' then p_inner='home' and p_neighborhood=p_inner_neighborhood and p_home=p_inner_home
+    else false end;
+$$;
+create function private.company_covers(p_org uuid,p_company uuid,p_neighborhood uuid) returns boolean
+language sql stable security definer set search_path='' as $$
+  select exists(select 1 from public.company_access_grants g join public.companies c on c.id=g.company_id and c.organization_id=g.organization_id
+    join public.neighborhoods n on n.organization_id=g.organization_id and n.id=p_neighborhood
+    where g.organization_id=p_org and g.company_id=p_company and g.revoked_at is null and c.status='active'
+      and private.scope_contains(p_org,g.scope_kind,g.division_id,g.neighborhood_id,null,'neighborhood',null,n.id,null));
+$$;
+create or replace function private.role_grant_enabled(p_assignment public.role_assignments) returns boolean
+language sql stable security definer set search_path='' as $$
+  select private.role_enabled(p_assignment.organization_id,p_assignment.role_code) and exists(select 1 from public.roles r
+    where r.code=p_assignment.role_code and p_assignment.scope_kind=any(r.allowed_scope_kinds)
+    and (not r.requires_company or exists(select 1 from public.company_memberships cm join public.companies c on c.organization_id=cm.organization_id and c.id=cm.company_id
+      where cm.organization_id=p_assignment.organization_id and cm.user_id=p_assignment.user_id and c.status='active'
+      and (p_assignment.company_id is null or cm.company_id=p_assignment.company_id)
+      and (r.code<>'vendor_admin' or cm.kind='manager') and (r.code<>'trade_technician' or cm.kind='technician')
+      and cm.revoked_at is null and cm.active_from<=now() and (cm.active_to is null or cm.active_to>now()))));
+$$;
+create or replace function private.has_permission(p_organization_id uuid,p_user_id uuid,p_permission text,p_neighborhood_id uuid default null,p_home_id uuid default null)
+returns boolean language sql stable security definer set search_path='' as $$
+  select private.active_member(p_organization_id,p_user_id) and exists(select 1 from public.role_assignments a join public.role_permissions rp on rp.role_code=a.role_code
+    where a.organization_id=p_organization_id and a.user_id=p_user_id and rp.permission_code=p_permission and private.role_grant_enabled(a)
+    and a.revoked_at is null and a.starts_at<=now() and (a.ends_at is null or a.ends_at>now()) and
+    ((a.scope_kind<>'company' and private.scope_contains(p_organization_id,a.scope_kind,a.division_id,a.neighborhood_id,a.home_id,
+      case when p_home_id is not null then 'home'::public.scope_kind when p_neighborhood_id is not null then 'neighborhood'::public.scope_kind else 'organization'::public.scope_kind end,null,p_neighborhood_id,p_home_id)) or
+      (a.scope_kind='company' and private.company_covers(p_organization_id,a.company_id,p_neighborhood_id))));
+$$;
+create or replace function private.has_any_scope(p_organization_id uuid,p_user_id uuid,p_neighborhood_id uuid default null,p_home_id uuid default null)
+returns boolean language sql stable security definer set search_path='' as $$
+  select private.active_member(p_organization_id,p_user_id) and exists(select 1 from public.role_assignments a
+    where a.organization_id=p_organization_id and a.user_id=p_user_id and private.role_grant_enabled(a)
+    and a.revoked_at is null and a.starts_at<=now() and (a.ends_at is null or a.ends_at>now()) and
+    ((a.scope_kind<>'company' and private.scope_contains(p_organization_id,a.scope_kind,a.division_id,a.neighborhood_id,a.home_id,
+      case when p_home_id is not null then 'home'::public.scope_kind when p_neighborhood_id is not null then 'neighborhood'::public.scope_kind else 'organization'::public.scope_kind end,null,p_neighborhood_id,p_home_id)) or
+    (a.scope_kind='company' and private.company_covers(p_organization_id,a.company_id,p_neighborhood_id) and exists(select 1 from public.work_items w
+      join public.assignment_episodes ae on ae.organization_id=w.organization_id and ae.id=w.current_assignment_id
+      where w.organization_id=p_organization_id and w.neighborhood_id=p_neighborhood_id and (p_home_id is null or w.home_id=p_home_id)
+      and ae.company_id=a.company_id and ae.ended_at is null and (ae.technician_user_id=p_user_id or private.active_company_membership(p_organization_id,a.company_id,p_user_id,'manager'))))));
+$$;
+
+-- Smaller levels have greater authority. A null level means no authority at this target.
+create function private.management_level(p_org uuid,p_user uuid,p_permission text,p_scope public.scope_kind,p_division uuid default null,p_neighborhood uuid default null,p_home uuid default null)
+returns smallint language sql stable security definer set search_path='' as $$
+  select min(case a.scope_kind when 'organization' then 1 when 'division' then 2 when 'neighborhood' then 3 end)::smallint
+  from public.role_assignments a join public.role_permissions rp on rp.role_code=a.role_code and rp.permission_code=p_permission
+  where a.organization_id=p_org and a.user_id=p_user and private.active_member(p_org,p_user) and private.role_grant_enabled(a)
+    and a.revoked_at is null and a.starts_at<=now() and (a.ends_at is null or a.ends_at>now())
+    and private.scope_contains(p_org,a.scope_kind,a.division_id,a.neighborhood_id,a.home_id,p_scope,p_division,p_neighborhood,p_home);
+$$;
+create function private.admin_level(p_org uuid,p_user uuid,p_scope public.scope_kind,p_division uuid default null,p_neighborhood uuid default null,p_home uuid default null)
+returns smallint language sql stable security definer set search_path='' as $$
+  select private.management_level(p_org,p_user,'access.manage',p_scope,p_division,p_neighborhood,p_home);
+$$;
+create function private.vendor_admin(p_org uuid,p_user uuid,p_company uuid) returns boolean
+language sql stable security definer set search_path='' as $$
+  select private.active_member(p_org,p_user) and private.active_company_membership(p_org,p_company,p_user,'manager') and exists(
+    select 1 from public.role_assignments a join public.role_permissions rp on rp.role_code=a.role_code and rp.permission_code='company.users.manage'
+    where a.organization_id=p_org and a.user_id=p_user and a.company_id=p_company and a.scope_kind='company'
+      and private.role_grant_enabled(a) and a.revoked_at is null and a.starts_at<=now() and (a.ends_at is null or a.ends_at>now()));
+$$;
+create function private.controls_company(p_org uuid,p_user uuid,p_company uuid) returns boolean
+language sql stable security definer set search_path='' as $$
+  select exists(select 1 from public.companies c where c.organization_id=p_org and c.id=p_company
+    and private.admin_level(p_org,p_user,c.owner_scope_kind,c.owner_division_id,c.owner_neighborhood_id,null)<=c.owner_authority_level
+    and not exists(select 1 from public.company_access_grants g where g.organization_id=p_org and g.company_id=c.id and g.revoked_at is null
+      and (private.admin_level(p_org,p_user,g.scope_kind,g.division_id,g.neighborhood_id,null) is null
+        or private.admin_level(p_org,p_user,g.scope_kind,g.division_id,g.neighborhood_id,null)>g.authority_level)));
+$$;
+create function private.can_read_company(p_org uuid,p_user uuid,p_company uuid) returns boolean
+language sql stable security definer set search_path='' as $$
+  select private.active_member(p_org,p_user) and (
+    private.admin_level(p_org,p_user,'organization') is not null or
+    exists(select 1 from public.company_memberships cm where cm.organization_id=p_org and cm.company_id=p_company and cm.user_id=p_user
+      and cm.revoked_at is null and cm.active_from<=now() and (cm.active_to is null or cm.active_to>now())) or
+    exists(select 1 from public.company_access_grants g join public.role_assignments a on a.organization_id=g.organization_id
+      where g.organization_id=p_org and g.company_id=p_company and g.revoked_at is null and a.user_id=p_user
+      and a.revoked_at is null and a.starts_at<=now() and (a.ends_at is null or a.ends_at>now()) and private.role_grant_enabled(a)
+      and (exists(select 1 from public.role_permissions rp where rp.role_code=a.role_code and rp.permission_code in ('roster.manage','work.assign')))
+      and (private.scope_contains(p_org,a.scope_kind,a.division_id,a.neighborhood_id,a.home_id,g.scope_kind,g.division_id,g.neighborhood_id,null)
+        or private.scope_contains(p_org,g.scope_kind,g.division_id,g.neighborhood_id,null,a.scope_kind,a.division_id,a.neighborhood_id,a.home_id))));
+$$;
+
+create function private.delegation_level(p_org uuid,p_actor uuid,p_role text,p_scope public.scope_kind,
+  p_division uuid,p_neighborhood uuid,p_home uuid,p_company uuid,p_start timestamptz,p_end timestamptz)
+returns smallint language plpgsql stable security definer set search_path='' as $$
+declare requested public.roles; level smallint; owner public.companies;
+begin
+  select * into requested from public.roles where code=p_role and private.role_enabled(p_org,code);
+  if not found or not(p_scope=any(requested.allowed_scope_kinds)) or p_start is null or (p_end is not null and p_end<=p_start)
+    or not private.active_member(p_org,p_actor) then return null; end if;
+  if p_scope='organization' and (p_division is not null or p_neighborhood is not null or p_home is not null or p_company is not null) then return null; end if;
+  if p_scope='division' and (p_division is null or p_neighborhood is not null or p_home is not null or p_company is not null or not exists(select 1 from public.divisions where organization_id=p_org and id=p_division and status='active')) then return null; end if;
+  if p_scope in ('neighborhood','home') and (p_division is not null or p_neighborhood is null or (p_scope='neighborhood' and p_home is not null)
+    or not exists(select 1 from public.neighborhoods where organization_id=p_org and id=p_neighborhood and status='active')) then return null; end if;
+  if p_scope='home' and (p_home is null or not exists(select 1 from public.homes where organization_id=p_org and neighborhood_id=p_neighborhood and id=p_home and archived_at is null)) then return null; end if;
+  if requested.requires_company and (p_company is null or not exists(select 1 from public.companies where organization_id=p_org and id=p_company and status='active')) then return null; end if;
+  if p_scope='company' then
+    if not requested.requires_company or p_company is null or p_division is not null or p_neighborhood is not null or p_home is not null then return null; end if;
+    if private.vendor_admin(p_org,p_actor,p_company) and p_role in ('vendor_admin','trade_technician') and exists(
+      select 1 from public.role_assignments a where a.organization_id=p_org and a.user_id=p_actor and a.role_code='vendor_admin' and a.company_id=p_company
+      and a.revoked_at is null and a.starts_at<=now() and private.role_grant_enabled(a)
+      and (a.ends_at is null or (p_end is not null and p_end<=a.ends_at))) then return 4; end if;
+    if not private.controls_company(p_org,p_actor,p_company) then return null; end if;
+    select * into owner from public.companies where organization_id=p_org and id=p_company;
+    p_scope:=owner.owner_scope_kind; p_division:=owner.owner_division_id; p_neighborhood:=owner.owner_neighborhood_id;
+  elsif requested.requires_company and (not private.company_covers(p_org,p_company,p_neighborhood)) then return null;
+  end if;
+  select min(case a.scope_kind when 'organization' then 1 when 'division' then 2 when 'neighborhood' then 3 end)::smallint into level
+  from public.role_assignments a where a.organization_id=p_org and a.user_id=p_actor and a.revoked_at is null
+    and a.starts_at<=now() and private.role_grant_enabled(a) and (a.ends_at is null or (p_end is not null and p_end<=a.ends_at))
+    and exists(select 1 from public.role_permissions rp where rp.role_code=a.role_code and rp.permission_code='access.manage')
+    and private.scope_contains(p_org,a.scope_kind,a.division_id,a.neighborhood_id,a.home_id,p_scope,p_division,p_neighborhood,p_home)
+    and (a.scope_kind='organization' or not exists(select 1 from public.role_permissions wanted where wanted.role_code=p_role and wanted.permission_code<>'company.users.manage'
+      and not exists(select 1 from public.role_permissions held where held.role_code=a.role_code and held.permission_code=wanted.permission_code)));
+  return level;
+end; $$;
+
+create function private.can_remove_assignment(p_actor uuid,p_assignment public.role_assignments) returns boolean
+language sql stable security definer set search_path='' as $$
+  select case when p_assignment.scope_kind='company' then
+    (private.controls_company(p_assignment.organization_id,p_actor,p_assignment.company_id) and
+      (select private.admin_level(c.organization_id,p_actor,c.owner_scope_kind,c.owner_division_id,c.owner_neighborhood_id,null) from public.companies c where c.id=p_assignment.company_id)<=p_assignment.authority_level)
+    or (p_assignment.authority_level=4 and private.vendor_admin(p_assignment.organization_id,p_actor,p_assignment.company_id))
+  else coalesce(private.admin_level(p_assignment.organization_id,p_actor,p_assignment.scope_kind,p_assignment.division_id,p_assignment.neighborhood_id,p_assignment.home_id)<=p_assignment.authority_level,false) end;
+$$;
+create function private.can_manage_company_member(p_actor uuid,p_member public.company_memberships) returns boolean
+language sql stable security definer set search_path='' as $$
+  select (private.controls_company(p_member.organization_id,p_actor,p_member.company_id) and
+    (select private.admin_level(c.organization_id,p_actor,c.owner_scope_kind,c.owner_division_id,c.owner_neighborhood_id,null) from public.companies c where c.id=p_member.company_id)<=p_member.authority_level)
+    or (p_member.authority_level=4 and private.vendor_admin(p_member.organization_id,p_actor,p_member.company_id));
+$$;
+create function public.administration_context(p_organization_id uuid) returns jsonb
+language plpgsql stable security definer set search_path='' as $$
+begin
+  if not private.active_member(p_organization_id,auth.uid()) then raise exception using errcode='42501',message='active membership required'; end if;
+  return jsonb_build_object('organization_admin',coalesce(private.admin_level(p_organization_id,auth.uid(),'organization')=1,false),
+    'companies',coalesce((select jsonb_agg(jsonb_build_object('id',c.id,'name',c.name)) from public.companies c where c.organization_id=p_organization_id and c.status='active'
+      and (private.controls_company(p_organization_id,auth.uid(),c.id) or private.vendor_admin(p_organization_id,auth.uid(),c.id))),'[]'::jsonb),
+    'grants',coalesce((select jsonb_agg(jsonb_build_object('scope_kind',a.scope_kind,'division_id',a.division_id,'neighborhood_id',a.neighborhood_id,'home_id',a.home_id,'company_id',a.company_id,'ends_at',a.ends_at,
+        'permissions',(select jsonb_agg(rp.permission_code) from public.role_permissions rp where rp.role_code=a.role_code)))
+      from public.role_assignments a
+      where a.organization_id=p_organization_id and a.user_id=auth.uid() and a.revoked_at is null and a.starts_at<=now()
+        and (a.ends_at is null or a.ends_at>now()) and private.role_grant_enabled(a)
+        and exists(select 1 from public.role_permissions rp where rp.role_code=a.role_code and rp.permission_code in ('access.manage','company.users.manage','structure.manage','roster.manage'))),'[]'::jsonb));
+end; $$;
+
+create or replace function public.admin_set_member_access(p_organization_id uuid,p_user_id uuid,p_affiliation public.affiliation_kind,
+  p_assignments jsonb,p_company_id uuid default null,p_company_kind text default null)
+returns jsonb language plpgsql security definer set search_path='' as $$
+declare assignment jsonb; prior public.role_assignments; member public.organization_memberships; item public.roles;
+  level smallint; company_level smallint; company uuid; previous jsonb; new_access jsonb; builder boolean; old_company public.company_memberships; prepared jsonb:='[]'; editable_ids uuid[];
+begin
+  if auth.uid() is null or not private.require_aal2() then raise exception using errcode='42501',message='verify your authenticator before managing access'; end if;
+  if not coalesce(private.can_read_member(p_organization_id,auth.uid(),p_user_id),false) then raise exception using errcode='42501',message='this person is outside your administration scope'; end if;
+  if jsonb_typeof(p_assignments) is distinct from 'array' or jsonb_array_length(p_assignments)>20 then raise exception using errcode='22023',message='up to twenty role assignments are supported'; end if;
+  builder:=private.admin_level(p_organization_id,auth.uid(),'organization')=1;
+  select * into member from public.organization_memberships where organization_id=p_organization_id and user_id=p_user_id for update;
+  if not found then
+    if not coalesce(builder,false) then raise exception using errcode='22023',message='invite this person before editing their access'; end if;
+    insert into public.organization_memberships(organization_id,user_id,affiliation,status,joined_at)
+      values(p_organization_id,p_user_id,p_affiliation,'active',now()) returning * into member;
+  end if;
+  if not coalesce(builder,false) and (member.status<>'active' or member.affiliation<>p_affiliation) then raise exception using errcode='42501',message='only an organization admin may change membership status or affiliation'; end if;
+  if p_company_id is not null and (p_company_kind is null or p_company_kind not in ('manager','technician')) then raise exception using errcode='22023',message='choose a company member type'; end if;
+  previous:=jsonb_build_object('membership',to_jsonb(member),'roles',(select coalesce(jsonb_agg(to_jsonb(a)),'[]'::jsonb) from public.role_assignments a where a.organization_id=p_organization_id and a.user_id=p_user_id and a.revoked_at is null));
+  -- Lock the complete role set before checking protection or replacing local grants.
+  perform 1 from public.role_assignments where organization_id=p_organization_id and user_id=p_user_id for update;
+  for assignment in select value from jsonb_array_elements(p_assignments) loop
+    -- Protected assignments may be submitted unchanged by the editor, never modified.
+    select * into prior from public.role_assignments where id=nullif(assignment->>'id','')::uuid and organization_id=p_organization_id and user_id=p_user_id and revoked_at is null;
+    if found and not private.can_remove_assignment(auth.uid(),prior) then
+      if prior.role_code is distinct from assignment->>'role_code' or prior.scope_kind::text is distinct from assignment->>'scope_kind'
+        or prior.division_id is distinct from nullif(assignment->>'division_id','')::uuid or prior.neighborhood_id is distinct from nullif(assignment->>'neighborhood_id','')::uuid
+        or prior.home_id is distinct from nullif(assignment->>'home_id','')::uuid or prior.company_id is distinct from nullif(assignment->>'company_id','')::uuid
+        or prior.starts_at is distinct from (assignment->>'starts_at')::timestamptz or prior.ends_at is distinct from nullif(assignment->>'ends_at','')::timestamptz then
+        raise exception using errcode='42501',message='this access was granted by a higher administrator and is protected';
+      end if;
+      prepared:=prepared||jsonb_build_array(assignment);
+      continue;
+    end if;
+    select * into item from public.roles where code=assignment->>'role_code';
+    company:=case when item.requires_company then coalesce(nullif(assignment->>'company_id','')::uuid,p_company_id) else null end;
+    level:=private.delegation_level(p_organization_id,auth.uid(),item.code,(assignment->>'scope_kind')::public.scope_kind,
+      nullif(assignment->>'division_id','')::uuid,nullif(assignment->>'neighborhood_id','')::uuid,nullif(assignment->>'home_id','')::uuid,company,
+      coalesce(nullif(assignment->>'starts_at','')::timestamptz,now()),nullif(assignment->>'ends_at','')::timestamptz);
+    if level is null then raise exception using errcode='42501',message='role, location, or validity exceeds your authority'; end if;
+    if item.requires_company and not exists(select 1 from public.company_memberships cm where cm.organization_id=p_organization_id and cm.company_id=company and cm.user_id=p_user_id and cm.revoked_at is null)
+      and company is distinct from p_company_id then raise exception using errcode='22023',message='choose a company relationship for this role'; end if;
+    prepared:=prepared||jsonb_build_array(assignment||jsonb_build_object('authority_level',level,'company_id',company));
+  end loop;
+  if p_company_id is not null then
+    if not private.controls_company(p_organization_id,auth.uid(),p_company_id) and not private.vendor_admin(p_organization_id,auth.uid(),p_company_id) then raise exception using errcode='42501',message='this company is outside your management authority'; end if;
+    select * into old_company from public.company_memberships cm where cm.organization_id=p_organization_id and cm.company_id=p_company_id and cm.user_id=p_user_id and cm.revoked_at is null and cm.active_to is null for update;
+    if found and old_company.kind<>p_company_kind and not private.can_manage_company_member(auth.uid(),old_company) then raise exception using errcode='42501',message='company membership was granted by a higher administrator'; end if;
+    select case when private.vendor_admin(p_organization_id,auth.uid(),p_company_id) and not private.controls_company(p_organization_id,auth.uid(),p_company_id) then 4
+      else private.admin_level(p_organization_id,auth.uid(),c.owner_scope_kind,c.owner_division_id,c.owner_neighborhood_id,null) end into company_level from public.companies c where c.id=p_company_id;
+  end if;
+  select array_agg(a.id) into editable_ids from public.role_assignments a where a.organization_id=p_organization_id and a.user_id=p_user_id and a.revoked_at is null and private.can_remove_assignment(auth.uid(),a);
+  update public.role_assignments a set revoked_at=now() where a.id=any(editable_ids);
+  if coalesce(builder,false) then update public.organization_memberships set affiliation=p_affiliation,status='active',ended_at=null where id=member.id; end if;
+  if p_company_id is not null and (old_company.id is null or old_company.kind<>p_company_kind) then
+    if old_company.id is not null then update public.company_memberships set revoked_at=now() where id=old_company.id; end if;
+    insert into public.company_memberships(organization_id,company_id,user_id,kind,granted_by,authority_level) values(p_organization_id,p_company_id,p_user_id,p_company_kind,auth.uid(),company_level);
+  end if;
+  for assignment in select value from jsonb_array_elements(prepared) loop
+    if exists(select 1 from public.role_assignments a where a.id=nullif(assignment->>'id','')::uuid and a.revoked_at is null and a.organization_id=p_organization_id and a.user_id=p_user_id) then continue; end if;
+    select * into item from public.roles where code=assignment->>'role_code';
+    company:=case when item.requires_company then coalesce(nullif(assignment->>'company_id','')::uuid,p_company_id) else null end;
+    level:=(assignment->>'authority_level')::smallint;
+    insert into public.role_assignments(organization_id,user_id,role_code,scope_kind,division_id,neighborhood_id,home_id,company_id,authority_level,starts_at,ends_at,granted_by)
+      values(p_organization_id,p_user_id,item.code,(assignment->>'scope_kind')::public.scope_kind,nullif(assignment->>'division_id','')::uuid,nullif(assignment->>'neighborhood_id','')::uuid,nullif(assignment->>'home_id','')::uuid,company,level,
+        coalesce(nullif(assignment->>'starts_at','')::timestamptz,now()),nullif(assignment->>'ends_at','')::timestamptz,auth.uid());
+  end loop;
+  new_access:=jsonb_build_object('user_id',p_user_id,'roles',(select coalesce(jsonb_agg(to_jsonb(a)),'[]'::jsonb) from public.role_assignments a where a.organization_id=p_organization_id and a.user_id=p_user_id and a.revoked_at is null));
+  perform private.append_audit(p_organization_id,auth.uid(),'membership.access_changed','user',p_user_id,null,previous,new_access);
+  return jsonb_build_object('user_id',p_user_id,'updated',true);
+end; $$;
+
+create or replace function public.admin_suspend_member(p_organization_id uuid,p_user_id uuid,p_reason text) returns jsonb
+language plpgsql security definer set search_path='' as $$
+declare global_admin boolean; changed integer; removed integer; orphaned jsonb; role_ids uuid[]; company_ids uuid[];
+begin
+  if auth.uid() is null or not private.require_aal2() then raise exception using errcode='42501',message='verify your authenticator before removing access'; end if;
+  global_admin:=coalesce(private.admin_level(p_organization_id,auth.uid(),'organization')=1,false);
+  perform 1 from public.organization_memberships where organization_id=p_organization_id and user_id=p_user_id for update;
+  select array_agg(a.id) into role_ids from public.role_assignments a where a.organization_id=p_organization_id and a.user_id=p_user_id and a.revoked_at is null and private.can_remove_assignment(auth.uid(),a);
+  select array_agg(cm.id) into company_ids from public.company_memberships cm where cm.organization_id=p_organization_id and cm.user_id=p_user_id and cm.revoked_at is null and private.can_manage_company_member(auth.uid(),cm);
+  update public.role_assignments a set revoked_at=now() where a.id=any(role_ids);
+  get diagnostics changed=row_count;
+  update public.company_memberships cm set revoked_at=now() where cm.id=any(company_ids);
+  get diagnostics removed=row_count;
+  if not global_admin and changed+removed=0 then raise exception using errcode='42501',message='no removable access in your scope; higher-level grants are protected'; end if;
+  if global_admin then update public.organization_memberships set status='suspended',ended_at=now() where organization_id=p_organization_id and user_id=p_user_id and status='active'; end if;
+  select coalesce(jsonb_agg(jsonb_build_object('work_item_id',w.id,'title',w.title)),'[]'::jsonb) into orphaned
+    from public.work_items w join public.assignment_episodes ae on ae.id=w.current_assignment_id and ae.organization_id=w.organization_id
+    where w.organization_id=p_organization_id and ae.internal_assignee_user_id=p_user_id and ae.ended_at is null
+      and not private.has_permission(p_organization_id,p_user_id,'work.execute_assigned',w.neighborhood_id,w.home_id)
+      and private.has_permission(p_organization_id,auth.uid(),'work.assign',w.neighborhood_id,w.home_id);
+  perform private.append_audit(p_organization_id,auth.uid(),case when global_admin then 'membership.suspended' else 'membership.local_access_removed' end,'user',p_user_id,null,null,jsonb_build_object('reason',p_reason,'scope_only',not global_admin,'removed_roles',changed));
+  return jsonb_build_object('user_id',p_user_id,'orphaned_work',orphaned,'scope_only',not global_admin);
+end; $$;
+
+create function private.company_team_visible(p_org uuid,p_actor uuid,p_company uuid) returns boolean
+language sql stable security definer set search_path='' as $$
+  select private.active_member(p_org,p_actor) and (private.vendor_admin(p_org,p_actor,p_company) or exists(
+    select 1 from public.company_access_grants g join public.role_assignments a on a.organization_id=g.organization_id
+      join public.role_permissions rp on rp.role_code=a.role_code and rp.permission_code='access.manage'
+    where g.organization_id=p_org and g.company_id=p_company and g.revoked_at is null and a.user_id=p_actor and a.revoked_at is null
+      and a.starts_at<=now() and (a.ends_at is null or a.ends_at>now()) and private.role_grant_enabled(a)
+      and (private.scope_contains(p_org,a.scope_kind,a.division_id,a.neighborhood_id,a.home_id,g.scope_kind,g.division_id,g.neighborhood_id,null)
+        or private.scope_contains(p_org,g.scope_kind,g.division_id,g.neighborhood_id,null,a.scope_kind,a.division_id,a.neighborhood_id,a.home_id))));
+$$;
+
+create function private.can_read_member(p_org uuid,p_actor uuid,p_user uuid) returns boolean
+language sql stable security definer set search_path='' as $$
+  select private.active_member(p_org,p_actor) and (private.admin_level(p_org,p_actor,'organization')=1 or
+    exists(select 1 from public.role_assignments a where a.organization_id=p_org and a.user_id=p_user and a.revoked_at is null
+      and (private.admin_level(p_org,p_actor,a.scope_kind,a.division_id,a.neighborhood_id,a.home_id) is not null
+        or (a.company_id is not null and private.company_team_visible(p_org,p_actor,a.company_id)))) or
+    exists(select 1 from public.company_memberships cm where cm.organization_id=p_org and cm.user_id=p_user and cm.revoked_at is null
+      and private.vendor_admin(p_org,p_actor,cm.company_id)));
+$$;
+create or replace function public.admin_list_members(p_organization_id uuid) returns jsonb
+language plpgsql stable security definer set search_path='' as $$
+begin
+  if not private.active_member(p_organization_id,auth.uid()) then raise exception using errcode='42501',message='active membership required'; end if;
+  return (select coalesce(jsonb_agg(jsonb_build_object('user_id',m.user_id,'email',u.email,'display_name',p.display_name,
+    'affiliation',m.affiliation,'status',m.status,'joined_at',m.joined_at,
+    'can_suspend',private.admin_level(p_organization_id,auth.uid(),'organization')=1,
+    'can_remove_access',exists(select 1 from public.role_assignments a where a.organization_id=m.organization_id and a.user_id=m.user_id and a.revoked_at is null and private.can_remove_assignment(auth.uid(),a)),
+    'roles',coalesce((select jsonb_agg(to_jsonb(a)||jsonb_build_object('role_label',r.label,'can_edit',private.can_remove_assignment(auth.uid(),a)))
+      from public.role_assignments a join public.roles r on r.code=a.role_code where a.organization_id=m.organization_id and a.user_id=m.user_id
+      and a.revoked_at is null and (private.admin_level(m.organization_id,auth.uid(),a.scope_kind,a.division_id,a.neighborhood_id,a.home_id) is not null
+        or a.scope_kind='organization' or (a.company_id is not null and (private.company_team_visible(m.organization_id,auth.uid(),a.company_id))))),'[]'::jsonb),
+    'companies',coalesce((select jsonb_agg(jsonb_build_object('company_id',cm.company_id,'company_name',c.name,'kind',cm.kind,'can_edit',private.can_manage_company_member(auth.uid(),cm)))
+      from public.company_memberships cm join public.companies c on c.id=cm.company_id and c.organization_id=cm.organization_id where cm.organization_id=m.organization_id and cm.user_id=m.user_id
+        and cm.revoked_at is null and cm.active_from<=now() and (cm.active_to is null or cm.active_to>now()) and private.company_team_visible(m.organization_id,auth.uid(),c.id)),'[]'::jsonb)
+    ) order by p.display_name,u.email),'[]'::jsonb)
+    from public.organization_memberships m join auth.users u on u.id=m.user_id join public.profiles p on p.id=m.user_id
+    where m.organization_id=p_organization_id and private.can_read_member(p_organization_id,auth.uid(),m.user_id));
+end; $$;
+
+create or replace function public.admin_create_invitation(p_organization_id uuid,p_email text,p_affiliation public.affiliation_kind,
+  p_grants jsonb,p_company_id uuid,p_company_kind text,p_token_hash text,p_expires_at timestamptz)
+returns public.invites language plpgsql security definer set search_path='' as $$
+declare result public.invites; grant_row jsonb; prepared jsonb:='[]'; level smallint; highest smallint:=4; company uuid; target public.organization_memberships;
+begin
+  if auth.uid() is null or not private.require_aal2() then raise exception using errcode='42501',message='verify your authenticator before inviting users'; end if;
+  if p_email is null or length(trim(p_email))>254 or trim(p_email) !~ '^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$' then raise exception using errcode='22023',message='enter a valid invitation email'; end if;
+  if p_token_hash is null or p_token_hash !~ '^[a-f0-9]{64}$' or p_expires_at is null or p_expires_at<=now() or p_expires_at>now()+interval '7 days 5 minutes' then raise exception using errcode='22023',message='invalid invitation token or expiry'; end if;
+  if jsonb_typeof(p_grants) is distinct from 'array' or jsonb_array_length(p_grants) not between 1 and 20 then raise exception using errcode='22023',message='choose one to twenty role assignments'; end if;
+  select m.* into target from public.organization_memberships m join auth.users u on u.id=m.user_id where m.organization_id=p_organization_id and lower(u.email)=lower(trim(p_email));
+  if found and private.admin_level(p_organization_id,auth.uid(),'organization') is distinct from 1::smallint and (target.status<>'active' or target.affiliation<>p_affiliation) then raise exception using errcode='42501',message='only an organization admin may change membership status or affiliation'; end if;
+  for grant_row in select value from jsonb_array_elements(p_grants) loop
+    company:=case when exists(select 1 from public.roles where code=grant_row->>'role_code' and requires_company) then coalesce(nullif(grant_row->>'company_id','')::uuid,p_company_id) else null end;
+    if company is distinct from p_company_id then raise exception using errcode='22023',message='invitation company must match the role company'; end if;
+    level:=private.delegation_level(p_organization_id,auth.uid(),grant_row->>'role_code',(grant_row->>'scope_kind')::public.scope_kind,
+      nullif(grant_row->>'division_id','')::uuid,nullif(grant_row->>'neighborhood_id','')::uuid,nullif(grant_row->>'home_id','')::uuid,company,
+      coalesce(nullif(grant_row->>'starts_at','')::timestamptz,now()),nullif(grant_row->>'ends_at','')::timestamptz);
+    if level is null then raise exception using errcode='42501',message='this role or location exceeds your invitation authority'; end if;
+    if grant_row->>'role_code'='vendor_admin' and p_company_kind is distinct from 'manager' then raise exception using errcode='22023',message='vendor admins must be company managers'; end if;
+    highest:=least(highest,level);
+    prepared:=prepared||jsonb_build_array((grant_row-'authority_level')||jsonb_build_object('authority_level',level,'company_id',company));
+  end loop;
+  if p_company_id is not null and (p_company_kind is null or p_company_kind not in ('manager','technician')) then raise exception using errcode='22023',message='choose a company member type'; end if;
+  insert into public.invites(organization_id,normalized_email,proposed_membership,proposed_grants,proposed_company_id,token_hash,expires_at,invited_by,authority_level)
+    values(p_organization_id,lower(trim(p_email)),jsonb_build_object('affiliation',p_affiliation,'company_kind',p_company_kind),prepared,p_company_id,p_token_hash,p_expires_at,auth.uid(),highest) returning * into result;
+  perform private.append_audit(p_organization_id,auth.uid(),'invitation.created','invite',result.id,null,null,to_jsonb(result)-'token_hash');
+  return result;
+end; $$;
+
+create or replace function public.accept_invitation(p_plaintext_token text) returns jsonb
+language plpgsql security definer set search_path='' as $$
+declare invitation public.invites; email text; grant_row jsonb; membership public.organization_memberships; level smallint; authority smallint; company uuid; platform_bootstrap boolean; existing_company public.company_memberships;
+begin
+  if auth.uid() is null then raise exception using errcode='42501',message='sign in required'; end if;
+  select lower(u.email) into email from auth.users u where u.id=auth.uid() and u.email_confirmed_at is not null;
+  if email is null then raise exception using errcode='42501',message='verify your account email first'; end if;
+  select * into invitation from public.invites where token_hash=encode(extensions.digest(p_plaintext_token,'sha256'),'hex') for update;
+  if not found or invitation.status<>'pending' or invitation.expires_at<=now() then raise exception using errcode='22023',message='invitation is invalid or expired'; end if;
+  if invitation.normalized_email<>email then raise exception using errcode='42501',message='signed-in email does not match invitation'; end if;
+  if not exists(select 1 from public.organizations where id=invitation.organization_id and status='active') then raise exception using errcode='42501',message='organization is not active'; end if;
+  if not exists(select 1 from public.profiles where id=auth.uid() and completed_at is not null and length(trim(first_name))>0 and length(trim(last_name))>0) then raise exception using errcode='22023',message='complete your first and last name before accepting this invitation'; end if;
+  platform_bootstrap:=coalesce((invitation.proposed_membership->>'platform_onboarding')::boolean,false) and private.is_platform_admin(invitation.invited_by)
+    and exists(select 1 from public.organization_onboarding o where o.organization_id=invitation.organization_id and o.administrator_email=email
+      and invitation.proposed_grants=jsonb_build_array(jsonb_build_object('role_code',o.administrator_role_code,'scope_kind','organization','neighborhood_id',null,'home_id',null)));
+  for grant_row in select value from jsonb_array_elements(invitation.proposed_grants) loop
+    company:=coalesce(nullif(grant_row->>'company_id','')::uuid,invitation.proposed_company_id);
+    level:=case when platform_bootstrap then 1 else private.delegation_level(invitation.organization_id,invitation.invited_by,grant_row->>'role_code',(grant_row->>'scope_kind')::public.scope_kind,
+      nullif(grant_row->>'division_id','')::uuid,nullif(grant_row->>'neighborhood_id','')::uuid,nullif(grant_row->>'home_id','')::uuid,company,
+      coalesce(nullif(grant_row->>'starts_at','')::timestamptz,now()),nullif(grant_row->>'ends_at','')::timestamptz) end;
+    if level is null or not private.role_enabled(invitation.organization_id,grant_row->>'role_code') then raise exception using errcode='42501',message='the inviter no longer has authority for this access; request a new invitation'; end if;
+  end loop;
+  select * into membership from public.organization_memberships where organization_id=invitation.organization_id and user_id=auth.uid() for update;
+  if found and invitation.authority_level>1 and (membership.status<>'active' or membership.affiliation::text<>invitation.proposed_membership->>'affiliation') then raise exception using errcode='42501',message='an organization admin must review this membership'; end if;
+  insert into public.organization_memberships(organization_id,user_id,affiliation,status,joined_at)
+    values(invitation.organization_id,auth.uid(),(invitation.proposed_membership->>'affiliation')::public.affiliation_kind,'active',now())
+    on conflict(organization_id,user_id) do update set status='active',ended_at=null,affiliation=excluded.affiliation,joined_at=coalesce(public.organization_memberships.joined_at,now()) returning * into membership;
+  if invitation.proposed_company_id is not null then
+    select * into existing_company from public.company_memberships where organization_id=invitation.organization_id and company_id=invitation.proposed_company_id and user_id=auth.uid() and revoked_at is null and active_to is null for update;
+    if found and existing_company.kind is distinct from invitation.proposed_membership->>'company_kind' then
+      if invitation.authority_level>existing_company.authority_level then raise exception using errcode='42501',message='company membership was granted by a higher administrator'; end if;
+      update public.company_memberships set revoked_at=now() where id=existing_company.id;
+      existing_company.id:=null;
+    end if;
+    if existing_company.id is null then insert into public.company_memberships(organization_id,company_id,user_id,kind,granted_by,authority_level)
+      values(invitation.organization_id,invitation.proposed_company_id,auth.uid(),coalesce(invitation.proposed_membership->>'company_kind','technician'),invitation.invited_by,invitation.authority_level); end if;
+  end if;
+  for grant_row in select value from jsonb_array_elements(invitation.proposed_grants) loop
+    authority:=coalesce(nullif(grant_row->>'authority_level','')::smallint,invitation.authority_level);
+    insert into public.role_assignments(organization_id,user_id,role_code,scope_kind,division_id,neighborhood_id,home_id,company_id,authority_level,starts_at,ends_at,granted_by)
+      values(invitation.organization_id,auth.uid(),grant_row->>'role_code',(grant_row->>'scope_kind')::public.scope_kind,nullif(grant_row->>'division_id','')::uuid,
+        nullif(grant_row->>'neighborhood_id','')::uuid,nullif(grant_row->>'home_id','')::uuid,
+        case when exists(select 1 from public.roles where code=grant_row->>'role_code' and requires_company) then coalesce(nullif(grant_row->>'company_id','')::uuid,invitation.proposed_company_id) else null end,
+        authority,coalesce(nullif(grant_row->>'starts_at','')::timestamptz,now()),nullif(grant_row->>'ends_at','')::timestamptz,invitation.invited_by);
+  end loop;
+  update public.invites set status='accepted',accepted_by=auth.uid(),accepted_at=now() where id=invitation.id;
+  perform private.append_audit(invitation.organization_id,auth.uid(),'invitation.accepted','invite',invitation.id,null,null,jsonb_build_object('membership_id',membership.id));
+  return jsonb_build_object('organization_id',invitation.organization_id,'membership_id',membership.id);
+end; $$;
+
+create function private.can_revoke_invitation(p_actor uuid,p_invite public.invites) returns boolean
+language sql stable security definer set search_path='' as $$
+  select private.active_member(p_invite.organization_id,p_actor) and (private.admin_level(p_invite.organization_id,p_actor,'organization')=1 or
+    (jsonb_array_length(p_invite.proposed_grants)>0 and not exists(select 1 from jsonb_array_elements(p_invite.proposed_grants) g
+      where coalesce(private.delegation_level(p_invite.organization_id,p_actor,g->>'role_code',(g->>'scope_kind')::public.scope_kind,
+        nullif(g->>'division_id','')::uuid,nullif(g->>'neighborhood_id','')::uuid,nullif(g->>'home_id','')::uuid,
+        coalesce(nullif(g->>'company_id','')::uuid,p_invite.proposed_company_id),coalesce(nullif(g->>'starts_at','')::timestamptz,now()),nullif(g->>'ends_at','')::timestamptz),5)
+        >coalesce(nullif(g->>'authority_level','')::smallint,p_invite.authority_level))));
+$$;
+create or replace function public.admin_list_invitations(p_organization_id uuid) returns jsonb
+language plpgsql stable security definer set search_path='' as $$
+begin
+  if not private.active_member(p_organization_id,auth.uid()) then raise exception using errcode='42501',message='active membership required'; end if;
+  return (select coalesce(jsonb_agg(jsonb_build_object('id',i.id,'email',i.normalized_email,'status',i.status,'expires_at',i.expires_at,
+    'created_at',i.created_at,'delivery_error',i.delivery_error,'membership',i.proposed_membership,'grants',i.proposed_grants,'company_id',i.proposed_company_id,
+    'can_revoke',private.can_revoke_invitation(auth.uid(),i)) order by i.created_at desc),'[]'::jsonb) from public.invites i where i.organization_id=p_organization_id
+    and (private.can_revoke_invitation(auth.uid(),i) or i.invited_by=auth.uid()));
+end; $$;
+create or replace function public.admin_revoke_invitation(p_organization_id uuid,p_invitation_id uuid) returns jsonb
+language plpgsql security definer set search_path='' as $$
+declare invitation public.invites;
+begin
+  if auth.uid() is null or not private.require_aal2() then raise exception using errcode='42501',message='verify your authenticator before revoking invitations'; end if;
+  select * into invitation from public.invites where organization_id=p_organization_id and id=p_invitation_id and status='pending' for update;
+  if not found or not private.can_revoke_invitation(auth.uid(),invitation) then raise exception using errcode='42501',message='invitation is unavailable or was granted by a higher administrator'; end if;
+  update public.invites set status='revoked' where id=invitation.id;
+  perform private.append_audit(p_organization_id,auth.uid(),'invitation.revoked','invite',invitation.id,null,null,null);
+  return jsonb_build_object('id',invitation.id,'status','revoked');
+end; $$;
+
+create function public.admin_onboard_vendor(p_organization_id uuid,p_name text,p_reference text,p_scope public.scope_kind,
+  p_division_id uuid default null,p_neighborhood_id uuid default null) returns public.companies
+language plpgsql security definer set search_path='' as $$
+declare result public.companies; level smallint;
+begin
+  level:=private.admin_level(p_organization_id,auth.uid(),p_scope,p_division_id,p_neighborhood_id,null);
+  if not private.require_aal2() or level is null or p_scope not in ('organization','division','neighborhood') then raise exception using errcode='42501',message='vendor ownership must stay inside your administrative scope'; end if;
+  if length(trim(coalesce(p_name,''))) not between 1 and 160 then raise exception using errcode='22023',message='vendor name is required'; end if;
+  if p_scope='division' and not exists(select 1 from public.divisions where organization_id=p_organization_id and id=p_division_id and status='active') then raise exception using errcode='22023',message='division is unavailable'; end if;
+  if p_scope='neighborhood' and not exists(select 1 from public.neighborhoods where organization_id=p_organization_id and id=p_neighborhood_id and status='active') then raise exception using errcode='22023',message='neighborhood is unavailable'; end if;
+  insert into public.companies(organization_id,name,external_vendor_reference,owner_scope_kind,owner_division_id,owner_neighborhood_id,owner_authority_level,created_by)
+    values(p_organization_id,trim(p_name),nullif(trim(p_reference),''),p_scope,p_division_id,p_neighborhood_id,level,auth.uid()) returning * into result;
+  perform private.append_audit(p_organization_id,auth.uid(),'vendor.onboarded','company',result.id,null,null,to_jsonb(result));
+  return result;
+end; $$;
+create function public.admin_set_vendor_coverage(p_organization_id uuid,p_company_id uuid,p_scope public.scope_kind,
+  p_division_id uuid default null,p_neighborhood_id uuid default null,p_grant_id uuid default null,p_active boolean default true)
+returns jsonb language plpgsql security definer set search_path='' as $$
+declare existing public.company_access_grants; level smallint; company public.companies; result public.company_access_grants;
+begin
+  if auth.uid() is null or not private.require_aal2() then raise exception using errcode='42501',message='verify your authenticator before changing vendor coverage'; end if;
+  select * into company from public.companies where organization_id=p_organization_id and id=p_company_id for update;
+  if not found or not private.can_read_company(p_organization_id,auth.uid(),p_company_id) then raise exception using errcode='42501',message='vendor is outside your access'; end if;
+  if p_grant_id is not null then
+    select * into existing from public.company_access_grants where id=p_grant_id and organization_id=p_organization_id and company_id=p_company_id and revoked_at is null for update;
+    if not found or p_active then raise exception using errcode='22023',message='choose a current coverage entry to remove'; end if;
+    level:=private.admin_level(p_organization_id,auth.uid(),existing.scope_kind,existing.division_id,existing.neighborhood_id,null);
+    if level is null or level>existing.authority_level then raise exception using errcode='42501',message='coverage was granted by a higher administrator or is outside your scope'; end if;
+    -- Removing coverage must not silently strand current assignments.
+    if exists(select 1 from public.assignment_episodes ae join public.work_items w on w.organization_id=ae.organization_id and w.current_assignment_id=ae.id
+      where ae.organization_id=p_organization_id and ae.company_id=p_company_id and ae.ended_at is null and w.state not in ('verified','cancelled')
+        and private.scope_contains(p_organization_id,existing.scope_kind,existing.division_id,existing.neighborhood_id,null,'neighborhood',null,w.neighborhood_id,null)
+        and not exists(select 1 from public.company_access_grants other where other.organization_id=p_organization_id and other.company_id=p_company_id and other.revoked_at is null and other.id<>existing.id
+          and private.scope_contains(p_organization_id,other.scope_kind,other.division_id,other.neighborhood_id,null,'neighborhood',null,w.neighborhood_id,null))) then
+      raise exception using errcode='23514',message='reassign or finish active work in this coverage before removing it';
+    end if;
+    update public.company_access_grants set revoked_at=now(),revocation_level=level,revoked_by=auth.uid() where id=existing.id returning * into result;
+  else
+    level:=private.admin_level(p_organization_id,auth.uid(),p_scope,p_division_id,p_neighborhood_id,null);
+    if level is null or not p_active or company.status<>'active' or p_scope not in ('organization','division','neighborhood') then raise exception using errcode='42501',message='vendor coverage must stay inside your administrative scope'; end if;
+    if p_scope='division' and not exists(select 1 from public.divisions where organization_id=p_organization_id and id=p_division_id and status='active') then raise exception using errcode='22023',message='division is unavailable'; end if;
+    if p_scope='neighborhood' and not exists(select 1 from public.neighborhoods where organization_id=p_organization_id and id=p_neighborhood_id and status='active') then raise exception using errcode='22023',message='neighborhood is unavailable'; end if;
+    if exists(select 1 from public.company_access_grants g where g.organization_id=p_organization_id and g.company_id=p_company_id
+      and g.scope_kind=p_scope and g.division_id is not distinct from p_division_id and g.neighborhood_id is not distinct from p_neighborhood_id
+      and g.revoked_at is not null and g.revocation_level<level) then raise exception using errcode='42501',message='a higher administrator removed this coverage; ask them to restore it'; end if;
+    insert into public.company_access_grants(organization_id,company_id,scope_kind,division_id,neighborhood_id,authority_level,granted_by)
+      values(p_organization_id,p_company_id,p_scope,p_division_id,p_neighborhood_id,level,auth.uid()) returning * into result;
+  end if;
+  perform private.append_audit(p_organization_id,auth.uid(),case when p_active then 'vendor.coverage_added' else 'vendor.coverage_removed' end,'company',p_company_id,null,to_jsonb(existing),to_jsonb(result));
+  return to_jsonb(result);
+end; $$;
+create function public.vendor_access_context(p_organization_id uuid,p_company_id uuid) returns jsonb
+language plpgsql stable security definer set search_path='' as $$
+declare company public.companies; controls boolean;
+begin
+  select * into company from public.companies where organization_id=p_organization_id and id=p_company_id;
+  if not found or not private.can_read_company(p_organization_id,auth.uid(),p_company_id) then raise exception using errcode='42501',message='vendor is outside your access'; end if;
+  controls:=private.controls_company(p_organization_id,auth.uid(),p_company_id);
+  return jsonb_build_object('can_edit',controls,'can_deactivate',controls,'can_manage_team',controls or private.vendor_admin(p_organization_id,auth.uid(),p_company_id),
+    'owner_scope_kind',company.owner_scope_kind,'owner_label',case company.owner_scope_kind when 'organization' then 'Organization' when 'division' then (select name from public.divisions where id=company.owner_division_id) else (select name from public.neighborhoods where id=company.owner_neighborhood_id) end,
+    'coverage',coalesce((select jsonb_agg(to_jsonb(g)||jsonb_build_object('label',case g.scope_kind when 'organization' then 'Entire organization' when 'division' then (select name from public.divisions where id=g.division_id) else (select name from public.neighborhoods where id=g.neighborhood_id) end,
+      'can_remove',coalesce(private.admin_level(p_organization_id,auth.uid(),g.scope_kind,g.division_id,g.neighborhood_id,null)<=g.authority_level,false)))
+      from public.company_access_grants g where g.organization_id=p_organization_id and g.company_id=p_company_id and g.revoked_at is null),'[]'::jsonb));
+end; $$;
+
+-- Scoped structure commands keep their existing validation and audit behavior.
+do $migration$
+declare definition text; signature text; needle text;
+begin
+  signature:='public.admin_save_division(uuid,uuid,text,public.organization_status)';
+  definition:=replace(pg_get_functiondef(signature::regprocedure),chr(13)||chr(10),chr(10));
+  needle:='perform private.require_admin_permission(p_organization_id, ''structure.manage'');';
+  needle:=replace(needle,chr(13)||chr(10),chr(10));
+  if strpos(definition,needle)=0 then raise exception 'division command changed; review hierarchy guard'; end if;
+  execute replace(definition,needle,$patch$
+    if not private.require_aal2() or (p_id is null and private.admin_level(p_organization_id,auth.uid(),'organization') is null)
+      or (p_id is not null and private.admin_level(p_organization_id,auth.uid(),'division',p_id) is null) then
+      raise exception using errcode='42501',message='division is outside your administrative scope'; end if;
+  $patch$);
+  definition:=replace(pg_get_functiondef('public.admin_save_neighborhood(uuid,uuid,uuid,text,text,text,public.organization_status,uuid)'::regprocedure),chr(13)||chr(10),chr(10));
+  needle:=replace(needle,chr(13)||chr(10),chr(10));
+  if strpos(definition,needle)=0 then raise exception 'neighborhood command changed; review hierarchy guard'; end if;
+  execute replace(definition,needle,$patch$
+    if not private.require_aal2() or (p_id is null and private.admin_level(p_organization_id,auth.uid(),'division',p_division_id) is null)
+      or (p_id is not null and private.admin_level(p_organization_id,auth.uid(),'neighborhood',null,p_id) is null) then
+      raise exception using errcode='42501',message='neighborhood is outside your administrative scope'; end if;
+    if p_id is not null and exists(select 1 from public.neighborhoods n where n.organization_id=p_organization_id and n.id=p_id and n.division_id is distinct from p_division_id)
+      and (private.admin_level(p_organization_id,auth.uid(),'division',p_division_id) is null or
+        exists(select 1 from public.neighborhoods n where n.organization_id=p_organization_id and n.id=p_id and private.admin_level(p_organization_id,auth.uid(),'division',n.division_id) is null)) then
+      raise exception using errcode='42501',message='moving neighborhoods requires authority over both divisions'; end if;
+  $patch$);
+  definition:=replace(pg_get_functiondef('public.admin_save_home(uuid,uuid,uuid,text,text,text,text,text,text,text,uuid,text,boolean)'::regprocedure),chr(13)||chr(10),chr(10));
+  needle:=replace(needle,chr(13)||chr(10),chr(10));
+  if strpos(definition,needle)=0 then raise exception 'home command changed; review hierarchy guard'; end if;
+  execute replace(definition,needle,$patch$
+    if not private.require_aal2() or not private.has_permission(p_organization_id,auth.uid(),'structure.manage',p_neighborhood_id,null)
+      or (p_id is not null and not exists(select 1 from public.homes h where h.organization_id=p_organization_id and h.id=p_id and private.has_permission(p_organization_id,auth.uid(),'structure.manage',h.neighborhood_id,h.id))) then
+      raise exception using errcode='42501',message='home is outside your administrative scope'; end if;
+  $patch$);
+  definition:=replace(pg_get_functiondef('public.admin_save_home_location(uuid,uuid,uuid,text,uuid,boolean)'::regprocedure),chr(13)||chr(10),chr(10));
+  needle:=replace(needle,chr(13)||chr(10),chr(10));
+  if strpos(definition,needle)=0 then raise exception 'home location command changed; review hierarchy guard'; end if;
+  execute replace(definition,needle,$patch$
+    if not private.require_aal2() or not exists(select 1 from public.homes h where h.organization_id=p_organization_id and h.id=p_home_id and private.has_permission(p_organization_id,auth.uid(),'structure.manage',h.neighborhood_id,h.id)) then
+      raise exception using errcode='42501',message='home is outside your administrative scope'; end if;
+  $patch$);
+  definition:=replace(pg_get_functiondef('public.admin_save_home_milestone(uuid,uuid,uuid,text,timestamptz)'::regprocedure),chr(13)||chr(10),chr(10));
+  needle:='perform private.require_admin_permission(p_organization_id,''structure.manage'');';
+  needle:=replace(needle,chr(13)||chr(10),chr(10));
+  if strpos(definition,needle)=0 then raise exception 'milestone command changed; review hierarchy guard'; end if;
+  execute replace(definition,needle,$patch$
+    if not private.require_aal2() or not exists(select 1 from public.homes h where h.organization_id=p_organization_id and h.id=p_home_id and private.has_permission(p_organization_id,auth.uid(),'structure.manage',h.neighborhood_id,h.id)) then
+      raise exception using errcode='42501',message='home is outside your administrative scope'; end if;
+  $patch$);
+  definition:=replace(pg_get_functiondef('public.admin_save_company(uuid,uuid,text,text,public.organization_status)'::regprocedure),chr(13)||chr(10),chr(10));
+  needle:='perform private.require_admin_permission(p_organization_id, ''roster.manage'');';
+  needle:=replace(needle,chr(13)||chr(10),chr(10));
+  if strpos(definition,needle)=0 then raise exception 'company command changed; review hierarchy guard'; end if;
+  execute replace(definition,needle,$patch$
+    if p_id is null then perform private.require_admin_permission(p_organization_id,'roster.manage');
+    elsif not private.require_aal2() or not private.controls_company(p_organization_id,auth.uid(),p_id) then
+      raise exception using errcode='42501',message='vendor is controlled by a higher administrator or outside your scope'; end if;
+    perform 1 from public.companies where organization_id=p_organization_id and id=p_id for update;
+  $patch$);
+  definition:=replace(pg_get_functiondef('public.admin_save_roster(uuid,uuid,uuid,uuid,uuid,public.organization_status,timestamptz,timestamptz)'::regprocedure),chr(13)||chr(10),chr(10));
+  needle:=replace(needle,chr(13)||chr(10),chr(10));
+  if strpos(definition,needle)=0 then raise exception 'roster command changed; review hierarchy guard'; end if;
+  definition:=replace(definition,needle,$patch$
+    if not private.require_aal2() or private.admin_level(p_organization_id,auth.uid(),'neighborhood',null,p_neighborhood_id) is null
+      or not private.company_covers(p_organization_id,p_company_id,p_neighborhood_id) then raise exception using errcode='42501',message='vendor eligibility is outside your scope or approved coverage'; end if;
+    if p_id is not null and exists(select 1 from public.neighborhood_trade_rosters r where r.organization_id=p_organization_id and r.id=p_id
+      and (private.admin_level(p_organization_id,auth.uid(),'neighborhood',null,r.neighborhood_id) is null or private.admin_level(p_organization_id,auth.uid(),'neighborhood',null,r.neighborhood_id)>r.authority_level)) then
+      raise exception using errcode='42501',message='eligibility was granted by a higher administrator'; end if;
+  $patch$);
+  definition:=replace(definition,'perform private.append_audit(p_organization_id,auth.uid(),''roster.saved''',
+    'update public.neighborhood_trade_rosters set granted_by=coalesce(granted_by,auth.uid()),authority_level=least(authority_level,private.admin_level(p_organization_id,auth.uid(),''neighborhood'',null,p_neighborhood_id)) where id=result.id; perform private.append_audit(p_organization_id,auth.uid(),''roster.saved''');
+  -- A new grant starts at its creator level; existing higher-level ownership stays protected.
+  definition:=replace(definition,'(organization_id,neighborhood_id,company_id,specialty_id,status,active_from,active_to) values(p_organization_id,p_neighborhood_id,p_company_id,p_specialty_id,p_status,p_active_from,p_active_to)',
+    '(organization_id,neighborhood_id,company_id,specialty_id,status,active_from,active_to,granted_by,authority_level) values(p_organization_id,p_neighborhood_id,p_company_id,p_specialty_id,p_status,p_active_from,p_active_to,auth.uid(),private.admin_level(p_organization_id,auth.uid(),''neighborhood'',null,p_neighborhood_id))');
+  execute definition;
+end; $migration$;
+
+create function private.require_catalog_authority(p_org uuid,p_entity text,p_id uuid,p_active boolean) returns void
+language plpgsql security definer set search_path='' as $$
+declare neighborhood uuid; division uuid; home uuid; level smallint; roster public.neighborhood_trade_rosters;
+begin
+  if auth.uid() is null or not private.require_aal2() then raise exception using errcode='42501',message='verify your authenticator before administrative changes'; end if;
+  if p_entity='division' then
+    if private.admin_level(p_org,auth.uid(),'division',p_id) is null then raise exception using errcode='42501',message='division is outside your authority'; end if;
+  elsif p_entity='neighborhood' then
+    if private.admin_level(p_org,auth.uid(),'neighborhood',null,p_id) is null then raise exception using errcode='42501',message='neighborhood is outside your authority'; end if;
+  elsif p_entity='home' then
+    select neighborhood_id into neighborhood from public.homes where organization_id=p_org and id=p_id;
+    if neighborhood is null or not private.has_permission(p_org,auth.uid(),'structure.manage',neighborhood,p_id) then raise exception using errcode='42501',message='home is outside your authority'; end if;
+  elsif p_entity='company' then
+    perform 1 from public.companies where organization_id=p_org and id=p_id for update;
+    if not private.controls_company(p_org,auth.uid(),p_id) then raise exception using errcode='42501',message='vendor has protected ownership or coverage outside your authority'; end if;
+    update public.companies c set owner_authority_level=least(c.owner_authority_level,private.admin_level(p_org,auth.uid(),c.owner_scope_kind,c.owner_division_id,c.owner_neighborhood_id,null))
+      where c.organization_id=p_org and c.id=p_id;
+  elsif p_entity='roster' then
+    select * into roster from public.neighborhood_trade_rosters where organization_id=p_org and id=p_id for update;
+    level:=private.admin_level(p_org,auth.uid(),'neighborhood',null,roster.neighborhood_id);
+    if level is null or level>roster.authority_level or (p_active and not private.company_covers(p_org,roster.company_id,roster.neighborhood_id)) then
+      raise exception using errcode='42501',message='eligibility is protected or outside your authority or vendor coverage'; end if;
+  elsif p_entity='inspection_engagement' then
+    select neighborhood_id,home_id into neighborhood,home from public.inspection_engagements where organization_id=p_org and id=p_id;
+    if not private.has_permission(p_org,auth.uid(),'inspection.manage',neighborhood,home) then raise exception using errcode='42501',message='inspection engagement is outside your authority'; end if;
+  else
+    perform private.require_admin_permission(p_org,case when p_entity='specialty' then 'roster.manage' else 'config.manage' end);
+  end if;
+end; $$;
+do $migration$
+declare definition text; needle text;
+begin
+  definition:=replace(pg_get_functiondef('public.admin_set_catalog_status(uuid,text,uuid,boolean)'::regprocedure),chr(13)||chr(10),chr(10));
+  needle:='perform private.require_admin_permission(p_organization_id,required_permission);';
+  needle:=replace(needle,chr(13)||chr(10),chr(10));
+  if strpos(definition,needle)=0 then raise exception 'catalog lifecycle changed; review hierarchy guard'; end if;
+  execute replace(definition,needle,'perform private.require_catalog_authority(p_organization_id,p_entity,p_id,p_active);');
+  definition:=replace(pg_get_functiondef('public.current_access(uuid)'::regprocedure),chr(13)||chr(10),chr(10));
+  needle:='''scope_kind'', ra.scope_kind,';
+  needle:=replace(needle,chr(13)||chr(10),chr(10));
+  if strpos(definition,needle)=0 then raise exception 'current_access changed; review scope serialization'; end if;
+  execute replace(definition,needle,needle||'''division_id'',ra.division_id,''company_id'',ra.company_id,''authority_level'',ra.authority_level,');
+  definition:=replace(pg_get_functiondef('public.admin_save_company(uuid,uuid,text,text,public.organization_status)'::regprocedure),chr(13)||chr(10),chr(10));
+  needle:='if length(trim(coalesce(p_name,'''')))';
+  needle:=replace(needle,chr(13)||chr(10),chr(10));
+  if strpos(definition,needle)=0 then raise exception 'company validation changed'; end if;
+  execute replace(definition,needle,$patch$
+    if p_status<>'active' and exists(select 1 from public.assignment_episodes ae join public.work_items w on w.organization_id=ae.organization_id and w.current_assignment_id=ae.id
+      where ae.organization_id=p_organization_id and ae.company_id=p_id and ae.ended_at is null and w.state not in ('verified','cancelled')) then
+      raise exception using errcode='23514',message='vendor has active assignments'; end if;
+    if p_id is not null then update public.companies c set owner_authority_level=least(c.owner_authority_level,private.admin_level(p_organization_id,auth.uid(),c.owner_scope_kind,c.owner_division_id,c.owner_neighborhood_id,null))
+      where c.organization_id=p_organization_id and c.id=p_id and c.status is distinct from p_status; end if;
+    if length(trim(coalesce(p_name,'')))
+  $patch$);
+  definition:=replace(pg_get_functiondef('public.admin_save_inspector_engagement(uuid,uuid,uuid,uuid,uuid,text,timestamptz,timestamptz,boolean)'::regprocedure),chr(13)||chr(10),chr(10));
+  needle:='perform private.require_admin_permission(p_organization_id, ''config.manage'');';
+  needle:=replace(needle,chr(13)||chr(10),chr(10));
+  if strpos(definition,needle)=0 then raise exception 'engagement command changed'; end if;
+  execute replace(definition,needle,$patch$
+    if not private.require_aal2() or not private.has_permission(p_organization_id,auth.uid(),'inspection.manage',p_neighborhood_id,p_home_id)
+      or (p_id is not null and not exists(select 1 from public.inspection_engagements e where e.organization_id=p_organization_id and e.id=p_id and private.has_permission(p_organization_id,auth.uid(),'inspection.manage',e.neighborhood_id,e.home_id))) then
+      raise exception using errcode='42501',message='inspection engagement is outside your authority'; end if;
+  $patch$);
+  definition:=replace(pg_get_functiondef('public.admin_revoke_inspector_engagement(uuid,uuid)'::regprocedure),chr(13)||chr(10),chr(10));
+  needle:=replace(needle,chr(13)||chr(10),chr(10));
+  if strpos(definition,needle)=0 then raise exception 'engagement revocation changed'; end if;
+  execute replace(definition,needle,'perform private.require_catalog_authority(p_organization_id,''inspection_engagement'',p_id,false);');
+end; $migration$;
+
+alter table public.company_access_grants enable row level security;
+revoke all on public.company_access_grants from public,anon,authenticated;
+grant select on public.company_access_grants to authenticated;
+grant all on public.company_access_grants to service_role;
+create policy company_access_visible on public.company_access_grants for select to authenticated using(private.can_read_company(organization_id,auth.uid(),company_id));
+drop policy companies_scoped_select on public.companies;
+create policy companies_scoped_select on public.companies for select to authenticated using(private.can_read_company(organization_id,auth.uid(),id));
+drop policy company_memberships_scoped_select on public.company_memberships;
+create policy company_memberships_scoped_select on public.company_memberships for select to authenticated using(
+  user_id=auth.uid() or private.vendor_admin(organization_id,auth.uid(),company_id) or private.controls_company(organization_id,auth.uid(),company_id)
+  or (private.can_read_company(organization_id,auth.uid(),company_id) and exists(select 1 from public.role_assignments mine
+    join public.role_permissions rp on rp.role_code=mine.role_code and rp.permission_code='access.manage'
+    where mine.organization_id=company_memberships.organization_id and mine.user_id=auth.uid() and mine.revoked_at is null and mine.starts_at<=now()
+      and (mine.ends_at is null or mine.ends_at>now()) and private.role_grant_enabled(mine))));
+drop policy memberships_self_or_admin_select on public.organization_memberships;
+create policy memberships_self_or_admin_select on public.organization_memberships for select to authenticated using(user_id=auth.uid() or private.can_read_member(organization_id,auth.uid(),user_id));
+drop policy role_assignments_self_or_admin_select on public.role_assignments;
+create policy role_assignments_self_or_admin_select on public.role_assignments for select to authenticated using(user_id=auth.uid()
+  or private.admin_level(organization_id,auth.uid(),scope_kind,division_id,neighborhood_id,home_id) is not null
+  or (company_id is not null and (private.controls_company(organization_id,auth.uid(),company_id) or private.vendor_admin(organization_id,auth.uid(),company_id))));
+drop policy divisions_scoped_select on public.divisions;
+create policy divisions_scoped_select on public.divisions for select to authenticated using(private.active_member(organization_id,auth.uid()) and
+  exists(select 1 from public.role_assignments a where a.organization_id=divisions.organization_id and a.user_id=auth.uid() and a.revoked_at is null
+    and a.starts_at<=now() and (a.ends_at is null or a.ends_at>now()) and private.role_grant_enabled(a) and
+    (a.scope_kind='organization' or (a.scope_kind='division' and a.division_id=divisions.id) or
+      (a.scope_kind in ('neighborhood','home') and exists(select 1 from public.neighborhoods n where n.organization_id=a.organization_id and n.id=a.neighborhood_id and n.division_id=divisions.id)))));
+drop policy invites_admin_select on public.invites;
+create policy invites_admin_select on public.invites for select to authenticated using(private.can_revoke_invitation(auth.uid(),invites) or (invited_by=auth.uid() and private.active_member(organization_id,auth.uid())));
+
+-- New company-scoped permissions never grant broad access to other vendors' work.
+do $migration$
+declare definition text; needle text;
+begin
+  definition:=replace(pg_get_functiondef('private.has_permission(uuid,uuid,text,uuid,uuid)'::regprocedure),chr(13)||chr(10),chr(10));
+  needle:='a.scope_kind=''company'' and private.company_covers';
+  execute replace(definition,needle,'a.scope_kind=''company'' and p_permission in (''work.execute_assigned'',''comment.create_shared'',''evidence.upload'',''company.users.manage'') and private.company_covers');
+  definition:=replace(pg_get_functiondef('public.save_role_definition(uuid,text,text,text,public.scope_kind[],text[],boolean,boolean,boolean,bigint)'::regprocedure),chr(13)||chr(10),chr(10));
+  needle:=$needle$if p_permissions && array['structure.manage','access.manage','roster.manage','config.manage'] and
+    (p_scopes<>array['organization']::public.scope_kind[] or p_requires_company) then
+    raise exception using errcode='22023',message='administrative permissions require organization-only scope and cannot require a trade company';
+  end if;$needle$;
+  needle:=replace(needle,chr(13)||chr(10),chr(10));
+  if strpos(definition,needle)=0 then raise exception 'role definition validation changed; review hierarchy restrictions'; end if;
+  execute replace(definition,needle,$patch$
+    if 'config.manage'=any(p_permissions) and (p_scopes<>array['organization']::public.scope_kind[] or p_requires_company) then
+      raise exception using errcode='22023',message='organization configuration requires organization-only scope'; end if;
+    if p_permissions && array['structure.manage','access.manage','roster.manage'] and
+      (not(p_scopes<@array['organization','division','neighborhood']::public.scope_kind[]) or p_requires_company) then
+      raise exception using errcode='22023',message='builder administration requires organization, division, or neighborhood scope'; end if;
+    if 'company'=any(p_scopes) and (not p_requires_company or not(p_permissions<@array['company.users.manage','work.execute_assigned','comment.create_shared','evidence.upload'])) then
+      raise exception using errcode='22023',message='company scope supports only company users and assigned-work permissions'; end if;
+    if 'company.users.manage'=any(p_permissions) and not('access.manage'=any(p_permissions)) and (not p_requires_company or p_scopes<>array['company']::public.scope_kind[]) then
+      raise exception using errcode='22023',message='vendor user administration requires company-only scope'; end if;
+  $patch$);
+end; $migration$;
+
+create function private.initialize_vendor_coverage() returns trigger
+language plpgsql security definer set search_path='' as $$
+begin
+  insert into public.company_access_grants(organization_id,company_id,scope_kind,division_id,neighborhood_id,authority_level,granted_by)
+    values(new.organization_id,new.id,new.owner_scope_kind,new.owner_division_id,new.owner_neighborhood_id,new.owner_authority_level,coalesce(new.created_by,auth.uid()));
+  return new;
+end; $$;
+create trigger initialize_vendor_coverage after insert on public.companies for each row execute function private.initialize_vendor_coverage();
+
+create function private.company_work_permission(p_org uuid,p_user uuid,p_company uuid,p_neighborhood uuid,p_home uuid) returns boolean
+language sql stable security definer set search_path='' as $$
+  select private.active_member(p_org,p_user) and private.company_covers(p_org,p_company,p_neighborhood) and exists(
+    select 1 from public.role_assignments a join public.roles r on r.code=a.role_code join public.role_permissions rp on rp.role_code=a.role_code and rp.permission_code='work.execute_assigned'
+    where a.organization_id=p_org and a.user_id=p_user and a.revoked_at is null and a.starts_at<=now() and (a.ends_at is null or a.ends_at>now())
+      and private.role_grant_enabled(a) and (not r.requires_company or a.company_id is null or a.company_id=p_company)
+      and ((a.scope_kind='company' and a.company_id=p_company) or private.scope_contains(p_org,a.scope_kind,a.division_id,a.neighborhood_id,a.home_id,
+        case when p_home is null then 'neighborhood'::public.scope_kind else 'home'::public.scope_kind end,null,p_neighborhood,p_home)));
+$$;
+create or replace function private.can_execute_work(p_user_id uuid,p_work_item_id uuid) returns boolean
+language sql stable security definer set search_path='' as $$
+  select exists(select 1 from public.work_items w join public.assignment_episodes ae on ae.organization_id=w.organization_id and ae.id=w.current_assignment_id and ae.ended_at is null
+    where w.id=p_work_item_id and private.active_member(w.organization_id,p_user_id) and
+      ((ae.internal_assignee_user_id=p_user_id and private.has_permission(w.organization_id,p_user_id,'work.execute_assigned',w.neighborhood_id,w.home_id)) or
+        (private.company_work_permission(w.organization_id,p_user_id,ae.company_id,w.neighborhood_id,w.home_id) and
+          (private.active_company_membership(w.organization_id,ae.company_id,p_user_id,'manager') or
+            (ae.technician_user_id=p_user_id and private.active_company_membership(w.organization_id,ae.company_id,p_user_id,'technician'))))));
+$$;
+create or replace function private.can_read_work(p_user_id uuid,p_work_item_id uuid) returns boolean
+language sql stable security definer set search_path='' as $$
+  select exists(select 1 from public.work_items w left join public.assignment_episodes ae on ae.organization_id=w.organization_id and ae.id=w.current_assignment_id
+    where w.id=p_work_item_id and private.active_member(w.organization_id,p_user_id) and
+    ((w.state='draft' and w.created_by=p_user_id and private.has_permission(w.organization_id,p_user_id,'work.create',w.neighborhood_id,w.home_id)) or
+      private.has_permission(w.organization_id,p_user_id,'work.read_scope',w.neighborhood_id,w.home_id) or
+      private.has_permission(w.organization_id,p_user_id,'work.verify',w.neighborhood_id,w.home_id) or
+      private.can_execute_work(p_user_id,w.id) or
+      (ae.internal_assignee_user_id=p_user_id and private.has_permission(w.organization_id,p_user_id,'work.execute_assigned',w.neighborhood_id,w.home_id)) or
+      (private.company_work_permission(w.organization_id,p_user_id,ae.company_id,w.neighborhood_id,w.home_id) and
+        (private.active_company_membership(w.organization_id,ae.company_id,p_user_id,'manager') or (ae.technician_user_id=p_user_id and private.active_company_membership(w.organization_id,ae.company_id,p_user_id,'technician')))) or
+      exists(select 1 from public.inspection_participants ip join public.inspections i on i.organization_id=ip.organization_id and i.id=ip.inspection_id
+        where ip.user_id=p_user_id and w.inspection_id=i.id and (private.has_permission(w.organization_id,p_user_id,'inspection.perform',w.neighborhood_id,w.home_id) or private.has_permission(w.organization_id,p_user_id,'inspection.manage',w.neighborhood_id,w.home_id)))));
+$$;
+
+-- Member directories expose only overlapping administration areas or the vendor's own team.
+
+drop policy company_memberships_scoped_select on public.company_memberships;
+create policy company_memberships_scoped_select on public.company_memberships for select to authenticated using(user_id=auth.uid() or private.company_team_visible(organization_id,auth.uid(),company_id));
+
+
+create or replace function public.participant_directory(p_organization_id uuid,p_neighborhood_id uuid default null)
+returns table(user_id uuid,display_name text,affiliation public.affiliation_kind)
+language sql stable security definer set search_path='' as $$
+  select distinct m.user_id,p.display_name,m.affiliation from public.organization_memberships m join public.profiles p on p.id=m.user_id
+  where m.organization_id=p_organization_id and m.status='active' and private.active_member(p_organization_id,auth.uid()) and
+    (m.user_id=auth.uid() or private.can_read_member(p_organization_id,auth.uid(),m.user_id) or
+      exists(select 1 from public.role_assignments mine join public.role_assignments theirs on theirs.organization_id=mine.organization_id
+        where mine.organization_id=p_organization_id and mine.user_id=auth.uid() and theirs.user_id=m.user_id and mine.revoked_at is null and theirs.revoked_at is null
+          and mine.starts_at<=now() and (mine.ends_at is null or mine.ends_at>now()) and theirs.starts_at<=now() and (theirs.ends_at is null or theirs.ends_at>now())
+          and private.role_grant_enabled(mine) and private.role_grant_enabled(theirs) and mine.scope_kind<>'company' and theirs.scope_kind<>'company'
+          and exists(select 1 from public.neighborhoods n where n.organization_id=p_organization_id and (p_neighborhood_id is null or n.id=p_neighborhood_id)
+            and private.scope_contains(p_organization_id,mine.scope_kind,mine.division_id,mine.neighborhood_id,mine.home_id,'neighborhood',null,n.id,null)
+            and private.scope_contains(p_organization_id,theirs.scope_kind,theirs.division_id,theirs.neighborhood_id,theirs.home_id,'neighborhood',null,n.id,null))))
+    and (p_neighborhood_id is null or exists(select 1 from public.role_assignments theirs where theirs.organization_id=p_organization_id and theirs.user_id=m.user_id and theirs.revoked_at is null
+      and theirs.starts_at<=now() and (theirs.ends_at is null or theirs.ends_at>now()) and private.role_grant_enabled(theirs)
+      and (private.scope_contains(p_organization_id,theirs.scope_kind,theirs.division_id,theirs.neighborhood_id,theirs.home_id,'neighborhood',null,p_neighborhood_id,null)
+        or (theirs.scope_kind='company' and private.company_covers(p_organization_id,theirs.company_id,p_neighborhood_id)))));
+$$;
+
+revoke all on function public.administration_context(uuid),public.admin_onboard_vendor(uuid,text,text,public.scope_kind,uuid,uuid),
+  public.admin_set_vendor_coverage(uuid,uuid,public.scope_kind,uuid,uuid,uuid,boolean),public.vendor_access_context(uuid,uuid) from public,anon;
+grant execute on function public.administration_context(uuid),public.admin_onboard_vendor(uuid,text,text,public.scope_kind,uuid,uuid),
+  public.admin_set_vendor_coverage(uuid,uuid,public.scope_kind,uuid,uuid,uuid,boolean),public.vendor_access_context(uuid,uuid) to authenticated;
+
+-- Retired role records remain in history. Existing grants are migrated without silently adding builder-administration rights.
+do $migration$
+declare invitation public.invites; g jsonb; grants jsonb; compatibility_needed boolean;
+begin
+  compatibility_needed:=exists(select 1 from public.role_assignments where role_code='area_manager' and revoked_at is null)
+    or exists(select 1 from public.invites where status='pending' and expires_at>now() and exists(select 1 from jsonb_array_elements(proposed_grants) entry where entry->>'role_code'='area_manager'));
+  if compatibility_needed then
+    insert into public.roles(code,label,allowed_scope_kinds,description,default_for_new_organizations)
+      select 'field_oversight','Field oversight',allowed_scope_kinds,'Compatibility role preserving former area-manager operations without adding user administration.',false from public.roles where code='area_manager';
+    insert into public.role_permissions select 'field_oversight',permission_code from public.role_permissions where role_code='area_manager';
+    insert into public.organization_roles(organization_id,role_code,enabled) select organization_id,'field_oversight',enabled from public.organization_roles where role_code='area_manager';
+    update public.role_assignments set role_code='field_oversight' where role_code='area_manager' and revoked_at is null;
+  end if;
+  insert into public.organization_roles(organization_id,role_code,enabled)
+    select distinct a.organization_id,r,true from public.role_assignments a cross join unnest(array['operations_coordinator','internal_contributor']) r where a.role_code='assistant_superintendent' and a.revoked_at is null
+    on conflict(organization_id,role_code) do update set enabled=true;
+  insert into public.role_assignments(organization_id,user_id,role_code,scope_kind,neighborhood_id,home_id,starts_at,ends_at,granted_by,authority_level)
+    select organization_id,user_id,r,scope_kind,neighborhood_id,home_id,starts_at,ends_at,granted_by,authority_level from public.role_assignments a
+      cross join unnest(array['operations_coordinator','internal_contributor']) r where a.role_code='assistant_superintendent' and a.revoked_at is null;
+  update public.role_assignments set revoked_at=now() where role_code='assistant_superintendent' and revoked_at is null;
+  update public.role_assignments a set role_code='vendor_admin',company_id=(select cm.company_id from public.company_memberships cm where cm.organization_id=a.organization_id and cm.user_id=a.user_id and cm.kind='manager' and cm.revoked_at is null order by cm.created_at limit 1)
+    where role_code='trade_manager' and revoked_at is null;
+  for invitation in select * from public.invites where status='pending' and exists(select 1 from jsonb_array_elements(proposed_grants) entry where entry->>'role_code' in ('area_manager','assistant_superintendent','trade_manager')) loop
+    grants:='[]';
+    for g in select value from jsonb_array_elements(invitation.proposed_grants) loop
+      if g->>'role_code'='assistant_superintendent' then grants:=grants||jsonb_build_array(g||jsonb_build_object('role_code','operations_coordinator'),g||jsonb_build_object('role_code','internal_contributor'));
+      elsif g->>'role_code'='trade_manager' then grants:=grants||jsonb_build_array(g||jsonb_build_object('role_code','vendor_admin','company_id',invitation.proposed_company_id));
+      elsif g->>'role_code'='area_manager' then grants:=grants||jsonb_build_array(g||jsonb_build_object('role_code','field_oversight'));
+      else grants:=grants||jsonb_build_array(g); end if;
+    end loop;
+    update public.invites set proposed_grants=grants where id=invitation.id;
+  end loop;
+end; $migration$;
+update public.roles set active=false,default_for_new_organizations=false,version=version+1,updated_at=now() where code in ('area_manager','assistant_superintendent','trade_manager');
+update public.organization_roles set enabled=false where role_code in ('area_manager','assistant_superintendent','trade_manager');
+
+-- Fine-grained custom management roles retain their existing permission boundaries.
+do $migration$
+declare definition text; signature text;
+begin
+  definition:=replace(pg_get_functiondef('private.controls_company(uuid,uuid,uuid)'::regprocedure),chr(13)||chr(10),chr(10));
+  execute replace(definition,'private.admin_level(p_org,p_user,','private.management_level(p_org,p_user,''roster.manage'',');
+  foreach signature in array array['public.admin_onboard_vendor(uuid,text,text,public.scope_kind,uuid,uuid)',
+    'public.admin_set_vendor_coverage(uuid,uuid,public.scope_kind,uuid,uuid,uuid,boolean)','public.vendor_access_context(uuid,uuid)',
+    'public.admin_save_company(uuid,uuid,text,text,public.organization_status)','public.admin_save_roster(uuid,uuid,uuid,uuid,uuid,public.organization_status,timestamptz,timestamptz)'] loop
+    definition:=replace(pg_get_functiondef(signature::regprocedure),chr(13)||chr(10),chr(10));
+    execute replace(definition,'private.admin_level(p_organization_id,auth.uid(),','private.management_level(p_organization_id,auth.uid(),''roster.manage'',');
+  end loop;
+  foreach signature in array array['public.admin_save_division(uuid,uuid,text,public.organization_status)',
+    'public.admin_save_neighborhood(uuid,uuid,uuid,text,text,text,public.organization_status,uuid)'] loop
+    definition:=replace(pg_get_functiondef(signature::regprocedure),chr(13)||chr(10),chr(10));
+    execute replace(definition,'private.admin_level(p_organization_id,auth.uid(),','private.management_level(p_organization_id,auth.uid(),''structure.manage'',');
+  end loop;
+  definition:=replace(pg_get_functiondef('private.require_catalog_authority(uuid,text,uuid,boolean)'::regprocedure),chr(13)||chr(10),chr(10));
+  definition:=replace(definition,'private.admin_level(p_org,auth.uid(),''division''','private.management_level(p_org,auth.uid(),''structure.manage'',''division''');
+  definition:=replace(definition,'private.admin_level(p_org,auth.uid(),''neighborhood'',null,p_id)','private.management_level(p_org,auth.uid(),''structure.manage'',''neighborhood'',null,p_id)');
+  definition:=replace(definition,'private.admin_level(p_org,auth.uid(),''neighborhood'',null,roster.neighborhood_id)','private.management_level(p_org,auth.uid(),''roster.manage'',''neighborhood'',null,roster.neighborhood_id)');
+  definition:=replace(definition,'private.admin_level(p_org,auth.uid(),c.owner_scope_kind','private.management_level(p_org,auth.uid(),''roster.manage'',c.owner_scope_kind');
+  execute definition;
+end; $migration$;
+
+create or replace function public.available_roles(p_organization_id uuid) returns jsonb
+language plpgsql stable security definer set search_path='' as $$
+begin
+  if not private.active_member(p_organization_id,auth.uid()) then raise exception using errcode='42501',message='active organization membership required'; end if;
+  return (select coalesce(jsonb_agg(to_jsonb(r)||jsonb_build_object('permissions',(select coalesce(jsonb_agg(permission_code),'[]'::jsonb) from public.role_permissions where role_code=r.code)) order by r.label),'[]'::jsonb)
+    from public.roles r where private.role_enabled(p_organization_id,r.code));
+end; $$;
+
+-- Keep existing escalation route identifiers compatible while routing division escalation to the new role.
+do $migration$
+declare definition text; needle text;
+begin
+  definition:=replace(pg_get_functiondef('private.schedule_due_notifications()'::regprocedure),chr(13)||chr(10),chr(10));
+  needle:='ra.role_code=''area_manager''';
+  needle:=replace(needle,chr(13)||chr(10),chr(10));
+  if strpos(definition,needle)=0 then raise exception 'notification scheduler changed; review division escalation'; end if;
+  definition:=replace(definition,needle,'ra.role_code=''division_admin'' and private.role_grant_enabled(ra)');
+  definition:=replace(definition,'(ra.scope_kind=''organization'' or (ra.scope_kind=''neighborhood'' and ra.neighborhood_id=r.neighborhood_id) or (ra.scope_kind=''home'' and ra.home_id=r.home_id))',
+    'private.scope_contains(r.organization_id,ra.scope_kind,ra.division_id,ra.neighborhood_id,ra.home_id,''neighborhood'',null,r.neighborhood_id,null)');
+  execute definition;
+  definition:=replace(pg_get_functiondef('public.company_delegation_options(uuid,uuid)'::regprocedure),chr(13)||chr(10),chr(10));
+  definition:=replace(definition,'if not found or episode.company_id is null or not private.active_company_membership',
+    'if not found or episode.company_id is null or not private.can_read_work(auth.uid(),p_work_item_id) or not private.active_company_membership');
+  execute definition;
+end; $migration$;
+
+-- Home-specific configuration is subject to the same geographic read boundary as the home itself.
+drop policy home_milestones_config_select on public.home_milestones;
+create policy home_milestones_config_select on public.home_milestones for select to authenticated using(exists(
+  select 1 from public.homes h where h.organization_id=home_milestones.organization_id and h.id=home_milestones.home_id and private.has_any_scope(h.organization_id,auth.uid(),h.neighborhood_id,h.id)));
+drop policy milestone_requirements_config_select on public.milestone_requirements;
+create policy milestone_requirements_config_select on public.milestone_requirements for select to authenticated using(exists(
+  select 1 from public.homes h where h.organization_id=milestone_requirements.organization_id and h.id=milestone_requirements.home_id and private.has_any_scope(h.organization_id,auth.uid(),h.neighborhood_id,h.id)));
+
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202610280039_role_catalog_and_assignable_inspectors.sql
+-- ============================================================================
+
+begin;
+
+alter table public.roles add column release_state text not null default 'available' check(release_state in ('available','planned'));
+insert into public.permissions(code,description) values('inspection.findings.create','Record findings inside assigned inspections');
+insert into public.role_permissions(role_code,permission_code) values
+  ('org_admin','inspection.findings.create'),('division_admin','inspection.findings.create'),('neighborhood_admin','inspection.findings.create');
+update public.roles set label=case code
+  when 'org_admin' then 'Org Admin' when 'division_admin' then 'Divisional Admin'
+  when 'neighborhood_admin' then 'Area Construction Manager' when 'superintendent' then 'Construction Supervisor'
+  when 'vendor_admin' then 'Vendor Manager' when 'trade_technician' then 'Vendor Tradesman'
+  when 'internal_contributor' then 'Internal contributor' else label end,
+  version=version+1,updated_at=now()
+where code in ('org_admin','division_admin','neighborhood_admin','superintendent','vendor_admin','trade_technician','internal_contributor');
+update public.roles set description='Manage users, neighborhoods, vendors, and operations inside assigned divisions.' where code='division_admin';
+update public.roles set description='Neighborhood admin: onboard lots and homes, assign inspectors, manage local users and vendors, and review escalations.' where code='neighborhood_admin';
+update public.roles set description='Assign inspections, review observations, assign repairs, and verify completed work within scope.' where code='superintendent';
+update public.roles set description='Primary company contact: manage company users, grant Inspector access, and dispatch the company''s repair assignments.' where code='vendor_admin';
+update public.roles set description='Secondary company contact: perform assigned repairs, report progress, and submit completion evidence.' where code='trade_technician';
+update public.roles set allowed_scope_kinds='{company}' where code='vendor_admin'
+  and not exists(select 1 from public.role_assignments where role_code='vendor_admin' and revoked_at is null and scope_kind<>'company')
+  and not exists(select 1 from public.invites where status='pending' and expires_at>now() and exists(
+    select 1 from jsonb_array_elements(proposed_grants) grant_row where grant_row->>'role_code'='vendor_admin' and grant_row->>'scope_kind'<>'company'));
+update public.roles set description='Report issues and perform assigned internal work. Add the Inspector role when this person also conducts inspections.',default_for_new_organizations=true where code='internal_contributor';
+
+insert into public.roles(code,label,allowed_scope_kinds,description,default_for_new_organizations,requires_company)
+  values('inspector','Inspector','{neighborhood,home,division,company}',
+    'Additional inspection role for an Internal contributor or a company member. Company scope requires active membership and approved coverage; inspections must be assigned to this person.',true,false);
+insert into public.role_permissions(role_code,permission_code) values
+  ('inspector','inspection.perform'),('inspector','inspection.findings.create'),('inspector','evidence.upload'),('inspector','comment.create_shared');
+insert into public.organization_roles(organization_id,role_code,enabled)
+  select o.id,r,true from public.organizations o cross join unnest(array['inspector','internal_contributor']) r
+  on conflict(organization_id,role_code) do nothing;
+insert into public.roles(code,label,allowed_scope_kinds,description,active,default_for_new_organizations,release_state)
+  values('sales_rep','Sales Rep','{organization,division,neighborhood,home}','Planned future role for read-only lot phase and inspection status visibility.',false,false,'planned');
+insert into public.role_permissions(role_code,permission_code) values('sales_rep','work.read_scope'),('sales_rep','report.read_scope');
+
+-- Retire unused templates. Any live grants or invitations receive an exact-permission,
+-- organization-private compatibility role; no one is silently promoted to supervisor/admin.
+do $migration$
+declare old_role public.roles; organization record; compatibility text; invitation public.invites; grants jsonb;
+begin
+  for old_role in select * from public.roles where organization_id is null and active and code in
+    ('operations_coordinator','verifier','auditor','leadership_viewer','internal_quality','external_inspector') loop
+    for organization in select a.organization_id from public.organization_roles a where a.role_code=old_role.code and a.enabled and
+      (exists(select 1 from public.role_assignments g where g.organization_id=a.organization_id and g.role_code=a.role_code and g.revoked_at is null)
+        or exists(select 1 from public.invites i where i.organization_id=a.organization_id and i.status='pending' and i.expires_at>now()
+          and exists(select 1 from jsonb_array_elements(i.proposed_grants) item where item->>'role_code'=a.role_code))) loop
+      compatibility:='compat_'||old_role.code||'_'||replace(organization.organization_id::text,'-','');
+      insert into public.roles(code,label,allowed_scope_kinds,description,active,default_for_new_organizations,requires_company,organization_id,immutable_seed)
+        values(compatibility,'Existing '||old_role.label||' access',old_role.allowed_scope_kinds,
+          'Preserves permissions issued before catalog cleanup. Review and replace with current roles when appropriate.',true,false,old_role.requires_company,organization.organization_id,false);
+      insert into public.role_permissions(role_code,permission_code) select compatibility,permission_code from public.role_permissions where role_code=old_role.code;
+      insert into public.organization_roles(organization_id,role_code,enabled) values(organization.organization_id,compatibility,true);
+      update public.role_assignments set role_code=compatibility where organization_id=organization.organization_id and role_code=old_role.code and revoked_at is null;
+      for invitation in select * from public.invites i where i.organization_id=organization.organization_id and i.status='pending' and i.expires_at>now() loop
+        select jsonb_agg(case when item->>'role_code'=old_role.code then item||jsonb_build_object('role_code',compatibility) else item end) into grants
+          from jsonb_array_elements(invitation.proposed_grants) item;
+        update public.invites set proposed_grants=grants where id=invitation.id;
+      end loop;
+      perform private.append_audit(organization.organization_id,null,'role.catalog_migrated','role',null,null,null,null,
+        jsonb_build_object('old_role',old_role.code,'compatibility_role',compatibility));
+    end loop;
+  end loop;
+end; $migration$;
+update public.roles set active=false,default_for_new_organizations=false,version=version+1,updated_at=now()
+  where organization_id is null and code in ('operations_coordinator','verifier','auditor','leadership_viewer','internal_quality','external_inspector');
+update public.organization_roles set enabled=false where role_code in ('operations_coordinator','verifier','auditor','leadership_viewer','internal_quality','external_inspector');
+
+create function private.guard_planned_role() returns trigger language plpgsql set search_path='' as $$
+begin
+  if new.release_state='planned' and (new.active or new.default_for_new_organizations) then raise exception using errcode='23514',message='planned roles cannot be published or enabled by default'; end if;
+  return new;
+end; $$;
+create trigger guard_planned_role before insert or update on public.roles for each row execute function private.guard_planned_role();
+
+-- Company scope itself requires company membership, including roles that may also
+-- be assigned personally at neighborhood/home scope (such as Inspector).
+do $migration$
+declare definition text; needle text;
+begin
+  definition:=replace(pg_get_functiondef('private.role_grant_enabled(public.role_assignments)'::regprocedure),chr(13)||chr(10),chr(10));
+  needle:='not r.requires_company or exists';
+  if strpos(definition,needle)=0 then raise exception 'role membership guard changed; review assignable Inspector integration'; end if;
+  execute replace(definition,needle,'not (r.requires_company or p_assignment.scope_kind=''company'') or exists');
+
+  definition:=replace(pg_get_functiondef('private.has_permission(uuid,uuid,text,uuid,uuid)'::regprocedure),chr(13)||chr(10),chr(10));
+  needle:='''work.execute_assigned'',''comment.create_shared'',''evidence.upload'',''company.users.manage''';
+  if strpos(definition,needle)=0 then raise exception 'company permission allowlist changed'; end if;
+  execute replace(definition,needle,'''work.execute_assigned'',''comment.create_shared'',''evidence.upload'',''company.users.manage'',''inspection.perform'',''inspection.findings.create''');
+
+  definition:=replace(pg_get_functiondef('private.delegation_level(uuid,uuid,text,public.scope_kind,uuid,uuid,uuid,uuid,timestamptz,timestamptz)'::regprocedure),chr(13)||chr(10),chr(10));
+  definition:=replace(definition,'if requested.requires_company and (p_company is null','if (requested.requires_company or p_scope=''company'') and (p_company is null');
+  definition:=replace(definition,'if not requested.requires_company or p_company is null','if p_company is null');
+  definition:=replace(definition,'p_role in (''vendor_admin'',''trade_technician'')','p_role in (''vendor_admin'',''trade_technician'',''inspector'')');
+  definition:=replace(definition,'a.role_code=''vendor_admin'' and a.company_id=p_company',
+    'exists(select 1 from public.role_permissions rp where rp.role_code=a.role_code and rp.permission_code=''company.users.manage'') and a.company_id=p_company');
+  execute definition;
+
+  definition:=replace(pg_get_functiondef('public.admin_set_member_access(uuid,uuid,public.affiliation_kind,jsonb,uuid,text)'::regprocedure),chr(13)||chr(10),chr(10));
+  definition:=replace(definition,'when item.requires_company then','when item.requires_company or assignment->>''scope_kind''=''company'' then');
+  definition:=replace(definition,'if item.requires_company and not exists','if (item.requires_company or assignment->>''scope_kind''=''company'') and not exists');
+  execute definition;
+
+  definition:=replace(pg_get_functiondef('public.admin_create_invitation(uuid,text,public.affiliation_kind,jsonb,uuid,text,text,timestamptz)'::regprocedure),chr(13)||chr(10),chr(10));
+  definition:=replace(definition,'when exists(select 1 from public.roles where code=grant_row->>''role_code'' and requires_company) then',
+    'when grant_row->>''scope_kind''=''company'' or exists(select 1 from public.roles where code=grant_row->>''role_code'' and requires_company) then');
+  execute definition;
+
+  definition:=replace(pg_get_functiondef('public.accept_invitation(text)'::regprocedure),chr(13)||chr(10),chr(10));
+  definition:=replace(definition,'when exists(select 1 from public.roles where code=grant_row->>''role_code'' and requires_company) then',
+    'when grant_row->>''scope_kind''=''company'' or exists(select 1 from public.roles where code=grant_row->>''role_code'' and requires_company) then');
+  execute definition;
+
+  definition:=replace(pg_get_functiondef('public.save_role_definition(uuid,text,text,text,public.scope_kind[],text[],boolean,boolean,boolean,bigint)'::regprocedure),chr(13)||chr(10),chr(10));
+  needle:='if ''company''=any(p_scopes) and (not p_requires_company or not(p_permissions<@array[''company.users.manage'',''work.execute_assigned'',''comment.create_shared'',''evidence.upload''])) then';
+  if strpos(definition,needle)=0 then raise exception 'role definition guard changed; review Inspector company scope'; end if;
+  execute replace(definition,needle,'if ''company''=any(p_scopes) and not(p_permissions<@array[''company.users.manage'',''work.execute_assigned'',''comment.create_shared'',''evidence.upload'',''inspection.perform'',''inspection.findings.create'']) then');
+end; $migration$;
+
+create or replace function private.can_read_inspection(p_user_id uuid,p_inspection_id uuid) returns boolean
+language sql stable security definer set search_path='' as $$
+  select exists(select 1 from public.inspections i where i.id=p_inspection_id and private.active_member(i.organization_id,p_user_id) and (
+    private.has_permission(i.organization_id,p_user_id,'inspection.manage',i.neighborhood_id,i.home_id) or
+    (private.has_permission(i.organization_id,p_user_id,'inspection.perform',i.neighborhood_id,i.home_id) and (
+      i.lead_inspector_user_id=p_user_id or exists(select 1 from public.inspection_participants ip where ip.organization_id=i.organization_id and ip.inspection_id=i.id and ip.user_id=p_user_id) or
+      exists(select 1 from public.inspection_engagements ie where ie.organization_id=i.organization_id and ie.home_id=i.home_id and ie.inspector_user_id=p_user_id and ie.starts_at<=now() and ie.ends_at>now() and ie.revoked_at is null)))));
+$$;
+
+-- Company inspectors may open the homes of their assigned inspections without
+-- receiving unrelated homes or builder-wide read permissions.
+create or replace function private.has_any_scope(p_organization_id uuid,p_user_id uuid,p_neighborhood_id uuid default null,p_home_id uuid default null)
+returns boolean language sql stable security definer set search_path='' as $$
+  select private.active_member(p_organization_id,p_user_id) and exists(
+    select 1 from public.role_assignments a where a.organization_id=p_organization_id and a.user_id=p_user_id
+      and private.role_grant_enabled(a) and a.revoked_at is null and a.starts_at<=now() and (a.ends_at is null or a.ends_at>now()) and (
+        (a.scope_kind<>'company' and private.scope_contains(p_organization_id,a.scope_kind,a.division_id,a.neighborhood_id,a.home_id,
+          case when p_home_id is not null then 'home'::public.scope_kind when p_neighborhood_id is not null then 'neighborhood'::public.scope_kind else 'organization'::public.scope_kind end,null,p_neighborhood_id,p_home_id))
+        or (a.scope_kind='company' and private.company_covers(p_organization_id,a.company_id,p_neighborhood_id) and (
+          (exists(select 1 from public.role_permissions rp where rp.role_code=a.role_code and rp.permission_code='inspection.perform') and exists(
+            select 1 from public.inspections i where i.organization_id=p_organization_id and i.neighborhood_id=p_neighborhood_id
+              and (p_home_id is null or i.home_id=p_home_id) and private.can_read_inspection(p_user_id,i.id)))
+          or (exists(select 1 from public.role_permissions rp where rp.role_code=a.role_code and rp.permission_code='work.execute_assigned') and exists(
+            select 1 from public.work_items w join public.assignment_episodes ae on ae.organization_id=w.organization_id and ae.id=w.current_assignment_id
+            where w.organization_id=p_organization_id and w.neighborhood_id=p_neighborhood_id and (p_home_id is null or w.home_id=p_home_id)
+              and ae.company_id=a.company_id and ae.ended_at is null
+              and (ae.technician_user_id=p_user_id or private.active_company_membership(p_organization_id,a.company_id,p_user_id,'manager'))))
+        ))
+      )
+  );
+$$;
+
+create function private.can_capture_work(p_org uuid,p_actor uuid,p_neighborhood uuid,p_home uuid,p_inspection uuid) returns boolean
+language sql stable security definer set search_path='' as $$
+  select case when p_inspection is not null then
+    (private.has_permission(p_org,p_actor,'work.create',p_neighborhood,p_home) or private.has_permission(p_org,p_actor,'inspection.findings.create',p_neighborhood,p_home)) and exists(
+    select 1 from public.inspections i where i.organization_id=p_org and i.id=p_inspection and i.neighborhood_id=p_neighborhood and i.home_id=p_home
+      and i.status in ('draft','in_progress','amended') and private.can_read_inspection(p_actor,i.id)
+      and (private.has_permission(p_org,p_actor,'inspection.perform',p_neighborhood,p_home) or private.has_permission(p_org,p_actor,'inspection.manage',p_neighborhood,p_home)))
+  else private.has_permission(p_org,p_actor,'work.create',p_neighborhood,p_home) and exists(select 1 from public.role_assignments a join public.role_permissions rp on rp.role_code=a.role_code and rp.permission_code='work.create'
+    where a.organization_id=p_org and a.user_id=p_actor and a.revoked_at is null and a.starts_at<=now() and (a.ends_at is null or a.ends_at>now())
+      and private.role_grant_enabled(a) and a.scope_kind<>'company' and private.scope_contains(p_org,a.scope_kind,a.division_id,a.neighborhood_id,a.home_id,
+        case when p_home is null then 'neighborhood'::public.scope_kind else 'home'::public.scope_kind end,null,p_neighborhood,p_home)) end;
+$$;
+do $migration$
+declare definition text; needle text;
+begin
+  definition:=replace(pg_get_functiondef('public.execute_command(text,jsonb)'::regprocedure),chr(13)||chr(10),chr(10));
+  needle:='private.has_permission(v_organization_id, v_actor, ''work.create'', (v_payload ->> ''neighborhood_id'')::uuid, nullif(v_payload ->> ''home_id'','''')::uuid)';
+  if strpos(definition,needle)=0 then raise exception 'work creation permission guard changed'; end if;
+  execute replace(definition,needle,'private.can_capture_work(v_organization_id,v_actor,(v_payload->>''neighborhood_id'')::uuid,nullif(v_payload->>''home_id'','''')::uuid,nullif(v_payload->>''inspection_id'','''')::uuid)');
+end; $migration$;
+
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202610280041_complete_quality_workflows.sql
+-- ============================================================================
+
+begin;
+
+insert into public.permissions(code,description) values('plan.manage','Create and maintain divisional floor plans');
+insert into public.role_permissions(role_code,permission_code) values('org_admin','plan.manage'),('division_admin','plan.manage');
+
+create table public.space_types(code text primary key,label text not null unique,active boolean not null default true);
+insert into public.space_types(code,label) values('bedroom','Bedroom'),('bathroom','Bathroom'),('kitchen','Kitchen'),('garage','Garage'),('exterior','Exterior'),('living','Living area'),('dining','Dining area'),('laundry','Laundry'),('patio','Patio'),('other','Other');
+create table public.master_plans(
+  id uuid primary key default gen_random_uuid(),organization_id uuid not null references public.organizations(id),division_id uuid not null,
+  name text not null check(length(trim(name)) between 2 and 120),spaces jsonb not null check(jsonb_typeof(spaces)='array' and jsonb_array_length(spaces) between 1 and 200),
+  active boolean not null default true,version bigint not null default 1,created_at timestamptz not null default now(),updated_at timestamptz not null default now(),
+  unique(organization_id,id),foreign key(organization_id,division_id) references public.divisions(organization_id,id));
+alter table public.homes add column master_plan_id uuid,add column master_plan_version bigint,add column master_plan_name text,
+  add foreign key(organization_id,master_plan_id) references public.master_plans(organization_id,id);
+alter table public.home_locations add column space_type_code text references public.space_types(code),add column source_plan_id uuid,
+  add foreign key(organization_id,source_plan_id) references public.master_plans(organization_id,id);
+alter table public.companies add column contact_email text,add column phone_number text,add column physical_address text,
+  add column categories text[] not null default '{}';
+create table public.company_private_details(organization_id uuid not null,company_id uuid primary key,ein text,
+  foreign key(organization_id,company_id) references public.companies(organization_id,id));
+alter table public.inspections alter column lead_inspector_user_id drop not null;
+alter table public.inspections add column company_id uuid,add column reviewed_at timestamptz,add column reviewed_by uuid references auth.users(id),
+  add column escalated_at timestamptz,add column escalation_reason text,add column escalation_resolved_at timestamptz,
+  add foreign key(organization_id,company_id) references public.companies(organization_id,id),
+  add check(lead_inspector_user_id is not null or company_id is not null);
+alter table public.work_items add column reinspection_status text check(reinspection_status in ('pending','completed')),add column reinspection_assignee_user_id uuid references auth.users(id),add column reinspection_assigned_by uuid references auth.users(id),
+  add column reinspection_assigned_at timestamptz,add column reinspection_completed_at timestamptz,
+  add check(reinspection_status is distinct from 'pending' or reinspection_assignee_user_id is not null);
+create index work_reinspection_inbox on public.work_items(organization_id,reinspection_assignee_user_id,home_id) where reinspection_status='pending';
+create index inspection_company_inbox on public.inspections(organization_id,company_id,status) where company_id is not null;
+
+create function private.quality_assignment_notifications() returns trigger language plpgsql security definer set search_path='' as $$
+declare recipient uuid; title text; body text; link text;
+begin
+  if tg_table_name='inspections' then
+    link:='/org/'||new.organization_id||'/inspections/'||new.id;
+    if (tg_op='INSERT' and new.company_id is not null and new.lead_inspector_user_id is null) then
+      insert into public.notifications(organization_id,recipient_user_id,title,body,deep_link)
+        select distinct new.organization_id,cm.user_id,'Inspection awaiting allocation','Select an eligible Inspector from your company.',link from public.company_memberships cm
+        where cm.organization_id=new.organization_id and cm.company_id=new.company_id and private.company_inspection_manager(new.organization_id,cm.user_id,new.company_id,new.neighborhood_id);
+    end if;
+    if new.lead_inspector_user_id is not null and (tg_op='INSERT' or old.lead_inspector_user_id is distinct from new.lead_inspector_user_id) then
+      insert into public.notifications(organization_id,recipient_user_id,title,body,deep_link) values(new.organization_id,new.lead_inspector_user_id,'Inspection assigned','Open the home layout, complete the inspection, and submit your report.',link);
+    end if;
+    if tg_op='UPDATE' and (old.status is distinct from new.status and new.status='submitted' or new.escalated_at is distinct from old.escalated_at and new.escalated_at is not null) then
+      title:=case when new.escalated_at is distinct from old.escalated_at then 'Area manager review requested' else 'Inspection report submitted' end;
+      body:=case when new.escalated_at is distinct from old.escalated_at then new.escalation_reason else 'Review the observations and assign or disregard each item.' end;
+      for recipient in select m.user_id from public.organization_memberships m where m.organization_id=new.organization_id and private.has_permission(new.organization_id,m.user_id,'inspection.manage',new.neighborhood_id,new.home_id)
+        and (new.escalated_at is not distinct from old.escalated_at or exists(select 1 from public.neighborhoods n where n.id=new.neighborhood_id and private.admin_level(new.organization_id,m.user_id,'neighborhood',n.division_id,n.id,null)<=3)) loop
+        insert into public.notifications(organization_id,recipient_user_id,title,body,deep_link) values(new.organization_id,recipient,title,body,link);
+      end loop;
+    end if;
+  elsif new.reinspection_status='pending' and (old.reinspection_status is distinct from new.reinspection_status or old.reinspection_assignee_user_id is distinct from new.reinspection_assignee_user_id or old.reinspection_assigned_at is distinct from new.reinspection_assigned_at) then
+    insert into public.notifications(organization_id,recipient_user_id,work_item_id,title,body,deep_link) values(new.organization_id,new.reinspection_assignee_user_id,new.id,'Repair ready for reinspection',new.title,'/org/'||new.organization_id||'/work/'||new.id);
+  end if;
+  return new;
+end; $$;
+create trigger quality_inspection_notifications after insert or update on public.inspections for each row execute function private.quality_assignment_notifications();
+create trigger quality_reinspection_notifications after update on public.work_items for each row execute function private.quality_assignment_notifications();
+
+alter table public.space_types enable row level security;
+alter table public.master_plans enable row level security;
+alter table public.company_private_details enable row level security;
+grant select on public.space_types,public.master_plans,public.company_private_details to authenticated;
+create policy space_types_read on public.space_types for select to authenticated using(true);
+create policy plans_read on public.master_plans for select to authenticated using(private.active_member(organization_id,auth.uid()) and
+  (private.admin_level(organization_id,auth.uid(),'division',division_id,null,null)<=3 or exists(select 1 from public.neighborhoods n where n.organization_id=master_plans.organization_id and n.division_id=master_plans.division_id and private.has_permission(n.organization_id,auth.uid(),'structure.manage',n.id,null))));
+create policy company_private_read on public.company_private_details for select to authenticated using(private.controls_company(organization_id,auth.uid(),company_id) or
+  private.active_member(organization_id,auth.uid()) and private.active_company_membership(organization_id,company_id,auth.uid(),'manager'));
+
+create function public.save_master_plan(p_org uuid,p_id uuid,p_division uuid,p_name text,p_spaces jsonb,p_active boolean,p_version bigint default null)
+returns jsonb language plpgsql security definer set search_path='' as $$
+declare r public.master_plans; previous public.master_plans;
+begin
+  if not private.active_member(p_org,auth.uid()) or not private.require_aal2() or not private.has_permission(p_org,auth.uid(),'plan.manage',null,null) and not exists(
+    select 1 from public.role_assignments a join public.role_permissions rp on rp.role_code=a.role_code and rp.permission_code='plan.manage'
+    where a.organization_id=p_org and a.user_id=auth.uid() and private.role_grant_enabled(a) and a.revoked_at is null and a.starts_at<=now() and (a.ends_at is null or a.ends_at>now())
+      and (a.scope_kind='organization' or a.scope_kind='division' and a.division_id=p_division)) then raise insufficient_privilege using message='Plan management in this division requires a verified administrator.'; end if;
+  if jsonb_typeof(p_spaces)<>'array' or jsonb_array_length(p_spaces) not between 1 and 200 or exists(select 1 from jsonb_array_elements(p_spaces) s where nullif(trim(s->>'name'),'') is null or length(s->>'name')>120 or not exists(select 1 from public.space_types t where t.code=s->>'type' and t.active))
+    or (select count(*) from jsonb_array_elements(p_spaces))<>(select count(distinct lower(trim(s->>'name'))) from jsonb_array_elements(p_spaces) s) then raise check_violation using message='Choose a space type and a unique name for every space (1–200).'; end if;
+  if p_id is not null then
+    select * into previous from public.master_plans where organization_id=p_org and id=p_id for update;
+    if not found or previous.division_id<>p_division then raise insufficient_privilege using message='Plan is unavailable in this division.'; end if;
+    if p_version is null or previous.version<>p_version then raise serialization_failure using message='This plan changed. Refresh before saving.'; end if;
+    update public.master_plans set name=trim(p_name),spaces=p_spaces,active=p_active,version=version+1,updated_at=now() where id=p_id returning * into r;
+  else insert into public.master_plans(organization_id,division_id,name,spaces,active) values(p_org,p_division,trim(p_name),p_spaces,p_active) returning * into r; end if;
+  perform private.append_audit(p_org,auth.uid(),'plan.saved','master_plan',r.id,null,to_jsonb(previous),to_jsonb(r));
+  return to_jsonb(r);
+end; $$;
+
+create function public.apply_home_plan(p_org uuid,p_home uuid,p_plan uuid,p_home_version bigint) returns jsonb language plpgsql security definer set search_path='' as $$
+declare h public.homes; plan public.master_plans; space jsonb;
+begin
+  select * into h from public.homes where organization_id=p_org and id=p_home for update;
+  if not found or not private.require_aal2() or not private.has_permission(p_org,auth.uid(),'structure.manage',h.neighborhood_id,h.id) then raise insufficient_privilege using message='Home management permission is required.'; end if;
+  if h.version<>p_home_version then raise serialization_failure using message='Home changed. Refresh before applying a plan.'; end if;
+  select p.* into plan from public.master_plans p join public.neighborhoods n on n.organization_id=p.organization_id and n.division_id=p.division_id where p.organization_id=p_org and p.id=p_plan and p.active and n.id=h.neighborhood_id;
+  if not found then raise check_violation using message='Choose an active plan from this home’s division.'; end if;
+  if exists(select 1 from public.home_locations where organization_id=p_org and home_id=p_home) then raise check_violation using message='Apply a plan before adding rooms. Existing rooms are preserved; customize them individually.'; end if;
+  for space in select value from jsonb_array_elements(plan.spaces) loop
+    insert into public.home_locations(organization_id,neighborhood_id,home_id,name,space_type_code,source_plan_id) values(p_org,h.neighborhood_id,h.id,trim(space->>'name'),space->>'type',plan.id);
+  end loop;
+  update public.homes set master_plan_id=plan.id,master_plan_version=plan.version,master_plan_name=plan.name where id=h.id returning * into h;
+  perform private.append_audit(p_org,auth.uid(),'home.plan_applied','home',h.id,null,null,to_jsonb(h));
+  return to_jsonb(h);
+end; $$;
+
+create function public.save_company_profile(p_org uuid,p_company uuid,p_email text,p_phone text,p_address text,p_ein text,p_categories text[],p_version bigint)
+returns jsonb language plpgsql security definer set search_path='' as $$
+declare c public.companies;
+begin
+  select * into c from public.companies where organization_id=p_org and id=p_company for update;
+  if not found or not private.require_aal2() or not (private.controls_company(p_org,auth.uid(),p_company) or private.vendor_admin(p_org,auth.uid(),p_company)) then raise insufficient_privilege using message='Company management permission is required.'; end if;
+  if c.version<>p_version then raise serialization_failure using message='Company changed. Refresh before saving.'; end if;
+  if nullif(trim(p_email),'') is not null and p_email !~ '^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$' then raise check_violation using message='Enter a valid contact email.'; end if;
+  if nullif(trim(p_ein),'') is not null and p_ein !~ '^[0-9]{2}-?[0-9]{7}$' then raise check_violation using message='EIN must contain nine digits.'; end if;
+  if not coalesce(p_categories,'{}')<@array['plumbing','framing','third_party_inspection','drywall','electrical','roofing','hvac','landscaping','other'] or length(coalesce(p_phone,''))>40 or length(coalesce(p_address,''))>1000 then raise check_violation using message='Invalid company contact details or categories.'; end if;
+  update public.companies set contact_email=nullif(trim(p_email),''),phone_number=nullif(trim(p_phone),''),physical_address=nullif(trim(p_address),''),categories=coalesce(p_categories,'{}') where id=p_company returning * into c;
+  insert into public.company_private_details(organization_id,company_id,ein) values(p_org,p_company,nullif(trim(p_ein),'')) on conflict(company_id) do update set ein=excluded.ein;
+  perform private.append_audit(p_org,auth.uid(),'company.profile_updated','company',p_company,null,null,null,jsonb_build_object('categories',p_categories));
+  return to_jsonb(c);
+end; $$;
+
+create function public.onboard_home_with_plan(p_org uuid,p_details jsonb,p_plan uuid) returns jsonb language plpgsql security definer set search_path='' as $$
+declare h public.homes;
+begin
+  h:=public.admin_save_home(p_org,null,(p_details->>'neighborhood_id')::uuid,p_details->>'lot_code',p_details->>'address_line1',p_details->>'address_line2',p_details->>'city',p_details->>'state_code',p_details->>'postal_code',coalesce(p_details->>'phase','planned'),null,p_details->>'external_reference',false);
+  if p_plan is not null then return public.apply_home_plan(p_org,h.id,p_plan,h.version); end if;
+  return to_jsonb(h);
+end; $$;
+
+create function private.company_inspection_manager(p_org uuid,p_user uuid,p_company uuid,p_neighborhood uuid) returns boolean language sql stable security definer set search_path='' as $$
+  select private.active_member(p_org,p_user) and private.active_company_membership(p_org,p_company,p_user,'manager') and private.company_covers(p_org,p_company,p_neighborhood)
+    and exists(select 1 from public.role_assignments a join public.role_permissions rp on rp.role_code=a.role_code and rp.permission_code='company.users.manage' where a.organization_id=p_org and a.user_id=p_user and a.company_id=p_company and private.role_grant_enabled(a) and a.revoked_at is null and a.starts_at<=now() and (a.ends_at is null or a.ends_at>now()));
+$$;
+
+create function public.onboard_vendor_with_profile(p_org uuid,p_name text,p_reference text,p_scope public.scope_kind,p_division uuid,p_neighborhood uuid,p_profile jsonb) returns jsonb language plpgsql security definer set search_path='' as $$
+declare c public.companies;
+begin
+  c:=public.admin_onboard_vendor(p_org,p_name,p_reference,p_scope,p_division,p_neighborhood);
+  return public.save_company_profile(p_org,c.id,p_profile->>'email',p_profile->>'phone',p_profile->>'address',p_profile->>'ein',array(select jsonb_array_elements_text(coalesce(p_profile->'categories','[]'))),c.version);
+end; $$;
+
+create function public.inspection_company_options(p_organization_id uuid,p_home_id uuid) returns jsonb language sql stable security definer set search_path='' as $$
+  select coalesce(jsonb_agg(jsonb_build_object('id',c.id,'name',c.name) order by c.name),'[]') from public.companies c join public.homes h on h.organization_id=c.organization_id and h.id=p_home_id
+    where c.organization_id=p_organization_id and c.status='active' and 'third_party_inspection'=any(c.categories) and private.company_covers(c.organization_id,c.id,h.neighborhood_id)
+      and private.has_permission(h.organization_id,auth.uid(),'inspection.manage',h.neighborhood_id,h.id);
+$$;
+create function public.inspection_allocation_options(p_organization_id uuid,p_inspection_id uuid) returns jsonb language sql stable security definer set search_path='' as $$
+  select coalesce(jsonb_agg(jsonb_build_object('user_id',cm.user_id,'display_name',p.display_name) order by p.display_name),'[]') from public.inspections i
+    join public.company_memberships cm on cm.organization_id=i.organization_id and cm.company_id=i.company_id join public.profiles p on p.id=cm.user_id
+    where i.organization_id=p_organization_id and i.id=p_inspection_id and i.company_id is not null
+      and (private.has_permission(i.organization_id,auth.uid(),'inspection.manage',i.neighborhood_id,i.home_id) or private.company_inspection_manager(i.organization_id,auth.uid(),i.company_id,i.neighborhood_id))
+      and private.active_company_membership(i.organization_id,i.company_id,cm.user_id,null) and private.has_permission(i.organization_id,cm.user_id,'inspection.perform',i.neighborhood_id,i.home_id);
+$$;
+
+create function public.repair_technician_options(p_org uuid,p_company uuid,p_home uuid) returns jsonb language sql stable security definer set search_path='' as $$
+  select coalesce(jsonb_agg(jsonb_build_object('user_id',cm.user_id,'display_name',p.display_name) order by p.display_name),'[]') from public.company_memberships cm
+    join public.profiles p on p.id=cm.user_id join public.homes h on h.organization_id=cm.organization_id and h.id=p_home
+    where cm.organization_id=p_org and cm.company_id=p_company and private.active_company_membership(p_org,p_company,cm.user_id,'technician')
+      and private.company_work_permission(p_org,cm.user_id,p_company,h.neighborhood_id,h.id) and private.company_covers(p_org,p_company,h.neighborhood_id)
+      and private.has_permission(p_org,auth.uid(),'work.assign',h.neighborhood_id,h.id);
+$$;
+
+create function public.save_home_space(p_org uuid,p_id uuid,p_home uuid,p_name text,p_parent uuid,p_active boolean,p_type text) returns jsonb language plpgsql security definer set search_path='' as $$
+declare r public.home_locations;
+begin
+  if p_type is not null and not exists(select 1 from public.space_types where code=p_type and active) then raise check_violation using message='Choose an available space type.'; end if;
+  r:=public.admin_save_home_location(p_org,p_id,p_home,p_name,p_parent,p_active);
+  update public.home_locations set space_type_code=p_type where id=r.id returning * into r;
+  return to_jsonb(r);
+end; $$;
+
+-- Managers see their company inbox; field inspectors see only their assignments.
+do $patch$
+declare definition text;
+begin
+  definition:=replace(pg_get_functiondef('private.can_read_inspection(uuid,uuid)'::regprocedure),chr(13)||chr(10),chr(10));
+  definition:=replace(definition,'private.has_permission(i.organization_id,p_user_id,''inspection.manage'',i.neighborhood_id,i.home_id) or',
+    'private.has_permission(i.organization_id,p_user_id,''inspection.manage'',i.neighborhood_id,i.home_id) or private.company_inspection_manager(i.organization_id,p_user_id,i.company_id,i.neighborhood_id) or');
+  execute definition;
+  definition:=replace(pg_get_functiondef('private.can_read_work(uuid,uuid)'::regprocedure),chr(13)||chr(10),chr(10));
+  definition:=replace(definition,'private.has_permission(w.organization_id,p_user_id,''work.read_scope'',w.neighborhood_id,w.home_id) or',
+    '(w.reinspection_assignee_user_id=p_user_id and private.has_permission(w.organization_id,p_user_id,''inspection.perform'',w.neighborhood_id,w.home_id)) or private.has_permission(w.organization_id,p_user_id,''work.read_scope'',w.neighborhood_id,w.home_id) or');
+  execute definition;
+  definition:=replace(pg_get_functiondef('private.can_verify(uuid,uuid)'::regprocedure),chr(13)||chr(10),chr(10));
+  definition:=replace(definition,'private.has_permission(w.organization_id, p_user_id, ''work.verify'', w.neighborhood_id, w.home_id)',
+    '(private.has_permission(w.organization_id, p_user_id, ''work.verify'', w.neighborhood_id, w.home_id) or (w.state=''ready_for_verification'' and w.reinspection_status=''pending'' and w.reinspection_assignee_user_id=p_user_id and private.has_permission(w.organization_id,p_user_id,''inspection.perform'',w.neighborhood_id,w.home_id)))');
+  execute definition;
+end; $patch$;
+
+-- A pending reinspection grants access to that home's metadata, including when
+-- the Inspector belongs to a different inspection company than the original lead.
+do $patch$
+declare definition text;
+begin
+  definition:=replace(pg_get_functiondef('private.has_any_scope(uuid,uuid,uuid,uuid)'::regprocedure),chr(13)||chr(10),chr(10));
+  definition:=replace(definition,'(exists(select 1 from public.role_permissions rp where rp.role_code=a.role_code and rp.permission_code=''inspection.perform'') and exists(',
+    '(private.company_inspection_manager(p_organization_id,p_user_id,a.company_id,p_neighborhood_id)) or (exists(select 1 from public.role_permissions rp where rp.role_code=a.role_code and rp.permission_code=''inspection.perform'') and exists(select 1 from public.work_items rw where rw.organization_id=p_organization_id and rw.neighborhood_id=p_neighborhood_id and (p_home_id is null or rw.home_id=p_home_id) and rw.reinspection_assignee_user_id=p_user_id)) or (exists(select 1 from public.role_permissions rp where rp.role_code=a.role_code and rp.permission_code=''inspection.perform'') and exists(');
+  execute definition;
+end; $patch$;
+
+create function private.quality_workflow_command(p_command text,p_payload jsonb,p_org uuid,p_actor uuid,p_operation uuid,p_version bigint) returns jsonb
+language plpgsql security definer set search_path='' as $$
+declare i public.inspections; h public.homes; w public.work_items; attempt public.correction_attempts; row jsonb; result jsonb; target uuid; company uuid; old_state public.work_state; n integer:=0; ids uuid[]; action text:=p_payload->>'action';
+begin
+  if p_command='schedule_company_inspection' then
+    select * into h from public.homes where organization_id=p_org and id=(p_payload->>'home_id')::uuid and archived_at is null for share;
+    company:=(p_payload->>'company_id')::uuid;
+    if not found or not private.has_permission(p_org,p_actor,'inspection.manage',h.neighborhood_id,h.id) then raise insufficient_privilege using message='Inspection management permission is required.'; end if;
+    if not exists(select 1 from public.companies c where c.organization_id=p_org and c.id=company and c.status='active' and 'third_party_inspection'=any(c.categories) and private.company_covers(p_org,c.id,h.neighborhood_id)) then raise check_violation using message='Choose an inspection company approved for this neighborhood.'; end if;
+    if not exists(select 1 from public.checklist_versions where organization_id=p_org and id=(p_payload->>'template_version_id')::uuid and published_at is not null) then raise check_violation using message='Choose a published checklist.'; end if;
+    insert into public.inspections(organization_id,neighborhood_id,home_id,type,template_version_id,scheduled_at,company_id) values(p_org,h.neighborhood_id,h.id,(p_payload->>'type')::public.inspection_type,(p_payload->>'template_version_id')::uuid,nullif(p_payload->>'scheduled_at','')::timestamptz,company) returning * into i;
+    perform private.append_audit(p_org,p_actor,'inspection.company_assigned','inspection',i.id,p_operation,null,to_jsonb(i));
+    return to_jsonb(i);
+  elsif p_command in ('allocate_inspection','review_inspection') then
+    select * into i from public.inspections where organization_id=p_org and id=(p_payload->>'inspection_id')::uuid for update;
+    if not found or not private.can_read_inspection(p_actor,i.id) then raise insufficient_privilege using message='Inspection is unavailable.'; end if;
+    if p_version is null or p_version<>i.version then raise serialization_failure using message='Inspection changed. Refresh and try again.'; end if;
+    if p_command='allocate_inspection' then
+      if i.status not in ('draft','in_progress','amended') or not (private.has_permission(p_org,p_actor,'inspection.manage',i.neighborhood_id,i.home_id) or private.company_inspection_manager(p_org,p_actor,i.company_id,i.neighborhood_id)) then raise insufficient_privilege using message='Only the supervising team or accountable company manager may allocate an open inspection.'; end if;
+      target:=(p_payload->>'inspector_user_id')::uuid;
+      if target is null or not private.has_permission(p_org,target,'inspection.perform',i.neighborhood_id,i.home_id) or (i.company_id is not null and not private.active_company_membership(p_org,i.company_id,target,null)) then raise check_violation using message='Choose an eligible inspector from the assigned company.'; end if;
+      if exists(select 1 from public.inspection_responses where organization_id=p_org and inspection_id=i.id) and nullif(trim(p_payload->>'reason'),'') is null then raise check_violation using message='Record why an inspection with saved answers is being reassigned.'; end if;
+      delete from public.inspection_participants where organization_id=p_org and inspection_id=i.id;
+      insert into public.inspection_participants(organization_id,inspection_id,user_id,can_edit_draft) values(p_org,i.id,target,true);
+      update public.inspections set lead_inspector_user_id=target where id=i.id returning * into i;
+      perform private.append_audit(p_org,p_actor,'inspection.inspector_assigned','inspection',i.id,p_operation,null,to_jsonb(i),jsonb_build_object('reason',p_payload->>'reason'));
+    else
+      if i.status<>'submitted' or not private.has_permission(p_org,p_actor,'inspection.manage',i.neighborhood_id,i.home_id) then raise insufficient_privilege using message='A supervisor must review a submitted inspection.'; end if;
+      if action='escalate' then
+        if nullif(trim(p_payload->>'reason'),'') is null then raise check_violation using message='Explain why this report needs an area manager review.'; end if;
+        update public.inspections set escalated_at=now(),escalation_reason=trim(p_payload->>'reason'),escalation_resolved_at=null where id=i.id returning * into i;
+      elsif action in ('complete','resolve') then
+        if action='resolve' and not exists(select 1 from public.neighborhoods nn where nn.id=i.neighborhood_id and private.admin_level(p_org,p_actor,'neighborhood',nn.division_id,nn.id,null)<=3) then raise insufficient_privilege using message='An area, division, or organization administrator must resolve this escalation.'; end if;
+        if action='complete' and i.escalated_at is not null and i.escalation_resolved_at is null then raise check_violation using message='Resolve the area manager escalation before completing review.'; end if;
+        if action='complete' and exists(select 1 from public.work_items where organization_id=p_org and inspection_id=i.id and state in ('draft','submitted')) then raise check_violation using message='Assign or disregard all observations before completing review.'; end if;
+        update public.inspections set reviewed_at=case when action='complete' then now() else reviewed_at end,reviewed_by=case when action='complete' then p_actor else reviewed_by end,escalation_resolved_at=case when action='resolve' then now() else escalation_resolved_at end where id=i.id returning * into i;
+      else raise check_violation using message='Choose a valid report review action.'; end if;
+      perform private.append_audit(p_org,p_actor,'inspection.review_'||action,'inspection',i.id,p_operation,null,to_jsonb(i),jsonb_build_object('reason',p_payload->>'reason'));
+    end if;
+    return to_jsonb(i);
+  elsif p_command='bulk_review_observations' then
+    if jsonb_typeof(p_payload->'rows')<>'array' or jsonb_array_length(p_payload->'rows') not between 1 and 100 then raise check_violation using message='Select between 1 and 100 observations.'; end if;
+    if action not in ('disregard','assign','reinspect') or action is null then raise check_violation using message='Choose a valid observation action.'; end if;
+    select array_agg((x->>'item_id')::uuid) into ids from jsonb_array_elements(p_payload->'rows') x;
+    if cardinality(ids)<>(select count(distinct x) from unnest(ids) x) then raise check_violation using message='An observation was selected more than once.'; end if;
+    -- Consistent lock order keeps concurrent bulk operations safe.
+    perform 1 from public.work_items where organization_id=p_org and id=any(ids) order by id for update;
+    for row in select value from jsonb_array_elements(p_payload->'rows') loop
+      select * into w from public.work_items where organization_id=p_org and id=(row->>'item_id')::uuid;
+      if not found or not private.can_read_work(p_actor,w.id) then raise insufficient_privilege using message='An observation is outside your access.'; end if;
+      if nullif(row->>'expected_version','')::bigint is null or (row->>'expected_version')::bigint<>w.version then raise serialization_failure using message='An observation changed. Refresh the list before applying this action.'; end if;
+      if action='reinspect' then
+        if w.state<>'ready_for_verification' or w.home_id is null or not private.has_permission(p_org,p_actor,'work.verify',w.neighborhood_id,w.home_id) then raise insufficient_privilege using message='Only completed repairs awaiting review can be sent for reinspection.'; end if;
+        target:=(p_payload->>'inspector_user_id')::uuid;
+        select * into attempt from public.correction_attempts ca where ca.organization_id=p_org and ca.work_item_id=w.id and not exists(select 1 from public.verifications v where v.correction_attempt_id=ca.id) order by ca.attempt_number desc limit 1;
+        if target is null or not private.has_permission(p_org,target,'inspection.perform',w.neighborhood_id,w.home_id) or attempt.id is null or attempt.submitted_by=target or (attempt.accountable_company_id is not null and private.active_company_membership(p_org,attempt.accountable_company_id,target,null)) then raise check_violation using message='Choose an independent Inspector with access to every selected home.'; end if;
+        old_state:=w.state;
+        update public.work_items set reinspection_status='pending',reinspection_assignee_user_id=target,reinspection_assigned_by=p_actor,reinspection_assigned_at=now(),reinspection_completed_at=null where id=w.id returning * into w;
+        perform private.append_work_event(w,'observation.reinspection_assigned',old_state,w.state,p_actor,p_operation,jsonb_build_object('inspector_user_id',target,'reason',p_payload->>'reason'),w.current_assignment_id);
+      else
+        result:=public.execute_command(case when action='disregard' then 'cancel_work' else 'assign_work_item' end,jsonb_build_object('operation_id',gen_random_uuid(),'expected_version',w.version,'payload',
+          (p_payload-'rows'-'action')||jsonb_build_object('organization_id',p_org,'item_id',w.id,'reason',coalesce(nullif(trim(p_payload->>'reason'),''),case when action='disregard' then 'Disregarded during report review' else 'Assigned during report review' end))));
+        if not coalesce((result->>'ok')::boolean,false) then raise check_violation using message=result->'error'->>'message'; end if;
+      end if;
+      n:=n+1;
+    end loop;
+    return jsonb_build_object('updated_count',n);
+  elsif p_command='decide_reinspection' then
+    select * into w from public.work_items where organization_id=p_org and id=(p_payload->>'item_id')::uuid for update;
+    if not found or not private.can_read_work(p_actor,w.id) then raise insufficient_privilege using message='Observation is unavailable.'; end if;
+    if p_version is null or w.version<>p_version then raise serialization_failure using message='Observation changed. Refresh and try again.'; end if;
+    select * into attempt from public.correction_attempts ca where ca.organization_id=p_org and ca.work_item_id=w.id and not exists(select 1 from public.verifications v where v.correction_attempt_id=ca.id) order by ca.attempt_number desc limit 1 for update;
+    if (w.state<>'ready_for_verification' or w.reinspection_status is distinct from 'pending') or w.reinspection_assignee_user_id<>p_actor or not private.can_verify(p_actor,attempt.id) then raise insufficient_privilege using message='Only the assigned independent Inspector can record this reinspection.'; end if;
+    if p_payload->>'decision' not in ('accepted','rejected') or nullif(trim(p_payload->>'notes'),'') is null then raise check_violation using message='Record a decision and your on-site findings.'; end if;
+    insert into public.verifications(organization_id,correction_attempt_id,decision,method,verified_by,notes) values(p_org,attempt.id,p_payload->>'decision','on_site',p_actor,trim(p_payload->>'notes'));
+    if p_payload->>'decision'='accepted' then update public.assignment_episodes set ended_at=now(),end_reason='verified' where id=w.current_assignment_id; end if;
+    update public.work_items set state=case when p_payload->>'decision'='accepted' then 'verified'::public.work_state else 'rework_required'::public.work_state end,reinspection_status='completed',reinspection_completed_at=now() where id=w.id returning * into w;
+    perform private.append_work_event(w,'observation.reinspection_'||(p_payload->>'decision'),'ready_for_verification',w.state,p_actor,p_operation,jsonb_build_object('attempt_id',attempt.id,'notes',p_payload->>'notes'),w.current_assignment_id);
+    return to_jsonb(w);
+  end if;
+  raise check_violation using message='Unknown quality workflow command.';
+exception
+  when serialization_failure then
+    raise exception using errcode='BT001',message='Quality workflow changed',detail=private.command_error(p_operation,'VERSION_CONFLICT',sqlerrm)::text;
+  when check_violation then
+    raise exception using errcode='BT001',message='Quality workflow validation',detail=private.command_error(p_operation,'VALIDATION_ERROR',sqlerrm)::text;
+end; $$;
+
+-- Extend the existing command gateway, preserving its identity, idempotency,
+-- version checks, offline replay protection, and transaction boundary.
+do $patch$
+declare definition text; needle text;
+begin
+  definition:=replace(pg_get_functiondef('public.execute_command(text,jsonb)'::regprocedure),chr(13)||chr(10),chr(10));
+  needle:='if p_command_name in (''create_work_item'',''create_and_assign_work_item'') then';
+  if strpos(definition,needle)=0 then raise exception 'Command gateway changed'; end if;
+  definition:=replace(definition,needle,'if p_command_name in (''schedule_company_inspection'',''allocate_inspection'',''review_inspection'',''bulk_review_observations'',''decide_reinspection'') then
+    v_result:=private.command_success(v_operation_id,private.quality_workflow_command(p_command_name,v_payload,v_organization_id,v_actor,v_operation_id,v_expected_version));
+  elsif p_command_name in (''create_work_item'',''create_and_assign_work_item'') then');
+  execute definition;
+end; $patch$;
+
+-- New columns are appended so existing clients retain their view column order.
+create or replace view public.inspection_list with(security_invoker=true) as
+  select i.id,i.organization_id,i.neighborhood_id,i.home_id,i.type,i.status,i.scheduled_at,h.lot_code,h.address_line1,i.current_revision,i.updated_at,i.version,
+    i.company_id,i.lead_inspector_user_id,i.reviewed_at,i.escalated_at,i.escalation_reason,i.escalation_resolved_at
+    from public.inspections i join public.homes h on h.organization_id=i.organization_id and h.id=i.home_id;
+
+do $patch$
+declare definition text;
+begin
+  definition:=pg_get_viewdef('public.work_item_list'::regclass,true);
+  definition:=regexp_replace(definition,'(\s+FROM (public\.)?work_items w)',', w.reinspection_status, w.reinspection_assignee_user_id, w.reinspection_assigned_at, w.reinspection_completed_at, w.location_id\1','i');
+  if strpos(definition,'w.reinspection_status')=0 then raise exception 'Work list view changed'; end if;
+  execute 'create or replace view public.work_item_list with(security_invoker=true) as '||definition;
+end; $patch$;
+
+revoke all on function public.onboard_home_with_plan(uuid,jsonb,uuid) from public,anon;
+grant execute on function public.onboard_home_with_plan(uuid,jsonb,uuid) to authenticated;
+revoke all on function public.onboard_vendor_with_profile(uuid,text,text,public.scope_kind,uuid,uuid,jsonb) from public,anon;
+grant execute on function public.onboard_vendor_with_profile(uuid,text,text,public.scope_kind,uuid,uuid,jsonb) to authenticated;
+revoke all on function public.repair_technician_options(uuid,uuid,uuid),public.save_home_space(uuid,uuid,uuid,text,uuid,boolean,text) from public,anon;
+grant execute on function public.repair_technician_options(uuid,uuid,uuid),public.save_home_space(uuid,uuid,uuid,text,uuid,boolean,text) to authenticated;
+
+revoke all on function public.save_master_plan(uuid,uuid,uuid,text,jsonb,boolean,bigint),public.apply_home_plan(uuid,uuid,uuid,bigint),public.save_company_profile(uuid,uuid,text,text,text,text,text[],bigint),public.inspection_company_options(uuid,uuid),public.inspection_allocation_options(uuid,uuid) from public,anon;
+grant execute on function public.save_master_plan(uuid,uuid,uuid,text,jsonb,boolean,bigint),public.apply_home_plan(uuid,uuid,uuid,bigint),public.save_company_profile(uuid,uuid,text,text,text,text,text[],bigint),public.inspection_company_options(uuid,uuid),public.inspection_allocation_options(uuid,uuid) to authenticated;
+revoke all on function private.quality_workflow_command(text,jsonb,uuid,uuid,uuid,bigint),private.company_inspection_manager(uuid,uuid,uuid,uuid) from public,anon,authenticated;
+revoke all on function private.quality_assignment_notifications() from public,anon,authenticated;
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202610280042_quality_lifecycle_guards.sql
+-- ============================================================================
+
+begin;
+
+drop policy company_private_read on public.company_private_details;
+create policy company_private_read on public.company_private_details for select to authenticated using(
+  private.controls_company(organization_id,auth.uid(),company_id) or private.vendor_admin(organization_id,auth.uid(),company_id));
+create function public.company_profile_context(p_org uuid,p_company uuid) returns jsonb language plpgsql stable security definer set search_path='' as $$
+declare editable boolean;
+begin
+  if not private.can_read_company(p_org,auth.uid(),p_company) then raise insufficient_privilege using message='Company is unavailable.'; end if;
+  editable:=private.controls_company(p_org,auth.uid(),p_company) or private.vendor_admin(p_org,auth.uid(),p_company);
+  return jsonb_build_object('can_edit',editable,'ein',case when editable then (select ein from public.company_private_details where organization_id=p_org and company_id=p_company) end);
+end; $$;
+revoke all on function public.company_profile_context(uuid,uuid) from public,anon;
+grant execute on function public.company_profile_context(uuid,uuid) to authenticated;
+
+create function private.guard_quality_lifecycle() returns trigger language plpgsql security definer set search_path='' as $$
+begin
+  if tg_table_name='inspections' then
+    if new.status in ('draft','in_progress','amended') then new.reviewed_at:=null; new.reviewed_by:=null; end if;
+    if new.status='amended' and old.status='submitted' then new.escalated_at:=null;new.escalation_reason:=null;new.escalation_resolved_at:=null; end if;
+    if new.escalated_at is distinct from old.escalated_at and new.escalated_at is not null then new.reviewed_at:=null; new.reviewed_by:=null; end if;
+  elsif tg_table_name='companies' then
+    if new.status<>'active' and old.status='active' and exists(select 1 from public.inspections where organization_id=new.organization_id and company_id=new.id and status in ('draft','in_progress','amended')) then raise check_violation using message='Assign or cancel open company inspections before deactivating this company.'; end if;
+  elsif old.reinspection_status='pending' and new.reinspection_status='pending' and new.state<>'ready_for_verification' then
+    new.reinspection_status:=null; new.reinspection_assignee_user_id:=null;new.reinspection_assigned_by:=null;new.reinspection_assigned_at:=null;
+  end if;
+  return new;
+end; $$;
+create trigger guard_inspection_review before update on public.inspections for each row execute function private.guard_quality_lifecycle();
+create trigger guard_company_open_inspections before update on public.companies for each row execute function private.guard_quality_lifecycle();
+create trigger guard_observation_reinspection before update on public.work_items for each row execute function private.guard_quality_lifecycle();
+revoke all on function private.guard_quality_lifecycle() from public,anon,authenticated;
+
+-- Reinspection rejection is a normal repair return, so notify the accountable
+-- company rather than silently leaving the item in its manager's queue.
+create function private.reinspection_return_notification() returns trigger language plpgsql security definer set search_path='' as $$
+begin
+  if new.event_type='observation.reinspection_rejected' then
+    insert into public.notifications(organization_id,recipient_user_id,work_item_id,title,body,deep_link)
+      select distinct new.organization_id,cm.user_id,new.work_item_id,'Repair returned for rework',coalesce(new.details->>'notes','Review the on-site findings.'),'/org/'||new.organization_id||'/work/'||new.work_item_id
+      from public.assignment_episodes a join public.company_memberships cm on cm.organization_id=a.organization_id and cm.company_id=a.company_id
+      where a.id=new.assignment_episode_id and private.vendor_admin(new.organization_id,cm.user_id,a.company_id)
+      union select new.organization_id,a.internal_assignee_user_id,new.work_item_id,'Repair returned for rework',coalesce(new.details->>'notes','Review the on-site findings.'),'/org/'||new.organization_id||'/work/'||new.work_item_id
+        from public.assignment_episodes a where a.id=new.assignment_episode_id and a.internal_assignee_user_id is not null and private.active_member(new.organization_id,a.internal_assignee_user_id);
+  end if;
+  return new;
+end; $$;
+create trigger notify_reinspection_return after insert on public.work_events for each row execute function private.reinspection_return_notification();
+revoke all on function private.reinspection_return_notification() from public,anon,authenticated;
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202610280043_platform_provider_oversight_and_catalogs.sql
+-- ============================================================================
+
+begin;
+
+-- Platform oversight is deliberately metadata-only. No platform role is added
+-- to organization memberships, RLS helpers, or construction-work permissions.
+create function public.platform_list_providers(p_org uuid,p_search text default '',p_page integer default 0) returns jsonb
+language plpgsql stable security definer set search_path='' as $$
+declare result jsonb;
+begin
+  perform private.require_platform_admin();
+  if not exists(select 1 from public.organizations where id=p_org) then raise no_data_found using message='Organization not found.'; end if;
+  select jsonb_build_object('total',(select count(*) from public.companies c where c.organization_id=p_org and concat_ws(' ',c.name,c.contact_email,c.external_vendor_reference) ilike '%'||coalesce(p_search,'')||'%'),
+    'rows',(select coalesce(jsonb_agg(to_jsonb(r) order by r.name,r.id),'[]') from (
+      select c.id,c.name,c.status,c.contact_email,c.phone_number,c.categories,c.external_vendor_reference,
+        (select count(*) from public.company_memberships m where m.organization_id=p_org and m.company_id=c.id and m.revoked_at is null and m.active_from<=now() and (m.active_to is null or m.active_to>now())) member_count,
+        (select count(*) from public.company_access_grants g where g.organization_id=p_org and g.company_id=c.id and g.revoked_at is null) coverage_count
+      from public.companies c where c.organization_id=p_org and concat_ws(' ',c.name,c.contact_email,c.external_vendor_reference) ilike '%'||coalesce(p_search,'')||'%'
+      order by c.name,c.id limit 25 offset greatest(coalesce(p_page,0),0)*25
+    ) r)) into result;
+  return result;
+end; $$;
+
+create function public.platform_get_provider(p_org uuid,p_company uuid,p_member_page integer default 0,p_coverage_page integer default 0) returns jsonb
+language plpgsql stable security definer set search_path='' as $$
+declare result jsonb;
+begin
+  perform private.require_platform_admin();
+  if not exists(select 1 from public.companies where organization_id=p_org and id=p_company) then raise no_data_found using message='Provider not found in this organization.'; end if;
+  select jsonb_build_object('company',(select jsonb_build_object('id',c.id,'name',c.name,'status',c.status,'contact_email',c.contact_email,'phone_number',c.phone_number,'physical_address',c.physical_address,
+      'external_vendor_reference',c.external_vendor_reference,'categories',c.categories,'owner_scope_kind',c.owner_scope_kind,
+      'owner_label',case c.owner_scope_kind when 'division' then (select name from public.divisions where organization_id=p_org and id=c.owner_division_id) when 'neighborhood' then (select name from public.neighborhoods where organization_id=p_org and id=c.owner_neighborhood_id) else 'Organization' end)
+    from public.companies c where c.organization_id=p_org and c.id=p_company),
+    'member_total',(select count(*) from public.company_memberships m where m.organization_id=p_org and m.company_id=p_company and m.revoked_at is null),
+    'members',(select coalesce(jsonb_agg(to_jsonb(r) order by r.display_name,r.user_id),'[]') from (
+      select m.user_id,p.display_name,p.first_name,p.last_name,u.email,p.phone_number,m.kind,om.status,m.active_from,m.active_to,
+        (select coalesce(jsonb_agg(jsonb_build_object('label',r.label,'scope',a.scope_kind,'effective',private.active_member(p_org,m.user_id) and private.role_grant_enabled(a) and a.starts_at<=now() and (a.ends_at is null or a.ends_at>now())) order by r.label),'[]')
+          from public.role_assignments a join public.roles r on r.code=a.role_code where a.organization_id=p_org and a.user_id=m.user_id and a.company_id=p_company and a.revoked_at is null) roles
+      from public.company_memberships m join public.profiles p on p.id=m.user_id join auth.users u on u.id=m.user_id join public.organization_memberships om on om.organization_id=m.organization_id and om.user_id=m.user_id
+      where m.organization_id=p_org and m.company_id=p_company and m.revoked_at is null order by p.display_name,m.user_id limit 25 offset greatest(coalesce(p_member_page,0),0)*25
+    ) r),
+    'coverage_total',(select count(*) from public.company_access_grants g where g.organization_id=p_org and g.company_id=p_company and g.revoked_at is null),
+    'coverage',(select coalesce(jsonb_agg(to_jsonb(r) order by r.scope,r.label,r.id),'[]') from (
+      select g.id,g.scope_kind scope,case g.scope_kind when 'division' then d.name when 'neighborhood' then n.name else 'Organization' end label
+      from public.company_access_grants g left join public.divisions d on d.organization_id=p_org and d.id=g.division_id left join public.neighborhoods n on n.organization_id=p_org and n.id=g.neighborhood_id
+      where g.organization_id=p_org and g.company_id=p_company and g.revoked_at is null order by g.scope_kind,label,g.id limit 25 offset greatest(coalesce(p_coverage_page,0),0)*25
+    ) r)) into result;
+  return result;
+end; $$;
+
+-- Remove even per-user assignment counts from the platform response. Billing
+-- usage totals are retained; work identities and work progress are not exposed.
+do $patch$
+declare definition text;
+begin
+  definition:=pg_get_functiondef('public.platform_get_operations(uuid,text,integer)'::regprocedure);
+  if strpos(definition,'FUNCTION public.platform_get_operations(')=0 then raise exception 'Platform operations definition changed'; end if;
+  execute replace(definition,'FUNCTION public.platform_get_operations(','FUNCTION private.platform_operations_base(');
+end; $patch$;
+create or replace function public.platform_get_operations(p_organization_id uuid,p_search text default '',p_page integer default 0) returns jsonb
+language plpgsql stable security definer set search_path='' as $$
+declare result jsonb;
+begin
+  result:=private.platform_operations_base(p_organization_id,p_search,p_page);
+  return jsonb_set(result,'{members}',coalesce((select jsonb_agg(m-'assigned_work') from jsonb_array_elements(result->'members') m),'[]'));
+end; $$;
+revoke all on function private.platform_operations_base(uuid,text,integer) from public,anon,authenticated;
+
+alter table public.space_types add column version bigint not null default 1,add column updated_at timestamptz not null default now();
+create table public.master_catalog_entries(
+  kind text not null check(kind in ('company_category','construction_phase')),code text not null check(code~'^[a-z][a-z0-9_]{0,63}$'),
+  label text not null check(length(trim(label)) between 1 and 120),active boolean not null default true,sort_order integer not null default 0,
+  version bigint not null default 1,updated_at timestamptz not null default now(),primary key(kind,code));
+insert into public.master_catalog_entries(kind,code,label,sort_order) values
+  ('company_category','plumbing','Plumbing',10),('company_category','framing','Framing',20),('company_category','third_party_inspection','Third-party inspection',30),
+  ('company_category','drywall','Drywall',40),('company_category','electrical','Electrical',50),('company_category','roofing','Roofing',60),('company_category','hvac','Heating & cooling',70),('company_category','landscaping','Landscaping',80),('company_category','other','Other',90),
+  ('construction_phase','planned','Planned',10),('construction_phase','site_preparation','Site preparation',20),('construction_phase','foundation','Foundation',30),('construction_phase','framing','Framing',40),('construction_phase','rough_in','Rough-in',50),('construction_phase','interior_finishes','Interior finishes',60),('construction_phase','final_walkthrough','Final walkthrough',70),('construction_phase','complete','Complete',80);
+alter table public.master_catalog_entries enable row level security;
+grant select on public.master_catalog_entries to authenticated;
+create policy master_catalog_read on public.master_catalog_entries for select to authenticated using(true);
+create table public.platform_settings(singleton boolean primary key default true check(singleton),default_timezone text not null default 'America/New_York',version bigint not null default 1,updated_at timestamptz not null default now());
+insert into public.platform_settings(singleton) values(true);
+alter table public.platform_settings enable row level security;
+revoke all on public.platform_settings from public,anon,authenticated;
+
+create function public.workspace_defaults() returns jsonb language plpgsql stable security definer set search_path='' as $$
+begin
+  if auth.uid() is null then raise insufficient_privilege using message='Sign in required.'; end if;
+  return (select jsonb_build_object('default_timezone',default_timezone) from public.platform_settings where singleton);
+end; $$;
+create function public.platform_get_configuration() returns jsonb language plpgsql stable security definer set search_path='' as $$
+begin
+  perform private.require_platform_admin();
+  return jsonb_build_object('settings',(select to_jsonb(s)-'singleton' from public.platform_settings s where singleton),
+    'catalogs',(select coalesce(jsonb_agg(to_jsonb(r) order by kind,sort_order,label,code),'[]') from (
+      select 'space_type'::text kind,code,label,active,0 sort_order,version from public.space_types
+      union all select kind,code,label,active,sort_order,version from public.master_catalog_entries
+    ) r));
+end; $$;
+create function public.platform_save_settings(p_timezone text,p_version bigint) returns jsonb language plpgsql security definer set search_path='' as $$
+declare result public.platform_settings;
+begin
+  perform private.require_platform_admin();
+  if not exists(select 1 from pg_catalog.pg_timezone_names where name=p_timezone) then raise check_violation using message='Enter a valid IANA timezone.'; end if;
+  update public.platform_settings set default_timezone=p_timezone,version=version+1,updated_at=now() where singleton and version=p_version returning * into result;
+  if not found then raise serialization_failure using message='Defaults changed. Refresh before saving.'; end if;
+  insert into public.platform_audit_events(actor_id,action,details) values(auth.uid(),'platform.defaults_updated',jsonb_build_object('default_timezone',p_timezone));
+  return to_jsonb(result)-'singleton';
+end; $$;
+create function public.platform_save_catalog_entry(p_kind text,p_code text,p_label text,p_active boolean,p_sort_order integer,p_version bigint default null) returns jsonb
+language plpgsql security definer set search_path='' as $$
+declare result jsonb; existing_version bigint;
+begin
+  perform private.require_platform_admin();
+  if p_code is null or p_code!~'^[a-z][a-z0-9_]{0,63}$' or length(trim(coalesce(p_label,''))) not between 1 and 120 or p_active is null or p_sort_order is null or p_sort_order not between 0 and 10000 then raise check_violation using message='Enter a stable code, label, and order between 0 and 10000.'; end if;
+  if p_kind='space_type' then
+    select version into existing_version from public.space_types where code=p_code for update;
+    if found then
+      if p_version is null or existing_version<>p_version then raise serialization_failure using message='Catalog entry changed. Refresh before saving.'; end if;
+      update public.space_types set label=trim(p_label),active=p_active,version=version+1,updated_at=now() where code=p_code returning to_jsonb(space_types) into result;
+    else
+      if p_version is not null then raise no_data_found using message='Catalog entry no longer exists.'; end if;
+      insert into public.space_types(code,label,active) values(p_code,trim(p_label),p_active) returning to_jsonb(space_types) into result;
+    end if;
+  elsif p_kind in ('company_category','construction_phase') then
+    select version into existing_version from public.master_catalog_entries where kind=p_kind and code=p_code for update;
+    if found then
+      if p_version is null or existing_version<>p_version then raise serialization_failure using message='Catalog entry changed. Refresh before saving.'; end if;
+      update public.master_catalog_entries set label=trim(p_label),active=p_active,sort_order=p_sort_order,version=version+1,updated_at=now() where kind=p_kind and code=p_code returning to_jsonb(master_catalog_entries) into result;
+    else
+      if p_version is not null then raise no_data_found using message='Catalog entry no longer exists.'; end if;
+      insert into public.master_catalog_entries(kind,code,label,active,sort_order) values(p_kind,p_code,trim(p_label),p_active,p_sort_order) returning to_jsonb(master_catalog_entries) into result;
+    end if;
+  else raise check_violation using message='Choose a supported master catalog.'; end if;
+  insert into public.platform_audit_events(actor_id,action,entity_id,details) values(auth.uid(),'catalog.entry_saved',p_kind||':'||p_code,jsonb_build_object('kind',p_kind,'entry',result));
+  return result;
+end; $$;
+
+-- Company categories are now maintained in the master catalog. Existing retired
+-- categories remain readable and can be retained, but cannot be assigned anew.
+do $patch$
+declare definition text; needle text;
+begin
+  definition:=replace(pg_get_functiondef('public.save_company_profile(uuid,uuid,text,text,text,text,text[],bigint)'::regprocedure),chr(13)||chr(10),chr(10));
+  needle:='not coalesce(p_categories,''{}'')<@array[''plumbing'',''framing'',''third_party_inspection'',''drywall'',''electrical'',''roofing'',''hvac'',''landscaping'',''other'']';
+  if strpos(definition,needle)=0 then raise exception 'Company category validation changed'; end if;
+  execute replace(definition,needle,'exists(select 1 from unnest(coalesce(p_categories,''{}'')) category where not exists(select 1 from public.master_catalog_entries e where e.kind=''company_category'' and e.code=category and (e.active or category=any(c.categories))))');
+  definition:=replace(pg_get_functiondef('public.save_master_plan(uuid,uuid,uuid,text,jsonb,boolean,bigint)'::regprocedure),chr(13)||chr(10),chr(10));
+  needle:='t.code=s->>''type'' and t.active';
+  if strpos(definition,needle)=0 then raise exception 'Plan space validation changed'; end if;
+  execute replace(definition,needle,'t.code=s->>''type'' and (t.active or exists(select 1 from public.master_plans prior_plan where prior_plan.organization_id=p_org and prior_plan.id=p_id and exists(select 1 from jsonb_array_elements(prior_plan.spaces) old_space where old_space->>''type''=t.code)))');
+  definition:=replace(pg_get_functiondef('public.save_home_space(uuid,uuid,uuid,text,uuid,boolean,text)'::regprocedure),chr(13)||chr(10),chr(10));
+  needle:='where code=p_type and active';
+  if strpos(definition,needle)=0 then raise exception 'Home space validation changed'; end if;
+  execute replace(definition,needle,'where code=p_type and (active or exists(select 1 from public.home_locations existing where existing.organization_id=p_org and existing.home_id=p_home and existing.id=p_id and existing.space_type_code=p_type))');
+end; $patch$;
+
+revoke all on function public.platform_list_providers(uuid,text,integer),public.platform_get_provider(uuid,uuid,integer,integer),public.platform_get_configuration(),public.platform_save_settings(text,bigint),public.platform_save_catalog_entry(text,text,text,boolean,integer,bigint),public.workspace_defaults() from public,anon;
+grant execute on function public.platform_list_providers(uuid,text,integer),public.platform_get_provider(uuid,uuid,integer,integer),public.platform_get_configuration(),public.platform_save_settings(text,bigint),public.platform_save_catalog_entry(text,text,text,boolean,integer,bigint),public.workspace_defaults() to authenticated;
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202610290044_home_layouts_and_project_communication.sql
+-- ============================================================================
+
+begin;
+
+-- Existing/imported homes retain their data. New interactive onboarding must
+-- make an explicit plan/manual choice and persist its rooms atomically.
+alter table public.homes add column layout_mode text not null default 'legacy' check(layout_mode in ('legacy','plan','manual'));
+create table private.home_layout_requests (
+  organization_id uuid not null, request_id uuid not null, actor_id uuid not null,
+  request_hash text not null, home_id uuid not null, primary key(organization_id,request_id),
+  foreign key(organization_id,home_id) references public.homes(organization_id,id)
+);
+do $patch$
+declare definition text;
+begin
+  definition:=pg_get_functiondef('public.admin_save_home(uuid,uuid,uuid,text,text,text,text,text,text,text,uuid,text,boolean)'::regprocedure);
+  execute replace(definition,'FUNCTION public.admin_save_home(','FUNCTION private.save_home_record(');
+end; $patch$;
+revoke all on function private.save_home_record(uuid,uuid,uuid,text,text,text,text,text,text,text,uuid,text,boolean) from public,anon,authenticated;
+create or replace function public.admin_save_home(p_organization_id uuid,p_id uuid,p_neighborhood_id uuid,p_lot_code text,p_address_line1 text default null,p_address_line2 text default null,p_city text default null,p_state_code text default null,p_postal_code text default null,p_phase text default 'planned',p_primary_supervisor_user_id uuid default null,p_external_reference text default null,p_archived boolean default false)
+returns public.homes language plpgsql security definer set search_path='' as $$
+begin
+  if p_id is null then raise check_violation using message='Choose a standard plan or enter manual rooms before creating a home.'; end if;
+  return private.save_home_record(p_organization_id,p_id,p_neighborhood_id,p_lot_code,p_address_line1,p_address_line2,p_city,p_state_code,p_postal_code,p_phase,p_primary_supervisor_user_id,p_external_reference,p_archived);
+end; $$;
+create function private.validate_home_layout(p_org uuid,p_neighborhood uuid,p_mode text,p_plan uuid,p_spaces jsonb) returns void language plpgsql stable security definer set search_path='' as $$
+begin
+  if p_mode is null or p_mode not in ('plan','manual') then raise check_violation using message='Choose a standard plan or a manual room layout.'; end if;
+  if p_mode='plan' then
+    if p_plan is null or not exists(select 1 from public.master_plans p join public.neighborhoods n on n.organization_id=p.organization_id and n.division_id=p.division_id where p.organization_id=p_org and p.id=p_plan and p.active and n.id=p_neighborhood) then raise check_violation using message='Choose an available floor plan from this neighborhood’s division.'; end if;
+  else
+    if p_plan is not null or jsonb_typeof(p_spaces) is distinct from 'array' then raise check_violation using message='Add manual rooms for this home.'; end if;
+    if jsonb_array_length(p_spaces) not between 1 and 200 then raise check_violation using message='Add between 1 and 200 manual rooms or areas.'; end if;
+    if exists(select 1 from jsonb_array_elements(p_spaces) r where length(trim(coalesce(r->>'name',''))) not between 1 and 120 or not exists(select 1 from public.space_types t where t.code=r->>'type' and t.active)) or jsonb_array_length(p_spaces)<>(select count(distinct lower(trim(r->>'name'))) from jsonb_array_elements(p_spaces) r) then raise check_violation using message='Give every room a unique name and an available space type.'; end if;
+  end if;
+end; $$;
+create function public.onboard_home_layout(p_org uuid,p_request uuid,p_mode text,p_plan uuid,p_spaces jsonb,p_details jsonb) returns jsonb
+language plpgsql security definer set search_path='' as $$
+declare h public.homes; request private.home_layout_requests; fingerprint text; room jsonb;
+begin
+  if auth.uid() is null or not private.require_aal2() or not private.has_permission(p_org,auth.uid(),'structure.manage',(p_details->>'neighborhood_id')::uuid,null) then raise insufficient_privilege using message='Home management and administrator verification are required.'; end if;
+  if p_request is null or p_mode is null or p_mode not in ('plan','manual') then raise check_violation using message='Choose a standard plan or a manual room layout.'; end if;
+  fingerprint:=encode(extensions.digest(jsonb_build_object('mode',p_mode,'plan',p_plan,'spaces',p_spaces,'details',p_details)::text,'sha256'),'hex');
+  perform pg_advisory_xact_lock(hashtextextended(p_org::text||p_request::text,0));
+  select * into request from private.home_layout_requests where organization_id=p_org and request_id=p_request;
+  if found then
+    if request.actor_id<>auth.uid() or request.request_hash<>fingerprint then raise check_violation using message='This onboarding request was already used. Refresh the home directory before retrying.'; end if;
+    select * into h from public.homes where organization_id=p_org and id=request.home_id;
+    return to_jsonb(h);
+  end if;
+  perform private.validate_home_layout(p_org,(p_details->>'neighborhood_id')::uuid,p_mode,p_plan,p_spaces);
+  if p_mode='plan' and (p_plan is null or coalesce(jsonb_array_length(p_spaces),0)<>0) then raise check_violation using message='Choose a standard floor plan.'; end if;
+  if p_mode='manual' then
+    if p_plan is not null or jsonb_typeof(p_spaces) is distinct from 'array' or jsonb_array_length(p_spaces) not between 1 and 200 then raise check_violation using message='Add at least one manual room or area.'; end if;
+    if exists(select 1 from jsonb_array_elements(p_spaces) r where length(trim(coalesce(r->>'name',''))) not between 1 and 120 or not exists(select 1 from public.space_types t where t.code=r->>'type' and t.active))
+      or jsonb_array_length(p_spaces)<>(select count(distinct lower(trim(r->>'name'))) from jsonb_array_elements(p_spaces) r) then raise check_violation using message='Give every room a unique name and an available space type.'; end if;
+  end if;
+  h:=private.save_home_record(p_org,null,(p_details->>'neighborhood_id')::uuid,p_details->>'lot_code',p_details->>'address_line1',p_details->>'address_line2',p_details->>'city',p_details->>'state_code',p_details->>'postal_code','planned',null,p_details->>'external_reference',false);
+  if p_mode='plan' then perform public.apply_home_plan(p_org,h.id,p_plan,h.version);
+  else
+    for room in select value from jsonb_array_elements(p_spaces) loop
+      perform public.save_home_space(p_org,null,h.id,room->>'name',null,true,room->>'type');
+    end loop;
+  end if;
+  update public.homes set layout_mode=p_mode where organization_id=p_org and id=h.id returning * into h;
+  insert into private.home_layout_requests values(p_org,p_request,auth.uid(),fingerprint,h.id);
+  perform private.append_audit(p_org,auth.uid(),'home.layout_onboarded','home',h.id,null,null,to_jsonb(h));
+  return to_jsonb(h);
+end; $$;
+create or replace function public.onboard_home_with_plan(p_org uuid,p_details jsonb,p_plan uuid) returns jsonb language plpgsql security definer set search_path='' as $$
+begin return public.onboard_home_layout(p_org,gen_random_uuid(),'plan',p_plan,'[]',p_details); end; $$;
+
+-- CSV batches use the same required layout path, including preview validation.
+do $import$
+declare definition text; old_block text; block text; block_start integer; block_end integer; start_at integer; end_at integer; needle text;
+begin
+  definition:=replace(pg_get_functiondef('public.execute_command(text,jsonb)'::regprocedure),chr(13)||chr(10),chr(10));
+  block_start:=strpos(definition,'elsif p_command_name = ''import_homes'' then');
+  if block_start=0 then raise exception 'Review home import command'; end if;
+  block_end:=strpos(substring(definition from block_start),'elsif p_command_name = ''bulk_assign_work_items'' then');
+  if block_end=0 then raise exception 'Review home import command boundary'; end if;
+  old_block:=substring(definition from block_start for block_end-1);
+  block:=old_block;
+  needle:='v_rows := coalesce(v_payload -> ''rows'', ''[]''::jsonb);';
+  if strpos(block,needle)=0 then raise exception 'Review home import validation'; end if;
+  block:=replace(block,needle,'perform private.validate_home_layout(v_organization_id,(v_payload->>''neighborhood_id'')::uuid,v_payload->>''layout_mode'',nullif(v_payload->>''master_plan_id'','''')::uuid,coalesce(v_payload->''spaces'',''[]''::jsonb)); '||needle);
+  start_at:=strpos(block,'insert into public.homes(');
+  if start_at=0 then raise exception 'Review home import insertion'; end if;
+  end_at:=strpos(substring(block from start_at),') returning id into v_row_id;');
+  if end_at=0 then raise exception 'Review home import result'; end if;
+  needle:=substring(block from start_at for end_at-1+length(') returning id into v_row_id;'));
+  block:=replace(block,needle,'v_row_id:=(public.onboard_home_layout(v_organization_id,gen_random_uuid(),v_payload->>''layout_mode'',nullif(v_payload->>''master_plan_id'','''')::uuid,coalesce(v_payload->''spaces'',''[]''::jsonb),v_row||jsonb_build_object(''neighborhood_id'',v_payload->>''neighborhood_id''))->>''id'')::uuid;');
+  execute replace(definition,old_block,block);
+end; $import$;
+
+-- A shared order preserves causality when several actions share a transaction timestamp.
+create sequence private.observation_activity_order;
+alter table public.work_events add column activity_order bigint not null default nextval('private.observation_activity_order');
+alter table public.comments add column activity_order bigint not null default nextval('private.observation_activity_order');
+alter table public.attachments add column activity_order bigint not null default nextval('private.observation_activity_order');
+
+grant usage,select on sequence private.observation_activity_order to service_role;
+
+-- Snapshot human-readable accountability when an event is created. Historical
+-- events remain immutable; the feed labels any legacy name lookup explicitly.
+create or replace function private.append_work_event(p_item public.work_items,p_event_type text,p_from_state public.work_state,p_to_state public.work_state,p_actor_id uuid,p_operation_id uuid,p_details jsonb default '{}'::jsonb,p_assignment_episode_id uuid default null,p_client_captured_at timestamptz default null)
+returns void language plpgsql security definer set search_path='' as $$
+declare snapshot jsonb; previous public.assignment_episodes;
+begin
+  snapshot:=coalesce(p_details,'{}')||jsonb_build_object('actor_name',(select display_name from public.profiles where id=p_actor_id));
+  snapshot:=snapshot||jsonb_build_object(
+    'assignee_name',(select display_name from public.profiles where id=coalesce(nullif(p_details->>'internal_assignee_user_id','')::uuid,nullif(p_details->>'technician_id','')::uuid,nullif(p_details->>'inspector_user_id','')::uuid)),
+    'company_name',(select name from public.companies where organization_id=p_item.organization_id and id=nullif(p_details->>'company_id','')::uuid),
+    'previous_assignee_name',(select display_name from public.profiles where id=nullif(p_details->>'previous_technician_id','')::uuid));
+  if p_event_type='work.assigned' then
+    select * into previous from public.assignment_episodes where organization_id=p_item.organization_id and work_item_id=p_item.id and id is distinct from p_assignment_episode_id and ended_at is not null order by ended_at desc,id desc limit 1;
+    snapshot:=snapshot||jsonb_build_object('previous_assignee_name',(select display_name from public.profiles where id=coalesce(previous.technician_user_id,previous.internal_assignee_user_id)),
+      'previous_company_name',(select name from public.companies where organization_id=p_item.organization_id and id=previous.company_id));
+  end if;
+  insert into public.work_events(organization_id,work_item_id,assignment_episode_id,event_type,from_state,to_state,actor_id,operation_id,details,client_captured_at)
+    values(p_item.organization_id,p_item.id,p_assignment_episode_id,p_event_type,p_from_state,p_to_state,p_actor_id,p_operation_id,jsonb_strip_nulls(snapshot),p_client_captured_at);
+end; $$;
+do $patch$
+declare definition text; needle text;
+begin
+  definition:=replace(pg_get_functiondef('public.execute_command(text,jsonb)'::regprocedure),chr(13)||chr(10),chr(10));
+  needle:='update public.assignment_episodes set technician_user_id = v_technician_id where id = v_episode.id returning * into v_episode;';
+  if strpos(definition,needle)=0 then raise exception 'Review company delegation history before applying this migration'; end if;
+  definition:=replace(definition,needle,'v_payload:=v_payload||jsonb_build_object(''previous_technician_id'',v_episode.technician_user_id); '||needle);
+  definition:=replace(definition,'jsonb_build_object(''technician_id'', v_technician_id), v_episode.id);','jsonb_build_object(''technician_id'', v_technician_id,''previous_technician_id'',v_payload->>''previous_technician_id''), v_episode.id);');
+  execute definition;
+end; $patch$;
+
+create function public.observation_activity(p_org uuid,p_item uuid,p_before_at timestamptz default null,p_before_key text default null) returns jsonb
+language plpgsql stable security definer set search_path='' as $$
+declare result jsonb;
+begin
+  if not private.can_read_work(auth.uid(),p_item) or not exists(select 1 from public.work_items where organization_id=p_org and id=p_item) then raise insufficient_privilege using message='Observation access is required.'; end if;
+  with feed as (
+    select lpad(e.activity_order::text,20,'0')||':event:'||e.id key,e.server_at at,'event' kind,e.actor_id,coalesce(e.details->>'actor_name',p.display_name,'System') actor_name,e.event_type,e.from_state::text from_state,e.to_state::text to_state,e.details||jsonb_strip_nulls(jsonb_build_object('completion_note',(select completion_note from public.correction_attempts ca where ca.organization_id=p_org and ca.work_item_id=p_item and ca.id=nullif(e.details->>'attempt_id','')::uuid),'assignee_name',coalesce(e.details->>'assignee_name',(select display_name from public.profiles where id=coalesce(nullif(e.details->>'internal_assignee_user_id','')::uuid,nullif(e.details->>'technician_id','')::uuid,nullif(e.details->>'inspector_user_id','')::uuid))),'company_name',coalesce(e.details->>'company_name',(select name from public.companies where organization_id=p_org and id=nullif(e.details->>'company_id','')::uuid)))) details,
+      null::text body,'shared'::text visibility,null::uuid attachment_id,null::text file_status,null::text file_name,(not(e.details ? 'actor_name')) legacy_name
+    from public.work_events e left join public.profiles p on p.id=e.actor_id where e.organization_id=p_org and e.work_item_id=p_item and e.event_type<>'comment.added'
+    union all
+    select lpad(c.activity_order::text,20,'0')||':comment:'||c.id,c.created_at,'comment',c.author_id,coalesce((select e.details->>'actor_name' from public.work_events e where e.organization_id=p_org and e.work_item_id=p_item and e.details->>'comment_id'=c.id::text limit 1),p.display_name,'Former team member'),'comment.added',null,null,'{}'::jsonb,
+      case when c.redacted_at is not null then '[Message removed]' else c.body end,c.visibility::text,null,null,null,false
+    from public.comments c left join public.profiles p on p.id=c.author_id where c.organization_id=p_org and c.work_item_id=p_item and (c.visibility='shared' or private.is_internal_member(p_org,auth.uid()))
+    union all
+    select lpad(a.activity_order::text,20,'0')||':attachment:'||a.id,a.created_at,'attachment',a.uploader_id,coalesce(p.display_name,'Former team member'),'evidence.added',null,null,'{}'::jsonb,null,a.visibility::text,a.id,a.status::text,a.original_name,false
+    from public.attachments a left join public.profiles p on p.id=a.uploader_id where a.organization_id=p_org and a.work_item_id=p_item and private.can_read_attachment(auth.uid(),a.id)
+  ), selected as (select * from feed where p_before_at is null or (at,key)<(p_before_at,coalesce(p_before_key,'')) order by at desc,key desc limit 51), page as (select * from selected order by at desc,key desc limit 50)
+  select jsonb_build_object('entries',coalesce((select jsonb_agg(to_jsonb(page) order by at desc,key desc) from page),'[]'),'has_more',(select count(*)>50 from selected)) into result;
+  return result;
+end; $$;
+
+-- Conversations have an explicit project/home scope and explicit participants.
+-- Neither organization membership nor a platform role alone permits reading.
+create table public.project_conversations (
+  id uuid primary key default gen_random_uuid(), organization_id uuid not null,
+  neighborhood_id uuid not null, home_id uuid, audience text not null default 'project' check(audience in ('project','internal')), title text not null check(length(trim(title)) between 1 and 160),
+  created_by uuid not null references auth.users(id),created_at timestamptz not null default now(),
+  request_id uuid not null, request_hash text not null, unique(organization_id,id),unique(organization_id,created_by,request_id),
+  foreign key(organization_id,neighborhood_id) references public.neighborhoods(organization_id,id),
+  foreign key(organization_id,home_id) references public.homes(organization_id,id)
+);
+create table public.project_conversation_members (
+  organization_id uuid not null,conversation_id uuid not null,user_id uuid not null references auth.users(id),
+  joined_at timestamptz not null default now(),removed_at timestamptz,last_read_seq bigint not null default 0,
+  primary key(organization_id,conversation_id,user_id),foreign key(organization_id,conversation_id) references public.project_conversations(organization_id,id)
+);
+create table public.project_messages (
+  id uuid primary key default gen_random_uuid(),seq bigint generated always as identity unique,
+  organization_id uuid not null,conversation_id uuid not null,author_id uuid not null references auth.users(id),
+  author_name text not null,body text not null check(length(trim(body)) between 1 and 4000),kind text not null default 'message' check(kind in ('message','system')),
+  reply_to uuid,created_at timestamptz not null default now(),operation_id uuid not null,
+  unique(organization_id,conversation_id,id),unique(organization_id,author_id,operation_id),
+  foreign key(organization_id,conversation_id) references public.project_conversations(organization_id,id),
+  foreign key(organization_id,conversation_id,reply_to) references public.project_messages(organization_id,conversation_id,id)
+);
+create index observation_activity_cursor on public.work_events(organization_id,work_item_id,server_at desc,id);
+create index project_messages_cursor on public.project_messages(organization_id,conversation_id,seq desc);
+create index project_conversation_member_inbox on public.project_conversation_members(organization_id,user_id) where removed_at is null;
+create trigger project_messages_immutable before update or delete on public.project_messages for each row execute function private.prevent_mutation();
+
+create function private.can_use_project_chat(p_org uuid,p_user uuid,p_neighborhood uuid,p_home uuid) returns boolean language sql stable security definer set search_path='' as $$
+  select private.active_member(p_org,p_user) and exists(select 1 from public.neighborhoods n where n.organization_id=p_org and n.id=p_neighborhood and n.status='active')
+    and (p_home is null or exists(select 1 from public.homes h where h.organization_id=p_org and h.id=p_home and h.neighborhood_id=p_neighborhood and h.archived_at is null))
+    and private.has_any_scope(p_org,p_user,p_neighborhood,p_home);
+$$;
+create function private.can_read_project_chat(p_org uuid,p_conversation uuid,p_user uuid) returns boolean language sql stable security definer set search_path='' as $$
+  select exists(select 1 from public.project_conversations c join public.project_conversation_members m on m.organization_id=c.organization_id and m.conversation_id=c.id
+    where c.organization_id=p_org and c.id=p_conversation and m.user_id=p_user and m.removed_at is null and (c.audience<>'internal' or private.is_internal_member(p_org,p_user)) and private.can_use_project_chat(p_org,p_user,c.neighborhood_id,c.home_id));
+$$;
+alter table public.project_conversations enable row level security;
+alter table public.project_conversation_members enable row level security;
+alter table public.project_messages enable row level security;
+create policy project_conversation_read on public.project_conversations for select to authenticated using(private.can_read_project_chat(organization_id,id,auth.uid()));
+create policy project_members_read on public.project_conversation_members for select to authenticated using(private.can_read_project_chat(organization_id,conversation_id,auth.uid()));
+create policy project_messages_read on public.project_messages for select to authenticated using(private.can_read_project_chat(organization_id,conversation_id,auth.uid()));
+revoke all on public.project_conversations,public.project_conversation_members,public.project_messages from public,anon,authenticated;
+grant select on public.project_conversations,public.project_conversation_members,public.project_messages to authenticated;
+
+create function public.project_chat_scopes(p_org uuid) returns jsonb language plpgsql stable security definer set search_path='' as $$
+begin
+  if not private.active_member(p_org,auth.uid()) then raise insufficient_privilege using message='Active organization membership is required.'; end if;
+  return jsonb_build_object('neighborhoods',(select coalesce(jsonb_agg(jsonb_build_object('id',n.id,'name',n.name,'can_project_chat',private.can_use_project_chat(p_org,auth.uid(),n.id,null)) order by n.name,n.id),'[]') from public.neighborhoods n where n.organization_id=p_org and (private.can_use_project_chat(p_org,auth.uid(),n.id,null) or exists(select 1 from public.homes h where h.organization_id=p_org and h.neighborhood_id=n.id and private.can_use_project_chat(p_org,auth.uid(),n.id,h.id)))),
+    'homes',(select coalesce(jsonb_agg(jsonb_build_object('id',h.id,'lot_code',h.lot_code,'neighborhood_id',h.neighborhood_id) order by h.lot_code,h.id),'[]') from public.homes h where h.organization_id=p_org and private.can_use_project_chat(p_org,auth.uid(),h.neighborhood_id,h.id)));
+end; $$;
+create function public.project_chat_people(p_org uuid,p_neighborhood uuid,p_home uuid default null,p_audience text default 'project') returns jsonb language plpgsql stable security definer set search_path='' as $$
+begin
+  if not private.can_use_project_chat(p_org,auth.uid(),p_neighborhood,p_home) then raise insufficient_privilege using message='Current project access is required.'; end if;
+  if p_audience is null or p_audience not in ('project','internal') or p_audience='internal' and not private.is_internal_member(p_org,auth.uid()) then raise insufficient_privilege using message='Internal conversations are limited to the internal project team.'; end if;
+  return (select coalesce(jsonb_agg(jsonb_build_object('user_id',p.id,'display_name',p.display_name,'affiliation',m.affiliation) order by p.display_name,p.id),'[]')
+    from public.organization_memberships m join public.profiles p on p.id=m.user_id where m.organization_id=p_org and (p_audience<>'internal' or private.is_internal_member(p_org,m.user_id)) and m.user_id<>auth.uid() and private.can_use_project_chat(p_org,m.user_id,p_neighborhood,p_home));
+end; $$;
+create function public.project_chat_create(p_org uuid,p_request uuid,p_neighborhood uuid,p_home uuid,p_title text,p_users uuid[],p_audience text default 'project') returns uuid language plpgsql security definer set search_path='' as $$
+declare conversation public.project_conversations; person uuid; participants uuid[]; fingerprint text;
+begin
+  if not private.can_use_project_chat(p_org,auth.uid(),p_neighborhood,p_home) then raise insufficient_privilege using message='Current project access is required.'; end if;
+  if p_request is null or length(trim(coalesce(p_title,''))) not between 1 and 160 or cardinality(coalesce(p_users,'{}')) not between 1 and 49 then raise check_violation using message='Enter a title and choose 1–49 project participants.'; end if;
+  if p_audience is null or p_audience not in ('project','internal') or p_audience='internal' and not private.is_internal_member(p_org,auth.uid()) then raise insufficient_privilege using message='Internal conversations are limited to the internal project team.'; end if;
+  select array_agg(distinct u order by u) into participants from unnest(p_users||auth.uid()) u;
+  if cardinality(participants)<2 then raise check_violation using message='Choose at least one other project participant.'; end if;
+  fingerprint:=encode(extensions.digest(jsonb_build_object('project',p_neighborhood,'home',p_home,'title',trim(p_title),'audience',p_audience,'participants',participants)::text,'sha256'),'hex');
+  perform pg_advisory_xact_lock(hashtextextended(p_org::text||auth.uid()::text||p_request::text,0));
+  select * into conversation from public.project_conversations where organization_id=p_org and created_by=auth.uid() and request_id=p_request;
+  if found then
+    if conversation.request_hash<>fingerprint then raise check_violation using message='This conversation request was already used. Refresh Messages before retrying.'; end if;
+    if not private.can_read_project_chat(p_org,conversation.id,auth.uid()) then raise insufficient_privilege using message='Conversation membership is required to recover this conversation.'; end if;
+    return conversation.id;
+  end if;
+  foreach person in array participants loop
+    if not private.can_use_project_chat(p_org,person,p_neighborhood,p_home) or p_audience='internal' and not private.is_internal_member(p_org,person) then raise check_violation using message='A participant no longer has access to this project or home.'; end if;
+  end loop;
+  insert into public.project_conversations(organization_id,neighborhood_id,home_id,audience,title,created_by,request_id,request_hash) values(p_org,p_neighborhood,p_home,p_audience,trim(p_title),auth.uid(),p_request,fingerprint) returning * into conversation;
+  insert into public.project_conversation_members(organization_id,conversation_id,user_id) select p_org,conversation.id,u from unnest(participants) u;
+  insert into public.project_messages(organization_id,conversation_id,author_id,author_name,body,kind,operation_id) values(p_org,conversation.id,auth.uid(),coalesce((select display_name from public.profiles where id=auth.uid()),'Team member'),'Conversation started. Participants can see its complete shared history.','system',gen_random_uuid());
+  perform private.append_audit(p_org,auth.uid(),'conversation.created','project_conversation',conversation.id,null,null,jsonb_build_object('participants',participants,'neighborhood_id',p_neighborhood,'home_id',p_home));
+  return conversation.id;
+end; $$;
+create function public.project_chat_inbox(p_org uuid,p_page integer default 0,p_search text default '') returns jsonb language plpgsql stable security definer set search_path='' as $$
+begin
+  if not private.active_member(p_org,auth.uid()) then raise insufficient_privilege using message='Active organization membership is required.'; end if;
+  return (with visible as (select c.*,n.name project_name,h.lot_code,m.last_read_seq,
+      (select count(*) from public.project_messages msg where msg.organization_id=p_org and msg.conversation_id=c.id and msg.seq>m.last_read_seq and msg.author_id<>auth.uid()) unread,
+      (select max(msg.seq) from public.project_messages msg where msg.organization_id=p_org and msg.conversation_id=c.id) latest_seq
+    from public.project_conversations c join public.project_conversation_members m on m.organization_id=c.organization_id and m.conversation_id=c.id join public.neighborhoods n on n.organization_id=c.organization_id and n.id=c.neighborhood_id left join public.homes h on h.organization_id=c.organization_id and h.id=c.home_id
+    where c.organization_id=p_org and concat_ws(' ',c.title,n.name,h.lot_code) ilike '%'||coalesce(p_search,'')||'%' and m.user_id=auth.uid() and private.can_read_project_chat(p_org,c.id,auth.uid())), page as (select * from visible order by latest_seq desc,id limit 25 offset greatest(coalesce(p_page,0),0)*25)
+    select jsonb_build_object('rows',coalesce((select jsonb_agg(to_jsonb(page) order by latest_seq desc,id) from page),'[]'),'total',(select count(*) from visible),'unread',(select coalesce(sum(unread),0) from visible)));
+end; $$;
+create function public.project_chat_read(p_org uuid,p_conversation uuid,p_before bigint default null) returns jsonb language plpgsql stable security definer set search_path='' as $$
+begin
+  if not private.can_read_project_chat(p_org,p_conversation,auth.uid()) then raise insufficient_privilege using message='Current conversation and project membership are required.'; end if;
+  return (with selected as (select m.* from public.project_messages m where m.organization_id=p_org and m.conversation_id=p_conversation and (p_before is null or m.seq<p_before) order by m.seq desc limit 51),page as (select * from selected order by seq desc limit 50)
+    select jsonb_build_object('conversation',(select to_jsonb(c)||jsonb_build_object('can_manage',c.created_by=auth.uid() or coalesce(private.admin_level(p_org,auth.uid(),'neighborhood',(select division_id from public.neighborhoods where organization_id=p_org and id=c.neighborhood_id),c.neighborhood_id,null)<=3,false)) from public.project_conversations c where c.organization_id=p_org and c.id=p_conversation),
+      'members',(select coalesce(jsonb_agg(jsonb_build_object('user_id',m.user_id,'display_name',p.display_name,'last_read_seq',m.last_read_seq,'has_access',private.can_use_project_chat(p_org,m.user_id,c.neighborhood_id,c.home_id)) order by p.display_name),'[]') from public.project_conversation_members m join public.profiles p on p.id=m.user_id join public.project_conversations c on c.organization_id=m.organization_id and c.id=m.conversation_id where m.organization_id=p_org and m.conversation_id=p_conversation and m.removed_at is null),
+      'messages',coalesce((select jsonb_agg(to_jsonb(page)||jsonb_build_object('reply_name',(select r.author_name from public.project_messages r where r.organization_id=p_org and r.conversation_id=p_conversation and r.id=page.reply_to),'reply_body',(select left(r.body,240) from public.project_messages r where r.organization_id=p_org and r.conversation_id=p_conversation and r.id=page.reply_to)) order by seq desc) from page),'[]'),'has_more',(select count(*)>50 from selected)));
+end; $$;
+create function public.project_chat_mark_read(p_org uuid,p_conversation uuid,p_seq bigint) returns void language plpgsql security definer set search_path='' as $$
+begin
+  if not private.can_read_project_chat(p_org,p_conversation,auth.uid()) then raise insufficient_privilege using message='Current conversation membership is required.'; end if;
+  update public.project_conversation_members set last_read_seq=greatest(last_read_seq,least(coalesce(p_seq,0),coalesce((select max(seq) from public.project_messages where organization_id=p_org and conversation_id=p_conversation),0))) where organization_id=p_org and conversation_id=p_conversation and user_id=auth.uid();
+end; $$;
+create function public.project_chat_set_member(p_org uuid,p_conversation uuid,p_user uuid,p_active boolean) returns void language plpgsql security definer set search_path='' as $$
+declare c public.project_conversations; actor text; target text;
+begin
+  if not private.can_read_project_chat(p_org,p_conversation,auth.uid()) then raise insufficient_privilege using message='Current conversation membership is required.'; end if;
+  select * into c from public.project_conversations where organization_id=p_org and id=p_conversation for update;
+  if p_active is null or (p_user<>auth.uid() or p_active) and not(c.created_by=auth.uid() or coalesce(private.admin_level(p_org,auth.uid(),'neighborhood',(select division_id from public.neighborhoods where organization_id=p_org and id=c.neighborhood_id),c.neighborhood_id,null)<=3,false)) then raise insufficient_privilege using message='Only the conversation owner or a participating project administrator can manage participants.'; end if;
+  if p_active and (not private.can_use_project_chat(p_org,p_user,c.neighborhood_id,c.home_id) or c.audience='internal' and not private.is_internal_member(p_org,p_user)) then raise check_violation using message='This person does not have current access to the project or home.'; end if;
+  if p_active then
+    insert into public.project_conversation_members(organization_id,conversation_id,user_id) values(p_org,p_conversation,p_user) on conflict(organization_id,conversation_id,user_id) do update set removed_at=null where project_conversation_members.removed_at is not null;
+  else update public.project_conversation_members set removed_at=now() where organization_id=p_org and conversation_id=p_conversation and user_id=p_user and removed_at is null; end if;
+  if not found then return; end if;
+  select display_name into actor from public.profiles where id=auth.uid(); select display_name into target from public.profiles where id=p_user;
+  insert into public.project_messages(organization_id,conversation_id,author_id,author_name,body,kind,operation_id) values(p_org,p_conversation,auth.uid(),coalesce(actor,'Team member'),coalesce(actor,'Team member')||case when p_active then ' added ' else ' removed ' end||coalesce(target,'a participant')||'.','system',gen_random_uuid());
+  perform private.append_audit(p_org,auth.uid(),'conversation.membership_changed','project_conversation',p_conversation,null,null,jsonb_build_object('user_id',p_user,'active',p_active));
+end; $$;
+create function private.send_project_message(p_org uuid,p_actor uuid,p_operation uuid,p_payload jsonb) returns jsonb language plpgsql security definer set search_path='' as $$
+declare c uuid:=(p_payload->>'conversation_id')::uuid; result public.project_messages; reply uuid:=nullif(p_payload->>'reply_to','')::uuid;
+begin
+  perform 1 from public.project_conversation_members where organization_id=p_org and conversation_id=c and user_id=p_actor for share;
+  if not private.can_read_project_chat(p_org,c,p_actor) then raise insufficient_privilege using message='Current conversation and project membership are required.'; end if;
+  if length(trim(coalesce(p_payload->>'body',''))) not between 1 and 4000 then raise check_violation using message='Enter a message of 1–4000 characters.'; end if;
+  if reply is not null and not exists(select 1 from public.project_messages where organization_id=p_org and conversation_id=c and id=reply) then raise check_violation using message='Reply to a message in this conversation.'; end if;
+  insert into public.project_messages(organization_id,conversation_id,author_id,author_name,body,operation_id,reply_to)
+    values(p_org,c,p_actor,coalesce((select display_name from public.profiles where id=p_actor),'Team member'),trim(p_payload->>'body'),p_operation,reply) returning * into result;
+  return to_jsonb(result);
+end; $$;
+do $patch$
+declare definition text; needle text;
+begin
+  definition:=replace(pg_get_functiondef('public.execute_command(text,jsonb)'::regprocedure),chr(13)||chr(10),chr(10));
+  needle:='if p_command_name in (''schedule_company_inspection'',''allocate_inspection'',''review_inspection'',''bulk_review_observations'',''decide_reinspection'') then';
+  if strpos(definition,needle)=0 then raise exception 'Review the command gateway before adding project messages'; end if;
+  execute replace(definition,needle,'if p_command_name=''send_project_message'' then
+    v_result:=private.command_success(v_operation_id,private.send_project_message(v_organization_id,v_actor,v_operation_id,v_payload));
+  elsif p_command_name in (''schedule_company_inspection'',''allocate_inspection'',''review_inspection'',''bulk_review_observations'',''decide_reinspection'') then');
+end; $patch$;
+
+revoke all on function public.onboard_home_layout(uuid,uuid,text,uuid,jsonb,jsonb),public.observation_activity(uuid,uuid,timestamptz,text),public.project_chat_scopes(uuid),public.project_chat_people(uuid,uuid,uuid,text),public.project_chat_create(uuid,uuid,uuid,uuid,text,uuid[],text),public.project_chat_inbox(uuid,integer,text),public.project_chat_read(uuid,uuid,bigint),public.project_chat_mark_read(uuid,uuid,bigint),public.project_chat_set_member(uuid,uuid,uuid,boolean) from public,anon;
+grant execute on function public.onboard_home_layout(uuid,uuid,text,uuid,jsonb,jsonb),public.observation_activity(uuid,uuid,timestamptz,text),public.project_chat_scopes(uuid),public.project_chat_people(uuid,uuid,uuid,text),public.project_chat_create(uuid,uuid,uuid,uuid,text,uuid[],text),public.project_chat_inbox(uuid,integer,text),public.project_chat_read(uuid,uuid,bigint),public.project_chat_mark_read(uuid,uuid,bigint),public.project_chat_set_member(uuid,uuid,uuid,boolean) to authenticated;
+do $$ begin
+  if exists(select 1 from pg_publication where pubname='supabase_realtime') and not exists(select 1 from pg_publication_tables where pubname='supabase_realtime' and schemaname='public' and tablename='project_messages') then alter publication supabase_realtime add table public.project_messages; end if;
+end; $$;
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202610290045_expanded_space_type_catalog.sql
+-- ============================================================================
+
+-- Extend the global catalog without reactivating retired types or overwriting administrator labels.
+begin;
+insert into public.space_types(code,label) values
+('kitchen','Kitchen'),
+('living','Living area'),
+('dining','Dining area'),
+('great_room','Great room'),
+('family_room','Family room'),
+('breakfast_nook','Breakfast nook'),
+('formal_dining_room','Formal dining room'),
+('sitting_room','Sitting room'),
+('sunroom','Sunroom'),
+('conservatory','Conservatory'),
+('den','Den'),
+('library','Library'),
+('home_office','Home office'),
+('study','Study'),
+('playroom','Playroom'),
+('game_room','Game room'),
+('media_room','Media room'),
+('home_theater','Home theater'),
+('music_room','Music room'),
+('craft_room','Craft room'),
+('hobby_room','Hobby room'),
+('home_gym','Home gym'),
+('yoga_room','Yoga room'),
+('prayer_room','Prayer room'),
+('guest_lounge','Guest lounge'),
+('bedroom','Bedroom'),
+('primary_bedroom','Primary bedroom'),
+('guest_bedroom','Guest bedroom'),
+('childrens_bedroom','Children’s bedroom'),
+('nursery','Nursery'),
+('bunk_room','Bunk room'),
+('bathroom','Bathroom'),
+('primary_bathroom','Primary bathroom'),
+('guest_bathroom','Guest bathroom'),
+('powder_room','Powder room'),
+('shower_room','Shower room'),
+('wet_room','Wet room'),
+('toilet_room','Toilet room'),
+('dressing_room','Dressing room'),
+('walk_in_closet','Walk-in closet'),
+('linen_closet','Linen closet'),
+('sauna','Sauna'),
+('steam_room','Steam room'),
+('entry_foyer','Entry foyer'),
+('vestibule','Vestibule'),
+('hallway','Hallway'),
+('corridor','Corridor'),
+('landing','Landing'),
+('staircase','Staircase'),
+('stairwell','Stairwell'),
+('elevator_lobby','Elevator lobby'),
+('elevator_shaft','Elevator shaft'),
+('mudroom','Mudroom'),
+('breezeway','Breezeway'),
+('accessibility_ramp','Accessibility ramp'),
+('laundry','Laundry'),
+('utility_room','Utility room'),
+('pantry','Pantry'),
+('walk_in_pantry','Walk-in pantry'),
+('butlers_pantry','Butler’s pantry'),
+('scullery','Scullery'),
+('storage_room','Storage room'),
+('closet','Closet'),
+('coat_closet','Coat closet'),
+('under_stair_storage','Under-stair storage'),
+('attic','Attic'),
+('basement','Basement'),
+('crawl_space','Crawl space'),
+('wine_cellar','Wine cellar'),
+('cold_storage','Cold storage'),
+('safe_room','Safe room'),
+('storm_shelter','Storm shelter'),
+('workshop','Workshop'),
+('garage','Garage'),
+('carport','Carport'),
+('bicycle_storage','Bicycle storage'),
+('refuse_room','Refuse room'),
+('janitor_closet','Janitor closet'),
+('package_room','Package room'),
+('mechanical_room','Mechanical room'),
+('electrical_room','Electrical room'),
+('hvac_closet','HVAC closet'),
+('air_handler_room','Air handler room'),
+('boiler_room','Boiler room'),
+('water_heater_closet','Water heater closet'),
+('pump_room','Pump room'),
+('fire_sprinkler_room','Fire sprinkler room'),
+('communications_room','Communications room'),
+('server_room','Server room'),
+('solar_equipment_area','Solar equipment area'),
+('battery_storage_room','Battery storage room'),
+('generator_room','Generator room'),
+('meter_room','Meter room'),
+('service_shaft','Service shaft'),
+('exterior','Exterior'),
+('patio','Patio'),
+('porch','Porch'),
+('front_porch','Front porch'),
+('rear_porch','Rear porch'),
+('screened_porch','Screened porch'),
+('deck','Deck'),
+('balcony','Balcony'),
+('terrace','Terrace'),
+('roof_terrace','Roof terrace'),
+('courtyard','Courtyard'),
+('front_yard','Front yard'),
+('back_yard','Back yard'),
+('side_yard','Side yard'),
+('garden','Garden'),
+('landscape_area','Landscape area'),
+('driveway','Driveway'),
+('walkway','Walkway'),
+('sidewalk','Sidewalk'),
+('parking_area','Parking area'),
+('loading_area','Loading area'),
+('pool','Pool'),
+('pool_deck','Pool deck'),
+('spa','Spa'),
+('outdoor_kitchen','Outdoor kitchen'),
+('barbecue_area','Barbecue area'),
+('pergola','Pergola'),
+('gazebo','Gazebo'),
+('shed','Shed'),
+('greenhouse','Greenhouse'),
+('playground','Playground'),
+('pet_area','Pet area'),
+('retaining_wall_area','Retaining wall area'),
+('fence_and_gate_area','Fence and gate area'),
+('drainage_area','Drainage area'),
+('septic_area','Septic area'),
+('well_house','Well house'),
+('dock','Dock'),
+('roof','Roof'),
+('foundation_perimeter','Foundation perimeter'),
+('reception','Reception'),
+('lobby','Lobby'),
+('mail_room','Mail room'),
+('community_room','Community room'),
+('meeting_room','Meeting room'),
+('coworking_room','Coworking room'),
+('fitness_center','Fitness center'),
+('locker_room','Locker room'),
+('shared_restroom','Shared restroom'),
+('shared_kitchen','Shared kitchen'),
+('security_room','Security room'),
+('management_office','Management office'),
+('maintenance_room','Maintenance room'),
+('leasing_office','Leasing office'),
+('retail_unit','Retail unit'),
+('guest_suite','Guest suite'),
+('other','Other')
+on conflict do nothing;
+create or replace function public.get_report_metrics(p_organization_id uuid, p_filters jsonb default '{}'::jsonb)
+returns jsonb language plpgsql stable security invoker set search_path = ''
+as $$
+declare
+  result jsonb;
+  state_filter text := nullif(trim(p_filters->>'state'), '');
+  priority_filter text := nullif(trim(p_filters->>'priority'), '');
+  neighborhood_filter uuid := nullif(p_filters->>'neighborhood_id', '')::uuid;
+  home_filter uuid := nullif(p_filters->>'home_id', '')::uuid;
+  date_from_filter date := nullif(p_filters->>'date_from', '')::date;
+  date_to_filter date := nullif(p_filters->>'date_to', '')::date;
+begin
+  if not exists (select 1 from public.my_organizations where id = p_organization_id) then
+    raise exception using errcode = '42501', message = 'forbidden';
+  end if;
+  if state_filter is not null and state_filter not in ('draft','submitted','assigned','acknowledged','in_progress','blocked','ready_for_verification','rework_required','verified','cancelled') then
+    raise exception using errcode = '22023', message = 'invalid state filter';
+  end if;
+  if priority_filter is not null and priority_filter not in ('low','normal','high','critical') then
+    raise exception using errcode = '22023', message = 'invalid priority filter';
+  end if;
+  if date_from_filter is not null and date_to_filter is not null and date_from_filter > date_to_filter then
+    raise exception using errcode = '22023', message = 'invalid report date range';
+  end if;
+
+  with filtered_work as materialized (
+    select w.*
+    from public.work_items w
+    where w.organization_id = p_organization_id
+      and (neighborhood_filter is null or w.neighborhood_id = neighborhood_filter)
+      and (home_filter is null or w.home_id = home_filter)
+      and (state_filter is null or w.state::text = state_filter)
+      and (priority_filter is null or w.priority::text = priority_filter)
+      and (date_from_filter is null or w.created_at >= date_from_filter::timestamptz)
+      and (date_to_filter is null or w.created_at < (date_to_filter + 1)::timestamptz)
+  ),
+  acknowledgment as (
+    select
+      round((percentile_cont(.5) within group (order by extract(epoch from (ae.acknowledged_at - ae.assigned_at))) / 3600)::numeric, 1) median_hours,
+      count(*) sample
+    from public.assignment_episodes ae
+    join filtered_work w on w.organization_id = ae.organization_id and w.id = ae.work_item_id
+    where ae.acknowledged_at is not null
+  ),
+  first_pass as (
+    select
+      round(100.0 * count(*) filter (where v.decision = 'accepted') / nullif(count(*), 0), 1) acceptance_pct,
+      count(*) sample
+    from public.correction_attempts ca
+    join filtered_work w on w.organization_id = ca.organization_id and w.id = ca.work_item_id
+    join public.verifications v on v.organization_id = ca.organization_id and v.correction_attempt_id = ca.id
+    where ca.attempt_number = 1
+  ),
+  states as (
+    select fw.state, count(*) total from filtered_work fw group by fw.state
+  )
+  select jsonb_build_object(
+    'open_count', (select count(*) from filtered_work where state not in ('draft','verified','cancelled')),
+    'overdue_count', (select count(*) from filtered_work where due_at < now() and state not in ('draft','verified','cancelled')),
+    'acknowledgment_median_hours', case when acknowledgment.sample >= 10 then coalesce(acknowledgment.median_hours, 0) else null end,
+    'acknowledgment_sample', acknowledgment.sample,
+    'first_pass_acceptance_pct', case when first_pass.sample >= 10 then coalesce(first_pass.acceptance_pct, 0) else null end,
+    'first_pass_sample', first_pass.sample,
+    'small_sample_threshold', 10,
+    'by_state', coalesce((select jsonb_agg(jsonb_build_object('label', replace(states.state::text, '_', ' '), 'value', states.total) order by states.state::text) from states), '[]'::jsonb),
+    'filters', p_filters,
+    'timezone', (select timezone from public.organizations where id = p_organization_id)
+  ) into result
+  from acknowledgment cross join first_pass;
+  return result;
+end;
+$$;
+
+revoke all on function public.get_report_metrics(uuid, jsonb) from public, anon;
+grant execute on function public.get_report_metrics(uuid, jsonb) to authenticated;
+
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202610290046_org_admin_role_catalog.sql
+-- ============================================================================
+
+begin;
+
+create or replace function public.manage_role_catalog(p_organization_id uuid default null) returns jsonb
+language plpgsql stable security definer set search_path = '' as $$
+begin
+  if p_organization_id is null or not private.has_permission(p_organization_id, auth.uid(), 'access.manage', null, null) then
+    raise exception using errcode = '42501', message = 'organization access management permission required';
+  end if;
+  return jsonb_build_object(
+    'roles', (
+      select coalesce(jsonb_agg(to_jsonb(r) || jsonb_build_object(
+        'enabled', coalesce((select a.enabled from public.organization_roles a where a.organization_id = p_organization_id and a.role_code = r.code), false),
+        'permissions', (select coalesce(jsonb_agg(permission_code order by permission_code), '[]') from public.role_permissions where role_code = r.code),
+        'assignment_count', (select count(*) from public.role_assignments a where a.role_code = r.code and a.revoked_at is null and a.organization_id = p_organization_id)
+      ) order by r.label), '[]')
+      from public.roles r
+      where r.organization_id is null or r.organization_id = p_organization_id
+    ),
+    'permissions', (select coalesce(jsonb_agg(to_jsonb(p) order by p.code), '[]') from public.permissions p)
+  );
+end; $$;
+
+create or replace function public.save_role_definition(
+  p_organization_id uuid,
+  p_code text,
+  p_label text,
+  p_description text,
+  p_scopes public.scope_kind[],
+  p_permissions text[],
+  p_active boolean,
+  p_default boolean,
+  p_requires_company boolean,
+  p_expected_version bigint default null
+)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare v_code text; previous public.roles; result public.roles;
+begin
+  if p_organization_id is null then
+    raise exception using errcode = '42501', message = 'organization access management permission required';
+  end if;
+  perform private.require_admin_permission(p_organization_id, 'access.manage');
+  perform 1 from public.organizations where id = p_organization_id for update;
+  if length(trim(coalesce(p_label, ''))) not between 2 and 120 or length(coalesce(p_description, '')) > 2000 or coalesce(cardinality(p_scopes), 0) < 1
+    or coalesce(cardinality(p_permissions), 0) < 1 or cardinality(p_permissions) > 30
+    or exists(select 1 from unnest(p_permissions) v where not exists(select 1 from public.permissions where code = v)) then
+    raise exception using errcode = '22023', message = 'a role needs a name, valid scopes, and at least one catalog permission';
+  end if;
+  if 'config.manage' = any(p_permissions) and (p_scopes <> array['organization']::public.scope_kind[] or p_requires_company) then
+    raise exception using errcode = '22023', message = 'organization configuration requires organization-only scope';
+  end if;
+  if p_permissions && array['structure.manage', 'access.manage', 'roster.manage'] and
+    (not (p_scopes <@ array['organization', 'division', 'neighborhood']::public.scope_kind[]) or p_requires_company) then
+    raise exception using errcode = '22023', message = 'builder administration requires organization, division, or neighborhood scope';
+  end if;
+  if 'company' = any(p_scopes) and not (p_permissions <@ array['company.users.manage', 'work.execute_assigned', 'comment.create_shared', 'evidence.upload', 'inspection.perform', 'inspection.findings.create']) then
+    raise exception using errcode = '22023', message = 'company scope supports only company users and assigned-work permissions';
+  end if;
+  if 'company.users.manage' = any(p_permissions) and not ('access.manage' = any(p_permissions)) and (not p_requires_company or p_scopes <> array['company']::public.scope_kind[]) then
+    raise exception using errcode = '22023', message = 'vendor user administration requires company-only scope';
+  end if;
+  if p_code is not null then
+    select * into previous from public.roles where roles.code = p_code for update;
+    if not found or previous.organization_id is distinct from p_organization_id then
+      raise exception using errcode = '42501', message = 'this role belongs to a different catalog';
+    end if;
+    if previous.version is distinct from p_expected_version then
+      raise exception using errcode = '40001', message = 'role changed; reload before saving';
+    end if;
+    if exists(select 1 from public.role_assignments where role_code = p_code and revoked_at is null and (ends_at is null or ends_at > now()) and not (scope_kind = any(p_scopes))) then
+      raise exception using errcode = '23514', message = 'reassign existing grants before removing their allowed scope';
+    end if;
+    v_code := p_code;
+    update public.roles r set label = trim(p_label), description = trim(p_description), allowed_scope_kinds = p_scopes,
+      active = p_active, default_for_new_organizations = false, requires_company = p_requires_company,
+      version = r.version + 1, updated_at = now() where r.code = p_code returning * into result;
+    delete from public.role_permissions where role_code = p_code;
+  else
+    v_code := 'custom_' || replace(gen_random_uuid()::text, '-', '');
+    insert into public.roles(code, label, description, allowed_scope_kinds, organization_id, active, default_for_new_organizations, requires_company, immutable_seed)
+      values(v_code, trim(p_label), trim(p_description), p_scopes, p_organization_id, p_active, false, p_requires_company, false) returning * into result;
+    insert into public.organization_roles(organization_id, role_code) values(p_organization_id, v_code);
+  end if;
+  insert into public.role_permissions(role_code, permission_code) select v_code, v from (select distinct unnest(p_permissions) v) p;
+  perform private.append_audit(p_organization_id, auth.uid(), 'role.saved', 'role', null, null, to_jsonb(previous), to_jsonb(result), jsonb_build_object('code', v_code, 'permissions', p_permissions));
+  return to_jsonb(result);
+end; $$;
+
+create or replace function public.set_organization_role(p_organization_id uuid, p_role_code text, p_enabled boolean) returns jsonb
+language plpgsql security definer set search_path = '' as $$
+begin
+  if p_organization_id is null then
+    raise exception using errcode = '42501', message = 'organization access management permission required';
+  end if;
+  perform private.require_admin_permission(p_organization_id, 'access.manage');
+  perform 1 from public.organizations where id = p_organization_id for update;
+  if not exists(select 1 from public.roles where code = p_role_code and (organization_id is null or organization_id = p_organization_id) and (active or not p_enabled)) then
+    raise exception using errcode = '22023', message = 'role is unavailable for this organization';
+  end if;
+  insert into public.organization_roles(organization_id, role_code, enabled) values(p_organization_id, p_role_code, p_enabled)
+    on conflict(organization_id, role_code) do update set enabled = excluded.enabled, updated_at = now();
+  perform private.append_audit(p_organization_id, auth.uid(), 'role.availability_changed', 'role', null, null, null, null, jsonb_build_object('code', p_role_code, 'enabled', p_enabled));
+  return jsonb_build_object('role_code', p_role_code, 'enabled', p_enabled);
+end; $$;
+
+create or replace function public.platform_get_organization(p_id uuid) returns jsonb
+language plpgsql stable security definer set search_path = '' as $$
+declare result jsonb;
+begin
+  perform private.require_platform_admin();
+  select jsonb_build_object(
+    'organization', to_jsonb(o),
+    'onboarding', (select to_jsonb(b) from public.organization_onboarding b where b.organization_id = o.id),
+    'invitations', (select coalesce(jsonb_agg(to_jsonb(i)), '[]') from (select id, normalized_email, status, expires_at, created_at, delivery_error from public.invites where organization_id = o.id and proposed_membership->>'platform_onboarding' = 'true' order by created_at desc limit 20) i),
+    'activity', (select coalesce(jsonb_agg(to_jsonb(a)), '[]') from (select action, created_at from public.platform_audit_events where organization_id = o.id order by created_at desc limit 20) a)
+  )
+  into result from public.organizations o where o.id = p_id;
+  if result is null then raise exception using errcode = '02000', message = 'organization not found'; end if;
+  return result;
+end; $$;
+
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202610290047_seed_buildtrack_dev_role_users.sql
+-- ============================================================================
+
+-- Seed test users for remaining roles in BuildTrack Development when present.
+
+begin;
+
+do $$
+declare
+  v_instance uuid := '00000000-0000-0000-0000-000000000000';
+  v_org_id uuid := 'e46a5e61-db90-4053-b92d-defd077839eb';
+  v_grantor_id uuid := '3c1cd17d-4431-46e5-b63d-4e478cbc3bf6';
+  v_division_id uuid := '4a3f4495-d014-4bbb-bf0e-e28e351c35c5';
+  v_neighborhood_id uuid := '23fbb143-254c-472f-9c1c-37f50f6ac8c8';
+  v_home_id uuid := '753b91ef-781f-41a9-ac06-bd6c8b9ea91b';
+  v_company_id uuid := '50000000-0000-4000-8000-000000000101';
+  v_specialty_id uuid := '51000000-0000-4000-8000-000000000101';
+  v_work_item_id uuid := '70000000-0000-4000-8000-000000000101';
+  v_episode_id uuid := '71000000-0000-4000-8000-000000000101';
+  v_user record;
+  v_dev_password text := nullif(current_setting('buildtrack.dev_seed_password', true), '');
+begin
+  -- Development fixtures require an explicit per-session password. Existing
+  -- installations are unaffected; this prevents future automatic shared logins.
+  if v_dev_password is null then return; end if;
+  if length(v_dev_password)<12 then raise check_violation using message='Choose a development seed password of at least 12 characters.'; end if;
+  if not exists (select 1 from public.organizations where id = v_org_id) then
+    return;
+  end if;
+
+  -- Ensure all available shared roles are enabled for BuildTrack Development
+  insert into public.organization_roles (organization_id, role_code, enabled)
+  select v_org_id, r.code, true
+  from public.roles r
+  where r.organization_id is null
+    and r.active
+    and r.release_state = 'available'
+  on conflict (organization_id, role_code) do update
+    set enabled = true;
+
+  -- Create auth users, identities, and completed profiles
+  for v_user in
+    select * from (values
+      ('10000000-0000-4000-8000-000000000101'::uuid, 'division.admin@buildtrack.test', 'Devon Division Admin', 'Devon', 'Division Admin', 'internal'::public.affiliation_kind),
+      ('10000000-0000-4000-8000-000000000102'::uuid, 'area.manager@buildtrack.test', 'Morgan Area Manager', 'Morgan', 'Area Manager', 'internal'::public.affiliation_kind),
+      ('10000000-0000-4000-8000-000000000103'::uuid, 'contributor@buildtrack.test', 'Casey Contributor', 'Casey', 'Contributor', 'internal'::public.affiliation_kind),
+      ('10000000-0000-4000-8000-000000000104'::uuid, 'inspector@buildtrack.test', 'Elliot Inspector', 'Elliot', 'Inspector', 'internal'::public.affiliation_kind),
+      ('10000000-0000-4000-8000-000000000105'::uuid, 'vendor.admin@buildtrack.test', 'Victor Vendor Admin', 'Victor', 'Vendor Admin', 'external'::public.affiliation_kind),
+      ('10000000-0000-4000-8000-000000000106'::uuid, 'vendor.tech@buildtrack.test', 'Taylor Vendor Tech', 'Taylor', 'Vendor Tech', 'external'::public.affiliation_kind)
+    ) as t(id, email, display_name, first_name, last_name, affiliation)
+  loop
+    insert into auth.users (
+      instance_id, id, aud, role, email, encrypted_password, email_confirmed_at,
+      created_at, updated_at, raw_app_meta_data, raw_user_meta_data, is_super_admin,
+      confirmation_token, email_change, email_change_token_new, recovery_token
+    )
+    values (
+      v_instance,
+      v_user.id,
+      'authenticated',
+      'authenticated',
+      v_user.email,
+      extensions.crypt(v_dev_password, extensions.gen_salt('bf')),
+      now(),
+      now(),
+      now(),
+      '{"provider":"email","providers":["email"]}'::jsonb,
+      jsonb_build_object('display_name', v_user.display_name),
+      false,
+      '', '', '', ''
+    )
+    on conflict (id) do update
+      set email = excluded.email,
+          email_confirmed_at = coalesce(auth.users.email_confirmed_at, excluded.email_confirmed_at),
+          raw_user_meta_data = excluded.raw_user_meta_data,
+          updated_at = now();
+
+    insert into auth.identities (
+      id, user_id, provider_id, identity_data, provider, last_sign_in_at, created_at, updated_at
+    )
+    values (
+      v_user.id,
+      v_user.id,
+      v_user.id::text,
+      jsonb_build_object('sub', v_user.id::text, 'email', v_user.email, 'email_verified', true, 'phone_verified', false),
+      'email',
+      now(),
+      now(),
+      now()
+    )
+    on conflict (id) do update
+      set identity_data = excluded.identity_data,
+          updated_at = now();
+
+    insert into public.profiles (
+      id, display_name, first_name, last_name, completed_at, preferred_locale, timezone
+    )
+    values (
+      v_user.id,
+      v_user.display_name,
+      v_user.first_name,
+      v_user.last_name,
+      now(),
+      'en',
+      'America/New_York'
+    )
+    on conflict (id) do update
+      set display_name = excluded.display_name,
+          first_name = excluded.first_name,
+          last_name = excluded.last_name,
+          completed_at = coalesce(public.profiles.completed_at, excluded.completed_at),
+          updated_at = now();
+
+    insert into public.organization_memberships (
+      organization_id, user_id, affiliation, status, joined_at
+    )
+    values (
+      v_org_id,
+      v_user.id,
+      v_user.affiliation,
+      'active',
+      now()
+    )
+    on conflict (organization_id, user_id) do update
+      set affiliation = excluded.affiliation,
+          status = 'active',
+          ended_at = null;
+  end loop;
+
+  -- Create active vendor company and coverage for BuildTrack Development
+  insert into public.companies (
+    id, organization_id, name, external_vendor_reference, status, owner_scope_kind, owner_authority_level, created_by
+  )
+  values (
+    v_company_id, v_org_id, 'Apex Trade Partners', 'VND-APEX-01', 'active', 'organization', 1, v_grantor_id
+  )
+  on conflict (organization_id, name) do update
+    set status = 'active',
+        updated_at = now()
+  returning id into v_company_id;
+
+  insert into public.company_access_grants (
+    organization_id, company_id, scope_kind, authority_level, granted_by
+  )
+  select v_org_id, v_company_id, 'organization', 1, v_grantor_id
+  where not exists (
+    select 1 from public.company_access_grants g
+    where g.organization_id = v_org_id
+      and g.company_id = v_company_id
+      and g.scope_kind = 'organization'
+      and g.revoked_at is null
+  );
+
+  -- Company memberships for Vendor Manager (vendor_admin) and Vendor Tradesman (trade_technician)
+  insert into public.company_memberships (
+    organization_id, company_id, user_id, kind, granted_by, authority_level
+  )
+  select v_org_id, v_company_id, '10000000-0000-4000-8000-000000000105'::uuid, 'manager', v_grantor_id, 1
+  where not exists (
+    select 1 from public.company_memberships cm
+    where cm.organization_id = v_org_id
+      and cm.company_id = v_company_id
+      and cm.user_id = '10000000-0000-4000-8000-000000000105'::uuid
+      and cm.revoked_at is null
+      and cm.active_to is null
+  );
+
+  insert into public.company_memberships (
+    organization_id, company_id, user_id, kind, granted_by, authority_level
+  )
+  select v_org_id, v_company_id, '10000000-0000-4000-8000-000000000106'::uuid, 'technician', v_grantor_id, 1
+  where not exists (
+    select 1 from public.company_memberships cm
+    where cm.organization_id = v_org_id
+      and cm.company_id = v_company_id
+      and cm.user_id = '10000000-0000-4000-8000-000000000106'::uuid
+      and cm.revoked_at is null
+      and cm.active_to is null
+  );
+
+  -- Role assignments for all 6 remaining roles
+  -- 1. Divisional Admin (division_admin)
+  insert into public.role_assignments (
+    organization_id, user_id, role_code, scope_kind, division_id, authority_level, granted_by
+  )
+  select v_org_id, '10000000-0000-4000-8000-000000000101'::uuid, 'division_admin', 'division', v_division_id, 1, v_grantor_id
+  where not exists (
+    select 1 from public.role_assignments ra
+    where ra.organization_id = v_org_id
+      and ra.user_id = '10000000-0000-4000-8000-000000000101'::uuid
+      and ra.role_code = 'division_admin'
+      and ra.revoked_at is null
+  );
+
+  -- 2. Area Construction Manager (neighborhood_admin)
+  insert into public.role_assignments (
+    organization_id, user_id, role_code, scope_kind, neighborhood_id, authority_level, granted_by
+  )
+  select v_org_id, '10000000-0000-4000-8000-000000000102'::uuid, 'neighborhood_admin', 'neighborhood', v_neighborhood_id, 1, v_grantor_id
+  where not exists (
+    select 1 from public.role_assignments ra
+    where ra.organization_id = v_org_id
+      and ra.user_id = '10000000-0000-4000-8000-000000000102'::uuid
+      and ra.role_code = 'neighborhood_admin'
+      and ra.revoked_at is null
+  );
+
+  -- 3. Internal contributor (internal_contributor)
+  insert into public.role_assignments (
+    organization_id, user_id, role_code, scope_kind, neighborhood_id, authority_level, granted_by
+  )
+  select v_org_id, '10000000-0000-4000-8000-000000000103'::uuid, 'internal_contributor', 'neighborhood', v_neighborhood_id, 1, v_grantor_id
+  where not exists (
+    select 1 from public.role_assignments ra
+    where ra.organization_id = v_org_id
+      and ra.user_id = '10000000-0000-4000-8000-000000000103'::uuid
+      and ra.role_code = 'internal_contributor'
+      and ra.revoked_at is null
+  );
+
+  -- 4. Inspector (inspector)
+  insert into public.role_assignments (
+    organization_id, user_id, role_code, scope_kind, neighborhood_id, authority_level, granted_by
+  )
+  select v_org_id, '10000000-0000-4000-8000-000000000104'::uuid, 'inspector', 'neighborhood', v_neighborhood_id, 1, v_grantor_id
+  where not exists (
+    select 1 from public.role_assignments ra
+    where ra.organization_id = v_org_id
+      and ra.user_id = '10000000-0000-4000-8000-000000000104'::uuid
+      and ra.role_code = 'inspector'
+      and ra.revoked_at is null
+  );
+
+  -- 5. Vendor Manager / Company Admin (vendor_admin)
+  insert into public.role_assignments (
+    organization_id, user_id, role_code, scope_kind, company_id, authority_level, granted_by
+  )
+  select v_org_id, '10000000-0000-4000-8000-000000000105'::uuid, 'vendor_admin', 'company', v_company_id, 1, v_grantor_id
+  where not exists (
+    select 1 from public.role_assignments ra
+    where ra.organization_id = v_org_id
+      and ra.user_id = '10000000-0000-4000-8000-000000000105'::uuid
+      and ra.role_code = 'vendor_admin'
+      and ra.revoked_at is null
+  );
+
+  -- 6. Vendor Tradesman / Vendor (trade_technician)
+  insert into public.role_assignments (
+    organization_id, user_id, role_code, scope_kind, company_id, authority_level, granted_by
+  )
+  select v_org_id, '10000000-0000-4000-8000-000000000106'::uuid, 'trade_technician', 'company', v_company_id, 1, v_grantor_id
+  where not exists (
+    select 1 from public.role_assignments ra
+    where ra.organization_id = v_org_id
+      and ra.user_id = '10000000-0000-4000-8000-000000000106'::uuid
+      and ra.role_code = 'trade_technician'
+      and ra.revoked_at is null
+  );
+
+  -- Trade specialty and neighborhood roster for Apex Trade Partners
+  insert into public.trade_specialties (id, organization_id, code, name, active)
+  values (v_specialty_id, v_org_id, 'GENERAL', 'General Contracting & Finish', true)
+  on conflict (organization_id, code) do update
+    set active = true
+  returning id into v_specialty_id;
+
+  insert into public.neighborhood_trade_rosters (
+    organization_id, neighborhood_id, company_id, specialty_id, status, granted_by, authority_level
+  )
+  select v_org_id, v_neighborhood_id, v_company_id, v_specialty_id, 'active', v_grantor_id, 1
+  where not exists (
+    select 1 from public.neighborhood_trade_rosters r
+    where r.organization_id = v_org_id
+      and r.neighborhood_id = v_neighborhood_id
+      and r.company_id = v_company_id
+      and r.specialty_id = v_specialty_id
+      and r.status = 'active'
+      and r.active_to is null
+  );
+
+  -- Active inspection engagement for Elliot Inspector on Lot 1
+  insert into public.inspection_engagements (
+    organization_id, neighborhood_id, home_id, inspector_user_id, purpose, starts_at, ends_at
+  )
+  select v_org_id, v_neighborhood_id, v_home_id, '10000000-0000-4000-8000-000000000104'::uuid,
+    'Pre-walkthrough quality inspection', now() - interval '1 day', now() + interval '30 days'
+  where not exists (
+    select 1 from public.inspection_engagements ie
+    where ie.organization_id = v_org_id
+      and ie.home_id = v_home_id
+      and ie.inspector_user_id = '10000000-0000-4000-8000-000000000104'::uuid
+      and ie.revoked_at is null
+  );
+
+  -- Sample assigned work item for vendor accounts.
+  insert into public.work_items (
+    id, organization_id, neighborhood_id, home_id, origin, title, description,
+    priority, safety_flag, state, created_by, submitted_at, due_at
+  )
+  values (
+    v_work_item_id,
+    v_org_id,
+    v_neighborhood_id,
+    v_home_id,
+    'internal_observation',
+    'Cabinet door alignment & trim touch-up',
+    'Align upper kitchen cabinet doors and complete base trim touch-up prior to walkthrough.',
+    'high',
+    false,
+    'assigned',
+    v_grantor_id,
+    now() - interval '1 day',
+    now() + interval '5 days'
+  )
+  on conflict (id) do nothing;
+
+  insert into public.assignment_episodes (
+    id, organization_id, work_item_id, company_id, technician_user_id, specialty_id, assigned_by, assigned_at, due_at
+  )
+  values (
+    v_episode_id,
+    v_org_id,
+    v_work_item_id,
+    v_company_id,
+    '10000000-0000-4000-8000-000000000106'::uuid,
+    v_specialty_id,
+    v_grantor_id,
+    now() - interval '1 day',
+    now() + interval '5 days'
+  )
+  on conflict (id) do nothing;
+
+  update public.work_items
+  set current_assignment_id = v_episode_id
+  where id = v_work_item_id
+    and current_assignment_id is null;
+end $$;
+
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202610290048_disable_mfa_and_clear_factors.sql
+-- ============================================================================
+
+-- Temporarily disable MFA (AAL2) enforcement across all roles and clear existing MFA factor records.
+-- MFA will be reintroduced in a future phase.
+
+delete from auth.mfa_amr_claims;
+delete from auth.mfa_challenges;
+update auth.sessions
+   set factor_id = null,
+       aal = 'aal1'
+ where factor_id is not null
+    or aal <> 'aal1';
+delete from auth.mfa_factors;
+
+create or replace function private.require_aal2()
+returns boolean
+language sql
+stable
+set search_path = ''
+as $$
+  select auth.uid() is not null
+$$;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202610290049_inspection_lead_roles.sql
+-- ============================================================================
+
+begin;
+
+drop function if exists public.inspection_lead_options(uuid, uuid);
+create function public.inspection_lead_options(p_organization_id uuid, p_home_id uuid)
+returns table(user_id uuid, display_name text, role_label text)
+language plpgsql stable security definer set search_path = '' as $$
+declare
+  neighborhood uuid;
+begin
+  select h.neighborhood_id into neighborhood
+  from public.homes h
+  where h.organization_id = p_organization_id and h.id = p_home_id and h.archived_at is null;
+
+  if not found or not private.has_permission(p_organization_id, auth.uid(), 'inspection.manage', neighborhood, p_home_id) then
+    raise exception using errcode = '42501', message = 'inspection management permission is required for this home';
+  end if;
+
+  return query
+  select m.user_id, p.display_name, coalesce(relevant_role.label, 'Inspector')
+  from public.organization_memberships m
+  join public.profiles p on p.id = m.user_id
+  left join lateral (
+    select r.label
+    from public.role_assignments a
+    join public.roles r on r.code = a.role_code
+    where a.organization_id = p_organization_id
+      and a.user_id = m.user_id
+      and private.role_grant_enabled(a)
+      and a.revoked_at is null
+      and a.starts_at <= now()
+      and (a.ends_at is null or a.ends_at > now())
+      and exists (
+        select 1 from public.role_permissions rp
+        where rp.role_code = a.role_code
+          and rp.permission_code in ('inspection.perform', 'inspection.manage')
+      )
+      and (
+        (a.scope_kind <> 'company' and private.scope_contains(
+          p_organization_id, a.scope_kind, a.division_id, a.neighborhood_id, a.home_id,
+          'home'::public.scope_kind, null, neighborhood, p_home_id
+        ))
+        or (a.scope_kind = 'company' and private.company_covers(p_organization_id, a.company_id, neighborhood))
+      )
+    order by
+      (a.role_code = 'inspector') desc,
+      case a.scope_kind when 'home' then 4 when 'neighborhood' then 3 when 'division' then 2 when 'organization' then 1 else 0 end desc,
+      a.authority_level,
+      r.label
+    limit 1
+  ) relevant_role on true
+  where m.organization_id = p_organization_id and m.status = 'active' and (
+    private.has_permission(p_organization_id, m.user_id, 'inspection.perform', neighborhood, p_home_id)
+    or private.has_permission(p_organization_id, m.user_id, 'inspection.manage', neighborhood, p_home_id)
+    or exists (
+      select 1 from public.inspection_engagements e
+      where e.organization_id = p_organization_id
+        and e.home_id = p_home_id
+        and e.inspector_user_id = m.user_id
+        and e.revoked_at is null
+        and e.starts_at <= now()
+        and e.ends_at > now()
+    )
+  )
+  order by p.display_name, m.user_id;
+end; $$;
+
+revoke all on function public.inspection_lead_options(uuid, uuid) from public, anon;
+grant execute on function public.inspection_lead_options(uuid, uuid) to authenticated;
+
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202610290050_floor_plan_space_details.sql
+-- ============================================================================
+
+begin;
+
+alter table public.home_locations
+  add column level text,
+  add column square_feet numeric(10,2),
+  add constraint home_locations_level_length check(level is null or length(trim(level)) between 1 and 60),
+  add constraint home_locations_square_feet_range check(square_feet is null or square_feet > 0 and square_feet <= 1000000);
+
+create or replace function public.save_master_plan(p_org uuid,p_id uuid,p_division uuid,p_name text,p_spaces jsonb,p_active boolean,p_version bigint default null)
+returns jsonb language plpgsql security definer set search_path='' as $$
+declare r public.master_plans; previous public.master_plans;
+begin
+  if not private.active_member(p_org,auth.uid()) or not private.require_aal2() or not private.has_permission(p_org,auth.uid(),'plan.manage',null,null) and not exists(
+    select 1 from public.role_assignments a join public.role_permissions rp on rp.role_code=a.role_code and rp.permission_code='plan.manage'
+    where a.organization_id=p_org and a.user_id=auth.uid() and private.role_grant_enabled(a) and a.revoked_at is null and a.starts_at<=now() and (a.ends_at is null or a.ends_at>now())
+      and (a.scope_kind='organization' or a.scope_kind='division' and a.division_id=p_division)) then raise insufficient_privilege using message='Plan management in this division requires a verified administrator.'; end if;
+  if jsonb_typeof(p_spaces)<>'array' or jsonb_array_length(p_spaces) not between 1 and 200 or exists(
+    select 1 from jsonb_array_elements(p_spaces) s
+    where nullif(trim(s->>'name'),'') is null or length(s->>'name')>120
+      or not exists(select 1 from public.space_types t where t.code=s->>'type' and t.active)
+      or s ? 'level' and s->'level' <> 'null'::jsonb and (jsonb_typeof(s->'level')<>'string' or length(trim(s->>'level')) not between 1 and 60)
+      or s ? 'square_feet' and s->'square_feet' <> 'null'::jsonb and (jsonb_typeof(s->'square_feet')<>'number' or (s->>'square_feet')::numeric <= 0 or (s->>'square_feet')::numeric > 1000000)
+  ) or (select count(*) from jsonb_array_elements(p_spaces))<>(select count(distinct lower(trim(s->>'name'))) from jsonb_array_elements(p_spaces) s) then
+    raise check_violation using message='Choose a space type, unique name, valid level, and valid square footage for every space (1–200).';
+  end if;
+  if p_id is not null then
+    select * into previous from public.master_plans where organization_id=p_org and id=p_id for update;
+    if not found or previous.division_id<>p_division then raise insufficient_privilege using message='Plan is unavailable in this division.'; end if;
+    if p_version is null or previous.version<>p_version then raise serialization_failure using message='This plan changed. Refresh before saving.'; end if;
+    update public.master_plans set name=trim(p_name),spaces=p_spaces,active=p_active,version=version+1,updated_at=now() where id=p_id returning * into r;
+  else insert into public.master_plans(organization_id,division_id,name,spaces,active) values(p_org,p_division,trim(p_name),p_spaces,p_active) returning * into r; end if;
+  perform private.append_audit(p_org,auth.uid(),'plan.saved','master_plan',r.id,null,to_jsonb(previous),to_jsonb(r));
+  return to_jsonb(r);
+end; $$;
+
+create or replace function public.apply_home_plan(p_org uuid,p_home uuid,p_plan uuid,p_home_version bigint) returns jsonb language plpgsql security definer set search_path='' as $$
+declare h public.homes; plan public.master_plans; space jsonb;
+begin
+  select * into h from public.homes where organization_id=p_org and id=p_home for update;
+  if not found or not private.require_aal2() or not private.has_permission(p_org,auth.uid(),'structure.manage',h.neighborhood_id,h.id) then raise insufficient_privilege using message='Home management permission is required.'; end if;
+  if h.version<>p_home_version then raise serialization_failure using message='Home changed. Refresh before applying a plan.'; end if;
+  select p.* into plan from public.master_plans p join public.neighborhoods n on n.organization_id=p.organization_id and n.division_id=p.division_id where p.organization_id=p_org and p.id=p_plan and p.active and n.id=h.neighborhood_id;
+  if not found then raise check_violation using message='Choose an active plan from this home’s division.'; end if;
+  if exists(select 1 from public.home_locations where organization_id=p_org and home_id=p_home) then raise check_violation using message='Apply a plan before adding rooms. Existing rooms are preserved; customize them individually.'; end if;
+  for space in select value from jsonb_array_elements(plan.spaces) loop
+    insert into public.home_locations(organization_id,neighborhood_id,home_id,name,space_type_code,source_plan_id,level,square_feet)
+    values(p_org,h.neighborhood_id,h.id,trim(space->>'name'),space->>'type',plan.id,nullif(trim(space->>'level'),''),nullif(space->>'square_feet','')::numeric);
+  end loop;
+  update public.homes set master_plan_id=plan.id,master_plan_version=plan.version,master_plan_name=plan.name where id=h.id returning * into h;
+  perform private.append_audit(p_org,auth.uid(),'home.plan_applied','home',h.id,null,null,to_jsonb(h));
+  return to_jsonb(h);
+end; $$;
+
+create function public.save_home_space(p_org uuid,p_id uuid,p_home uuid,p_name text,p_parent uuid,p_active boolean,p_type text,p_level text,p_square_feet numeric)
+returns jsonb language plpgsql security definer set search_path='' as $$
+declare r public.home_locations;
+begin
+  if p_type is not null and not exists(select 1 from public.space_types where code=p_type and active) then raise check_violation using message='Choose an available space type.'; end if;
+  if nullif(trim(p_level),'') is not null and length(trim(p_level))>60 then raise check_violation using message='Level must be 60 characters or fewer.'; end if;
+  if p_square_feet is not null and (p_square_feet<=0 or p_square_feet>1000000) then raise check_violation using message='Square footage must be between 1 and 1,000,000.'; end if;
+  r:=public.admin_save_home_location(p_org,p_id,p_home,p_name,p_parent,p_active);
+  update public.home_locations set space_type_code=p_type,level=nullif(trim(p_level),''),square_feet=p_square_feet where id=r.id returning * into r;
+  return to_jsonb(r);
+end; $$;
+
+revoke all on function public.save_home_space(uuid,uuid,uuid,text,uuid,boolean,text,text,numeric) from public,anon;
+grant execute on function public.save_home_space(uuid,uuid,uuid,text,uuid,boolean,text,text,numeric) to authenticated;
+
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202610290051_remove_trade_specialties.sql
+-- ============================================================================
+
+begin;
+
+-- Company categories are now the only trade classification. Neighborhood
+-- eligibility is defined by vendor, neighborhood, and active date window.
+do $migration$
+declare definition text; needle text;
+begin
+  definition:=replace(pg_get_functiondef('public.execute_command(text,jsonb)'::regprocedure),chr(13)||chr(10),chr(10));
+
+  foreach needle in array array[
+    '  v_specialty_id uuid;'||chr(10),
+    '      v_specialty_id := nullif(v_payload ->> ''specialty_id'','''')::uuid;'||chr(10),
+    '          and (v_specialty_id is null or r.specialty_id = v_specialty_id) and r.status = ''active'''||chr(10),
+    '        return private.command_error(v_operation_id, ''ASSIGNEE_INELIGIBLE'', ''The company is not actively rostered for this neighborhood and specialty.'');',
+    '        organization_id, work_item_id, internal_assignee_user_id, company_id, technician_user_id, specialty_id,'||chr(10),
+    '        v_organization_id, v_item.id, v_internal_user, v_company_id, v_technician_id, v_specialty_id,'||chr(10),
+    '      insert into public.assignment_episodes(organization_id, work_item_id, internal_assignee_user_id, company_id, technician_user_id, specialty_id, assigned_by, due_at, reassignment_reason)'||chr(10),
+    '        values (v_organization_id, v_item.id, v_episode.internal_assignee_user_id, v_episode.company_id, v_episode.technician_user_id, v_episode.specialty_id, v_actor, coalesce(v_item.due_at, now() + interval ''1 day''), ''Reopened: '' || trim(v_payload ->> ''reason''))'||chr(10)
+  ] loop
+    if strpos(definition,needle)=0 then raise exception 'execute_command specialty fragment changed; review removal migration: %',needle; end if;
+  end loop;
+
+  definition:=replace(definition,'  v_specialty_id uuid;'||chr(10),'');
+  definition:=replace(definition,'      v_specialty_id := nullif(v_payload ->> ''specialty_id'','''')::uuid;'||chr(10),'');
+  definition:=replace(definition,'          and (v_specialty_id is null or r.specialty_id = v_specialty_id) and r.status = ''active'''||chr(10),'          and r.status = ''active'''||chr(10));
+  definition:=replace(definition,'        return private.command_error(v_operation_id, ''ASSIGNEE_INELIGIBLE'', ''The company is not actively rostered for this neighborhood and specialty.'');','        return private.command_error(v_operation_id, ''ASSIGNEE_INELIGIBLE'', ''The company is not currently eligible for this neighborhood.'');');
+  definition:=replace(definition,'        organization_id, work_item_id, internal_assignee_user_id, company_id, technician_user_id, specialty_id,'||chr(10),'        organization_id, work_item_id, internal_assignee_user_id, company_id, technician_user_id,'||chr(10));
+  definition:=replace(definition,'        v_organization_id, v_item.id, v_internal_user, v_company_id, v_technician_id, v_specialty_id,'||chr(10),'        v_organization_id, v_item.id, v_internal_user, v_company_id, v_technician_id,'||chr(10));
+  definition:=replace(definition,'      insert into public.assignment_episodes(organization_id, work_item_id, internal_assignee_user_id, company_id, technician_user_id, specialty_id, assigned_by, due_at, reassignment_reason)'||chr(10),'      insert into public.assignment_episodes(organization_id, work_item_id, internal_assignee_user_id, company_id, technician_user_id, assigned_by, due_at, reassignment_reason)'||chr(10));
+  definition:=replace(definition,'        values (v_organization_id, v_item.id, v_episode.internal_assignee_user_id, v_episode.company_id, v_episode.technician_user_id, v_episode.specialty_id, v_actor, coalesce(v_item.due_at, now() + interval ''1 day''), ''Reopened: '' || trim(v_payload ->> ''reason''))'||chr(10),'        values (v_organization_id, v_item.id, v_episode.internal_assignee_user_id, v_episode.company_id, v_episode.technician_user_id, v_actor, coalesce(v_item.due_at, now() + interval ''1 day''), ''Reopened: '' || trim(v_payload ->> ''reason''))'||chr(10));
+  execute definition;
+
+  definition:=replace(pg_get_functiondef('public.admin_set_catalog_status(uuid,text,uuid,boolean)'::regprocedure),chr(13)||chr(10),chr(10));
+  definition:=replace(definition,'when p_entity in (''company'',''specialty'',''roster'') then ''roster.manage''','when p_entity in (''company'',''roster'') then ''roster.manage''');
+  needle:=$remove$
+  elsif p_entity='specialty' then
+    select to_jsonb(t) into before_row from public.trade_specialties t where t.organization_id=p_organization_id and t.id=p_id for update;
+    update public.trade_specialties set active=p_active,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(trade_specialties.*) into after_row;$remove$;
+  if strpos(definition,needle)=0 then raise exception 'catalog specialty branch changed; review removal migration'; end if;
+  execute replace(definition,needle,'');
+
+  definition:=replace(pg_get_functiondef('private.require_catalog_authority(uuid,text,uuid,boolean)'::regprocedure),chr(13)||chr(10),chr(10));
+  definition:=replace(definition,'perform private.require_admin_permission(p_org,case when p_entity=''specialty'' then ''roster.manage'' else ''config.manage'' end);','perform private.require_admin_permission(p_org,''config.manage'');');
+  execute definition;
+end; $migration$;
+
+drop function if exists public.admin_save_specialty(uuid,uuid,text,text,boolean);
+drop function if exists public.admin_save_roster(uuid,uuid,uuid,uuid,uuid,public.organization_status,timestamptz,timestamptz);
+
+-- Preserve useful legacy classifications on the company before removing the
+-- redundant catalog. Existing company categories are retained.
+update public.companies c set categories=(
+  select array(
+    select distinct value from unnest(
+      coalesce(c.categories,'{}'::text[]) || coalesce((
+        select array_agg(lower(s.code))
+        from public.neighborhood_trade_rosters r
+        join public.trade_specialties s on s.organization_id=r.organization_id and s.id=r.specialty_id
+        where r.organization_id=c.organization_id and r.company_id=c.id
+      ),'{}'::text[])
+    ) value where nullif(trim(value),'') is not null order by value
+  )
+);
+
+-- Multiple old specialty rows can represent the same vendor/neighborhood.
+-- Keep the strongest current record before enforcing the new uniqueness rule.
+with ranked as (
+  select id,row_number() over(
+    partition by organization_id,neighborhood_id,company_id
+    order by (status='active') desc,(active_to is null) desc,active_from desc,created_at desc,id
+  ) ordinal
+  from public.neighborhood_trade_rosters
+)
+delete from public.neighborhood_trade_rosters r using ranked x where r.id=x.id and x.ordinal>1;
+
+alter table public.assignment_episodes drop column if exists specialty_id;
+alter table public.neighborhood_trade_rosters drop column if exists specialty_id;
+drop table if exists public.trade_specialties;
+
+create unique index neighborhood_trade_rosters_active
+  on public.neighborhood_trade_rosters(organization_id,neighborhood_id,company_id)
+  where status='active' and active_to is null;
+
+create function public.admin_save_roster(
+  p_organization_id uuid,p_id uuid,p_neighborhood_id uuid,p_company_id uuid,
+  p_status public.organization_status default 'active',p_active_from timestamptz default now(),p_active_to timestamptz default null
+) returns public.neighborhood_trade_rosters language plpgsql security definer set search_path='' as $$
+declare result public.neighborhood_trade_rosters; before_row jsonb; actor_level smallint;
+begin
+  actor_level:=private.management_level(p_organization_id,auth.uid(),'roster.manage','neighborhood',null,p_neighborhood_id,null);
+  if not private.require_aal2() or actor_level is null or not private.company_covers(p_organization_id,p_company_id,p_neighborhood_id) then
+    raise exception using errcode='42501',message='vendor eligibility is outside your scope or approved coverage';
+  end if;
+  if p_id is not null and exists(
+    select 1 from public.neighborhood_trade_rosters r where r.organization_id=p_organization_id and r.id=p_id
+      and (private.management_level(p_organization_id,auth.uid(),'roster.manage','neighborhood',null,r.neighborhood_id,null) is null
+        or private.management_level(p_organization_id,auth.uid(),'roster.manage','neighborhood',null,r.neighborhood_id,null)>r.authority_level)
+  ) then raise exception using errcode='42501',message='eligibility was granted by a higher administrator'; end if;
+  if p_active_to is not null and p_active_to<=p_active_from then raise exception using errcode='22023',message='roster end must follow its start'; end if;
+  if not exists(select 1 from public.neighborhoods where organization_id=p_organization_id and id=p_neighborhood_id and status='active') then raise exception using errcode='22023',message='neighborhood is unavailable'; end if;
+  if not exists(select 1 from public.companies where organization_id=p_organization_id and id=p_company_id and status='active') then raise exception using errcode='22023',message='company is unavailable'; end if;
+  if p_id is null then
+    insert into public.neighborhood_trade_rosters(organization_id,neighborhood_id,company_id,status,active_from,active_to,granted_by,authority_level)
+      values(p_organization_id,p_neighborhood_id,p_company_id,p_status,p_active_from,p_active_to,auth.uid(),actor_level) returning * into result;
+  else
+    select to_jsonb(r) into before_row from public.neighborhood_trade_rosters r where r.organization_id=p_organization_id and r.id=p_id for update;
+    update public.neighborhood_trade_rosters set neighborhood_id=p_neighborhood_id,company_id=p_company_id,status=p_status,active_from=p_active_from,active_to=p_active_to,
+      granted_by=coalesce(granted_by,auth.uid()),authority_level=least(authority_level,actor_level)
+      where organization_id=p_organization_id and id=p_id returning * into result;
+    if not found then raise exception using errcode='02000',message='roster entry not found'; end if;
+  end if;
+  perform private.append_audit(p_organization_id,auth.uid(),'roster.saved','neighborhood_trade_roster',result.id,null,before_row,to_jsonb(result));
+  return result;
+end; $$;
+
+revoke all on function public.admin_save_roster(uuid,uuid,uuid,uuid,public.organization_status,timestamptz,timestamptz) from public,anon;
+grant execute on function public.admin_save_roster(uuid,uuid,uuid,uuid,public.organization_status,timestamptz,timestamptz) to authenticated;
+
+update public.permissions set description='Manage categorized companies and neighborhood eligibility' where code='roster.manage';
+
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202610290052_organization_conversations.sql
+-- ============================================================================
+
+begin;
+
+-- Conversations are between organization members, not tied to a project or home.
+drop policy if exists project_conversation_read on public.project_conversations;
+drop policy if exists project_members_read on public.project_conversation_members;
+drop policy if exists project_messages_read on public.project_messages;
+
+drop function if exists public.project_chat_scopes(uuid);
+drop function if exists public.project_chat_people(uuid,uuid,uuid,text);
+drop function if exists public.project_chat_create(uuid,uuid,uuid,uuid,text,uuid[],text);
+drop function if exists public.project_chat_inbox(uuid,integer,text);
+drop function if exists public.project_chat_read(uuid,uuid,bigint);
+drop function if exists public.project_chat_mark_read(uuid,uuid,bigint);
+drop function if exists public.project_chat_set_member(uuid,uuid,uuid,boolean);
+drop function if exists private.send_project_message(uuid,uuid,uuid,jsonb);
+drop function if exists private.can_read_project_chat(uuid,uuid,uuid);
+drop function if exists private.can_use_project_chat(uuid,uuid,uuid,uuid);
+
+alter table public.project_conversations drop constraint if exists project_conversations_audience_check;
+update public.project_conversations set audience='partners' where audience='project';
+alter table public.project_conversations add constraint project_conversations_audience_check check(audience in ('internal','partners'));
+alter table public.project_conversations drop column home_id, drop column neighborhood_id;
+
+create function private.can_read_project_chat(p_org uuid,p_conversation uuid,p_user uuid) returns boolean language sql stable security definer set search_path='' as $$
+  select private.active_member(p_org,p_user) and exists(
+    select 1 from public.project_conversations c
+    join public.project_conversation_members m on m.organization_id=c.organization_id and m.conversation_id=c.id
+    where c.organization_id=p_org and c.id=p_conversation and m.user_id=p_user and m.removed_at is null
+      and (c.audience<>'internal' or private.is_internal_member(p_org,p_user))
+  );
+$$;
+
+create policy project_conversation_read on public.project_conversations for select to authenticated using(private.can_read_project_chat(organization_id,id,auth.uid()));
+create policy project_members_read on public.project_conversation_members for select to authenticated using(private.can_read_project_chat(organization_id,conversation_id,auth.uid()));
+create policy project_messages_read on public.project_messages for select to authenticated using(private.can_read_project_chat(organization_id,conversation_id,auth.uid()));
+
+create function public.project_chat_people(p_org uuid,p_audience text default 'partners') returns jsonb language plpgsql stable security definer set search_path='' as $$
+begin
+  if not private.active_member(p_org,auth.uid()) then raise insufficient_privilege using message='Active organization membership is required.'; end if;
+  if p_audience is null or p_audience not in ('partners','internal') or p_audience='internal' and not private.is_internal_member(p_org,auth.uid()) then raise insufficient_privilege using message='Internal conversations are limited to the internal team.'; end if;
+  return (select coalesce(jsonb_agg(jsonb_build_object('user_id',p.id,'display_name',p.display_name,'affiliation',m.affiliation) order by p.display_name,p.id),'[]')
+    from public.organization_memberships m join public.profiles p on p.id=m.user_id
+    where m.organization_id=p_org and m.user_id<>auth.uid() and private.active_member(p_org,m.user_id)
+      and (p_audience<>'internal' or private.is_internal_member(p_org,m.user_id)));
+end; $$;
+
+create function public.project_chat_create(p_org uuid,p_request uuid,p_title text,p_users uuid[],p_audience text default 'partners') returns uuid language plpgsql security definer set search_path='' as $$
+declare conversation public.project_conversations; person uuid; participants uuid[]; fingerprint text;
+begin
+  if not private.active_member(p_org,auth.uid()) then raise insufficient_privilege using message='Active organization membership is required.'; end if;
+  if p_request is null or length(trim(coalesce(p_title,''))) not between 1 and 160 or cardinality(coalesce(p_users,'{}')) not between 1 and 49 then raise check_violation using message='Enter a title and choose 1–49 participants.'; end if;
+  if p_audience is null or p_audience not in ('partners','internal') or p_audience='internal' and not private.is_internal_member(p_org,auth.uid()) then raise insufficient_privilege using message='Internal conversations are limited to the internal team.'; end if;
+  select array_agg(distinct u order by u) into participants from unnest(coalesce(p_users,'{}'::uuid[])||auth.uid()) u;
+  if cardinality(participants)<2 then raise check_violation using message='Choose at least one other participant.'; end if;
+  fingerprint:=encode(extensions.digest(jsonb_build_object('title',trim(p_title),'audience',p_audience,'participants',participants)::text,'sha256'),'hex');
+  perform pg_advisory_xact_lock(hashtextextended(p_org::text||auth.uid()::text||p_request::text,0));
+  select * into conversation from public.project_conversations where organization_id=p_org and created_by=auth.uid() and request_id=p_request;
+  if found then
+    if conversation.request_hash<>fingerprint then raise check_violation using message='This conversation request was already used. Refresh Messages before retrying.'; end if;
+    if not private.can_read_project_chat(p_org,conversation.id,auth.uid()) then raise insufficient_privilege using message='Conversation membership is required to recover this conversation.'; end if;
+    return conversation.id;
+  end if;
+  foreach person in array participants loop
+    if not private.active_member(p_org,person) or p_audience='internal' and not private.is_internal_member(p_org,person) then raise check_violation using message='A selected participant is not available for this audience.'; end if;
+  end loop;
+  insert into public.project_conversations(organization_id,audience,title,created_by,request_id,request_hash) values(p_org,p_audience,trim(p_title),auth.uid(),p_request,fingerprint) returning * into conversation;
+  insert into public.project_conversation_members(organization_id,conversation_id,user_id) select p_org,conversation.id,u from unnest(participants) u;
+  insert into public.project_messages(organization_id,conversation_id,author_id,author_name,body,kind,operation_id) values(p_org,conversation.id,auth.uid(),coalesce((select display_name from public.profiles where id=auth.uid()),'Team member'),'Conversation started. Participants can see its complete shared history.','system',gen_random_uuid());
+  perform private.append_audit(p_org,auth.uid(),'conversation.created','project_conversation',conversation.id,null,null,jsonb_build_object('participants',participants,'audience',p_audience));
+  return conversation.id;
+end; $$;
+
+create function public.project_chat_inbox(p_org uuid,p_page integer default 0,p_search text default '') returns jsonb language plpgsql stable security definer set search_path='' as $$
+begin
+  if not private.active_member(p_org,auth.uid()) then raise insufficient_privilege using message='Active organization membership is required.'; end if;
+  return (with visible as (select c.*,m.last_read_seq,
+      (select count(*) from public.project_messages msg where msg.organization_id=p_org and msg.conversation_id=c.id and msg.seq>m.last_read_seq and msg.author_id<>auth.uid()) unread,
+      (select max(msg.seq) from public.project_messages msg where msg.organization_id=p_org and msg.conversation_id=c.id) latest_seq
+    from public.project_conversations c join public.project_conversation_members m on m.organization_id=c.organization_id and m.conversation_id=c.id
+    where c.organization_id=p_org and c.title ilike '%'||coalesce(p_search,'')||'%' and m.user_id=auth.uid() and private.can_read_project_chat(p_org,c.id,auth.uid())), page as (select * from visible order by latest_seq desc,id limit 25 offset greatest(coalesce(p_page,0),0)*25)
+    select jsonb_build_object('rows',coalesce((select jsonb_agg(to_jsonb(page) order by latest_seq desc,id) from page),'[]'),'total',(select count(*) from visible),'unread',(select coalesce(sum(unread),0) from visible)));
+end; $$;
+
+create function public.project_chat_read(p_org uuid,p_conversation uuid,p_before bigint default null) returns jsonb language plpgsql stable security definer set search_path='' as $$
+begin
+  if not private.can_read_project_chat(p_org,p_conversation,auth.uid()) then raise insufficient_privilege using message='Current conversation membership is required.'; end if;
+  return (with selected as (select m.* from public.project_messages m where m.organization_id=p_org and m.conversation_id=p_conversation and (p_before is null or m.seq<p_before) order by m.seq desc limit 51),page as (select * from selected order by seq desc limit 50)
+    select jsonb_build_object('conversation',(select to_jsonb(c)||jsonb_build_object('can_manage',c.created_by=auth.uid() or private.has_permission(p_org,auth.uid(),'access.manage',null,null)) from public.project_conversations c where c.organization_id=p_org and c.id=p_conversation),
+      'members',(select coalesce(jsonb_agg(jsonb_build_object('user_id',m.user_id,'display_name',p.display_name,'last_read_seq',m.last_read_seq,'has_access',private.active_member(p_org,m.user_id) and (c.audience<>'internal' or private.is_internal_member(p_org,m.user_id))) order by p.display_name),'[]') from public.project_conversation_members m join public.profiles p on p.id=m.user_id join public.project_conversations c on c.organization_id=m.organization_id and c.id=m.conversation_id where m.organization_id=p_org and m.conversation_id=p_conversation and m.removed_at is null),
+      'messages',coalesce((select jsonb_agg(to_jsonb(page)||jsonb_build_object('reply_name',(select r.author_name from public.project_messages r where r.organization_id=p_org and r.conversation_id=p_conversation and r.id=page.reply_to),'reply_body',(select left(r.body,240) from public.project_messages r where r.organization_id=p_org and r.conversation_id=p_conversation and r.id=page.reply_to)) order by seq desc) from page),'[]'),'has_more',(select count(*)>50 from selected)));
+end; $$;
+
+create function public.project_chat_mark_read(p_org uuid,p_conversation uuid,p_seq bigint) returns void language plpgsql security definer set search_path='' as $$
+begin
+  if not private.can_read_project_chat(p_org,p_conversation,auth.uid()) then raise insufficient_privilege using message='Current conversation membership is required.'; end if;
+  update public.project_conversation_members set last_read_seq=greatest(last_read_seq,least(coalesce(p_seq,0),coalesce((select max(seq) from public.project_messages where organization_id=p_org and conversation_id=p_conversation),0))) where organization_id=p_org and conversation_id=p_conversation and user_id=auth.uid();
+end; $$;
+
+create function public.project_chat_set_member(p_org uuid,p_conversation uuid,p_user uuid,p_active boolean) returns void language plpgsql security definer set search_path='' as $$
+declare c public.project_conversations; actor text; target text;
+begin
+  if not private.can_read_project_chat(p_org,p_conversation,auth.uid()) then raise insufficient_privilege using message='Current conversation membership is required.'; end if;
+  select * into c from public.project_conversations where organization_id=p_org and id=p_conversation for update;
+  if p_active is null or (p_user<>auth.uid() or p_active) and not(c.created_by=auth.uid() or private.has_permission(p_org,auth.uid(),'access.manage',null,null)) then raise insufficient_privilege using message='Only the conversation owner or an organization administrator can manage participants.'; end if;
+  if p_active and (not private.active_member(p_org,p_user) or c.audience='internal' and not private.is_internal_member(p_org,p_user)) then raise check_violation using message='This person is not available for this conversation audience.'; end if;
+  if p_active then
+    insert into public.project_conversation_members(organization_id,conversation_id,user_id) values(p_org,p_conversation,p_user) on conflict(organization_id,conversation_id,user_id) do update set removed_at=null where project_conversation_members.removed_at is not null;
+  else update public.project_conversation_members set removed_at=now() where organization_id=p_org and conversation_id=p_conversation and user_id=p_user and removed_at is null; end if;
+  if not found then return; end if;
+  select display_name into actor from public.profiles where id=auth.uid(); select display_name into target from public.profiles where id=p_user;
+  insert into public.project_messages(organization_id,conversation_id,author_id,author_name,body,kind,operation_id) values(p_org,p_conversation,auth.uid(),coalesce(actor,'Team member'),coalesce(actor,'Team member')||case when p_active then ' added ' else ' removed ' end||coalesce(target,'a participant')||'.','system',gen_random_uuid());
+  perform private.append_audit(p_org,auth.uid(),'conversation.membership_changed','project_conversation',p_conversation,null,null,jsonb_build_object('user_id',p_user,'active',p_active));
+end; $$;
+
+create function private.send_project_message(p_org uuid,p_actor uuid,p_operation uuid,p_payload jsonb) returns jsonb language plpgsql security definer set search_path='' as $$
+declare c uuid:=(p_payload->>'conversation_id')::uuid; result public.project_messages; reply uuid:=nullif(p_payload->>'reply_to','')::uuid;
+begin
+  perform 1 from public.project_conversation_members where organization_id=p_org and conversation_id=c and user_id=p_actor for share;
+  if not private.can_read_project_chat(p_org,c,p_actor) then raise insufficient_privilege using message='Current conversation membership is required.'; end if;
+  if length(trim(coalesce(p_payload->>'body',''))) not between 1 and 4000 then raise check_violation using message='Enter a message of 1–4000 characters.'; end if;
+  if reply is not null and not exists(select 1 from public.project_messages where organization_id=p_org and conversation_id=c and id=reply) then raise check_violation using message='Reply to a message in this conversation.'; end if;
+  insert into public.project_messages(organization_id,conversation_id,author_id,author_name,body,operation_id,reply_to)
+    values(p_org,c,p_actor,coalesce((select display_name from public.profiles where id=p_actor),'Team member'),trim(p_payload->>'body'),p_operation,reply) returning * into result;
+  return to_jsonb(result);
+end; $$;
+
+revoke all on function public.project_chat_people(uuid,text),public.project_chat_create(uuid,uuid,text,uuid[],text),public.project_chat_inbox(uuid,integer,text),public.project_chat_read(uuid,uuid,bigint),public.project_chat_mark_read(uuid,uuid,bigint),public.project_chat_set_member(uuid,uuid,uuid,boolean) from public,anon;
+grant execute on function public.project_chat_people(uuid,text),public.project_chat_create(uuid,uuid,text,uuid[],text),public.project_chat_inbox(uuid,integer,text),public.project_chat_read(uuid,uuid,bigint),public.project_chat_mark_read(uuid,uuid,bigint),public.project_chat_set_member(uuid,uuid,uuid,boolean) to authenticated;
+
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202611030053_divisional_and_area_manager_checklists.sql
+-- ============================================================================
+
+begin;
+
+-- Grant config.manage to division_admin (Divisional Admin) and neighborhood_admin (Area Construction Manager)
+insert into public.role_permissions(role_code, permission_code) values
+  ('division_admin', 'config.manage'),
+  ('neighborhood_admin', 'config.manage')
+on conflict do nothing;
+
+-- Update role descriptions to reflect checklist & standards configuration capabilities
+update public.roles
+set description = 'Manage users, neighborhoods, vendors, checklists, and operations inside assigned divisions.'
+where code = 'division_admin';
+
+update public.roles
+set description = 'Neighborhood administrator: onboard lots and customize copied plans, configure checklists, assign inspectors, manage local users and vendors, and review escalations.'
+where code = 'neighborhood_admin';
+
+-- Update private.require_admin_permission so that any active member holding an enabled role assignment
+-- with the required administrative permission (including scoped to division or neighborhood) can execute the admin RPCs.
+create or replace function private.require_admin_permission(p_organization_id uuid, p_permission text)
+returns void language plpgsql stable security definer set search_path = '' as $$
+begin
+  if auth.uid() is null or not private.require_aal2() or not (
+    private.has_permission(p_organization_id, auth.uid(), p_permission, null, null)
+    or exists (
+      select 1 from public.role_assignments a
+      join public.role_permissions rp on rp.role_code = a.role_code and rp.permission_code = p_permission
+      where a.organization_id = p_organization_id
+        and a.user_id = auth.uid()
+        and private.role_grant_enabled(a)
+        and a.revoked_at is null
+        and a.starts_at <= now()
+        and (a.ends_at is null or a.ends_at > now())
+    )
+  ) then
+    raise exception using errcode = '42501', message = 'elevated administrative permission required';
+  end if;
+end;
+$$;
+
+-- Update save_role_definition so config.manage is allowed for organization, division, or neighborhood scopes
+create or replace function public.save_role_definition(
+  p_organization_id uuid,
+  p_code text,
+  p_label text,
+  p_description text,
+  p_scopes public.scope_kind[],
+  p_permissions text[],
+  p_active boolean,
+  p_default boolean,
+  p_requires_company boolean,
+  p_expected_version bigint default null
+)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare v_code text; previous public.roles; result public.roles;
+begin
+  if p_organization_id is null then
+    raise exception using errcode = '42501', message = 'organization access management permission required';
+  end if;
+  perform private.require_admin_permission(p_organization_id, 'access.manage');
+  perform 1 from public.organizations where id = p_organization_id for update;
+  if length(trim(coalesce(p_label, ''))) not between 2 and 120 or length(coalesce(p_description, '')) > 2000 or coalesce(cardinality(p_scopes), 0) < 1
+    or coalesce(cardinality(p_permissions), 0) < 1 or cardinality(p_permissions) > 30
+    or exists(select 1 from unnest(p_permissions) v where not exists(select 1 from public.permissions where code = v)) then
+    raise exception using errcode = '22023', message = 'a role needs a name, valid scopes, and at least one catalog permission';
+  end if;
+  if 'config.manage' = any(p_permissions) and (not (p_scopes <@ array['organization', 'division', 'neighborhood']::public.scope_kind[]) or p_requires_company) then
+    raise exception using errcode = '22023', message = 'configuration management requires organization, division, or neighborhood scope';
+  end if;
+  if p_permissions && array['structure.manage', 'access.manage', 'roster.manage'] and
+    (not (p_scopes <@ array['organization', 'division', 'neighborhood']::public.scope_kind[]) or p_requires_company) then
+    raise exception using errcode = '22023', message = 'builder administration requires organization, division, or neighborhood scope';
+  end if;
+  if 'company' = any(p_scopes) and not (p_permissions <@ array['company.users.manage', 'work.execute_assigned', 'comment.create_shared', 'evidence.upload', 'inspection.perform', 'inspection.findings.create']) then
+    raise exception using errcode = '22023', message = 'company scope supports only company users and assigned-work permissions';
+  end if;
+  if 'company.users.manage' = any(p_permissions) and not ('access.manage' = any(p_permissions)) and (not p_requires_company or p_scopes <> array['company']::public.scope_kind[]) then
+    raise exception using errcode = '22023', message = 'vendor user administration requires company-only scope';
+  end if;
+  if p_code is not null then
+    select * into previous from public.roles where roles.code = p_code for update;
+    if not found or previous.organization_id is distinct from p_organization_id then
+      raise exception using errcode = '42501', message = 'this role belongs to a different catalog';
+    end if;
+    if previous.version is distinct from p_expected_version then
+      raise exception using errcode = '40001', message = 'role changed; reload before saving';
+    end if;
+    if exists(select 1 from public.role_assignments where role_code = p_code and revoked_at is null and (ends_at is null or ends_at > now()) and not (scope_kind = any(p_scopes))) then
+      raise exception using errcode = '23514', message = 'reassign existing grants before removing their allowed scope';
+    end if;
+    v_code := p_code;
+    update public.roles r set label = trim(p_label), description = trim(p_description), allowed_scope_kinds = p_scopes,
+      active = p_active, default_for_new_organizations = false, requires_company = p_requires_company,
+      version = r.version + 1, updated_at = now() where r.code = p_code returning * into result;
+    delete from public.role_permissions where role_code = p_code;
+  else
+    v_code := 'custom_' || replace(gen_random_uuid()::text, '-', '');
+    insert into public.roles(code, label, description, allowed_scope_kinds, organization_id, active, default_for_new_organizations, requires_company, immutable_seed)
+      values(v_code, trim(p_label), trim(p_description), p_scopes, p_organization_id, p_active, false, p_requires_company, false) returning * into result;
+    insert into public.organization_roles(organization_id, role_code) values(p_organization_id, v_code);
+  end if;
+  insert into public.role_permissions(role_code, permission_code) select v_code, v from (select distinct unnest(p_permissions) v) p;
+  perform private.append_audit(p_organization_id, auth.uid(), 'role.saved', 'role', null, null, to_jsonb(previous), to_jsonb(result), jsonb_build_object('code', v_code, 'permissions', p_permissions));
+  return to_jsonb(result);
+end; $$;
+
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202611030054_chat_people_roles.sql
+-- ============================================================================
+
+begin;
+
+create or replace function public.project_chat_people(p_org uuid, p_audience text default 'partners')
+returns jsonb language plpgsql stable security definer set search_path = '' as $$
+begin
+  if not private.active_member(p_org, auth.uid()) then
+    raise insufficient_privilege using message = 'Active organization membership is required.';
+  end if;
+  if p_audience is null or p_audience not in ('partners', 'internal')
+    or (p_audience = 'internal' and not private.is_internal_member(p_org, auth.uid())) then
+    raise insufficient_privilege using message = 'Internal conversations are limited to the internal team.';
+  end if;
+
+  return (
+    select coalesce(
+      jsonb_agg(
+        jsonb_build_object(
+          'user_id', p.id,
+          'display_name', p.display_name,
+          'affiliation', m.affiliation,
+          'role_label', coalesce(
+            (
+              select string_agg(distinct r.label, ', ' order by r.label)
+              from public.role_assignments ra
+              join public.roles r on r.code = ra.role_code
+              where ra.organization_id = p_org
+                and ra.user_id = m.user_id
+                and ra.revoked_at is null
+                and ra.starts_at <= now()
+                and (ra.ends_at is null or ra.ends_at > now())
+                and private.role_grant_enabled(ra)
+            ),
+            case when m.affiliation = 'external' then 'External partner' else 'Team member' end
+          )
+        )
+        order by p.display_name, p.id
+      ),
+      '[]'::jsonb
+    )
+    from public.organization_memberships m
+    join public.profiles p on p.id = m.user_id
+    where m.organization_id = p_org
+      and m.user_id <> auth.uid()
+      and private.active_member(p_org, m.user_id)
+      and (p_audience <> 'internal' or private.is_internal_member(p_org, m.user_id))
+  );
+end; $$;
+
+revoke all on function public.project_chat_people(uuid, text) from public, anon;
+grant execute on function public.project_chat_people(uuid, text) to authenticated;
+
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202611030055_work_item_assignee_profile_access.sql
+-- ============================================================================
+
+begin;
+
+-- Allow users to view profiles of other members in the organizations they share
+create or replace function private.can_view_profile(p_viewer_id uuid, p_profile_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select p_viewer_id = p_profile_id
+  or exists (
+    select 1
+    from public.organization_memberships m1
+    join public.organization_memberships m2 on m2.organization_id = m1.organization_id
+    where m1.user_id = p_viewer_id
+      and m2.user_id = p_profile_id
+  );
+$$;
+
+revoke all on function private.can_view_profile(uuid, uuid) from public, anon, authenticated;
+
+drop policy if exists profiles_self_select on public.profiles;
+drop policy if exists profiles_org_members_select on public.profiles;
+
+create policy profiles_org_members_select on public.profiles
+for select to authenticated using (
+  private.can_view_profile(auth.uid(), id)
+);
+
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202611030056_org_admin_only_settings.sql
+-- ============================================================================
+
+begin;
+
+-- Require organization administrator scope for organization-wide settings
+create or replace function private.require_org_admin_permission(p_organization_id uuid, p_permission text)
+returns void language plpgsql stable security definer set search_path = '' as $$
+begin
+  if auth.uid() is null or not private.require_aal2() or not private.has_permission(p_organization_id, auth.uid(), p_permission, null, null) then
+    raise exception using errcode = '42501', message = 'organization administrator permission required';
+  end if;
+end;
+$$;
+
+revoke all on function private.require_org_admin_permission(uuid, text) from public, anon, authenticated;
+
+-- 1. Business calendars (Org admin only)
+create or replace function public.admin_save_business_calendar(
+  p_organization_id uuid,
+  p_id uuid,
+  p_name text,
+  p_timezone text,
+  p_working_weekdays smallint[],
+  p_local_start_time time,
+  p_local_end_time time,
+  p_holiday_dates date[] default '{}'
+)
+returns public.business_calendars language plpgsql security definer set search_path = '' as $$
+declare result public.business_calendars; before_row jsonb;
+begin
+  perform private.require_org_admin_permission(p_organization_id, 'config.manage');
+  if not exists(select 1 from pg_catalog.pg_timezone_names where name = p_timezone) then
+    raise exception using errcode = '22023', message = 'invalid timezone';
+  end if;
+  if cardinality(p_working_weekdays) < 1 or exists(select 1 from unnest(p_working_weekdays) d where d < 0 or d > 6) then
+    raise exception using errcode = '22023', message = 'working weekdays must contain values from 0 through 6';
+  end if;
+  if p_local_end_time <= p_local_start_time then
+    raise exception using errcode = '22023', message = 'business day must end after it starts';
+  end if;
+  if p_id is null then
+    insert into public.business_calendars(organization_id, name, timezone, working_weekdays, local_start_time, local_end_time, holiday_dates)
+    values(p_organization_id, trim(p_name), p_timezone, p_working_weekdays, p_local_start_time, p_local_end_time, p_holiday_dates)
+    returning * into result;
+  else
+    select to_jsonb(c) into before_row from public.business_calendars c where c.organization_id = p_organization_id and c.id = p_id for update;
+    update public.business_calendars
+    set name = trim(p_name), timezone = p_timezone, working_weekdays = p_working_weekdays,
+        local_start_time = p_local_start_time, local_end_time = p_local_end_time,
+        holiday_dates = p_holiday_dates, updated_at = now(), version = version + 1
+    where organization_id = p_organization_id and id = p_id
+    returning * into result;
+  end if;
+  perform private.append_audit(p_organization_id, 'catalog.business_calendar.saved', auth.uid(), jsonb_build_object('before', before_row, 'after', to_jsonb(result)));
+  return result;
+end;
+$$;
+
+-- 2. Escalation routes (Org admin only)
+create or replace function public.admin_save_escalation_route(
+  p_organization_id uuid,
+  p_id uuid,
+  p_name text,
+  p_active boolean,
+  p_steps jsonb
+)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare result public.escalation_routes; before_row jsonb; step jsonb; ordinal integer := 0;
+begin
+  perform private.require_org_admin_permission(p_organization_id, 'config.manage');
+  if length(trim(coalesce(p_name, ''))) not between 1 and 160 then
+    raise exception using errcode = '22023', message = 'route name is required';
+  end if;
+  if jsonb_typeof(p_steps) <> 'array' or jsonb_array_length(p_steps) < 1 or jsonb_array_length(p_steps) > 10 then
+    raise exception using errcode = '22023', message = 'one to ten escalation steps are required';
+  end if;
+  if p_id is null then
+    insert into public.escalation_routes(organization_id, name, active)
+    values(p_organization_id, trim(p_name), p_active)
+    returning * into result;
+  else
+    select jsonb_build_object('route', to_jsonb(r), 'steps', (select coalesce(jsonb_agg(to_jsonb(s) order by s.level), '[]'::jsonb) from public.escalation_route_steps s where s.organization_id = p_organization_id and s.route_id = p_id))
+    into before_row from public.escalation_routes r where r.organization_id = p_organization_id and r.id = p_id for update;
+    update public.escalation_routes
+    set name = trim(p_name), active = p_active, updated_at = now(), version = version + 1
+    where organization_id = p_organization_id and id = p_id
+    returning * into result;
+    delete from public.escalation_route_steps where organization_id = p_organization_id and route_id = p_id;
+  end if;
+  for step in select * from jsonb_array_elements(p_steps) loop
+    ordinal := ordinal + 1;
+    insert into public.escalation_route_steps(organization_id, route_id, level, delay_minutes, recipient_kind, recipient_user_id)
+    values(
+      p_organization_id, result.id, ordinal,
+      (step->>'delay_minutes')::integer,
+      (step->>'recipient_kind')::public.escalation_recipient_kind,
+      nullif(step->>'recipient_user_id', '')::uuid
+    );
+  end loop;
+  perform private.append_audit(p_organization_id, 'catalog.escalation_route.saved', auth.uid(), jsonb_build_object('before', before_row, 'after', to_jsonb(result)));
+  return jsonb_build_object('route', to_jsonb(result), 'steps', (select coalesce(jsonb_agg(to_jsonb(s) order by s.level), '[]'::jsonb) from public.escalation_route_steps s where s.organization_id = p_organization_id and s.route_id = result.id));
+end;
+$$;
+
+-- 3. Notification rules (Org admin only)
+create or replace function public.admin_save_notification_rule(
+  p_organization_id uuid,
+  p_id uuid,
+  p_neighborhood_id uuid,
+  p_trigger text,
+  p_business_minutes integer,
+  p_repeat_minutes integer,
+  p_max_repeats integer,
+  p_quiet_hours jsonb,
+  p_escalation_route_id uuid,
+  p_enabled boolean
+)
+returns public.notification_rules language plpgsql security definer set search_path = '' as $$
+declare result public.notification_rules; before_row jsonb;
+begin
+  perform private.require_org_admin_permission(p_organization_id, 'config.manage');
+  if p_trigger not in ('assignment_unacknowledged', 'work_due', 'attempt_unreviewed', 'blocked', 'critical_created') then
+    raise exception using errcode = '22023', message = 'invalid notification trigger';
+  end if;
+  if p_business_minutes is not null and p_business_minutes < 0 or p_repeat_minutes is not null and p_repeat_minutes < 1 or p_max_repeats not between 0 and 50 then
+    raise exception using errcode = '22023', message = 'invalid notification timing';
+  end if;
+  if p_neighborhood_id is not null and not exists(select 1 from public.neighborhoods where organization_id = p_organization_id and id = p_neighborhood_id and status = 'active') then
+    raise exception using errcode = '22023', message = 'neighborhood is unavailable';
+  end if;
+  if p_escalation_route_id is not null and not exists(select 1 from public.escalation_routes where organization_id = p_organization_id and id = p_escalation_route_id and active) then
+    raise exception using errcode = '22023', message = 'escalation route is unavailable';
+  end if;
+  if p_id is null then
+    insert into public.notification_rules(organization_id, neighborhood_id, trigger, business_minutes, repeat_minutes, max_repeats, quiet_hours, escalation_route_id, enabled)
+    values(p_organization_id, p_neighborhood_id, p_trigger::public.notification_trigger, p_business_minutes, p_repeat_minutes, p_max_repeats, coalesce(p_quiet_hours, '{}'::jsonb), p_escalation_route_id, p_enabled)
+    returning * into result;
+  else
+    select to_jsonb(r) into before_row from public.notification_rules r where r.organization_id = p_organization_id and r.id = p_id for update;
+    update public.notification_rules
+    set neighborhood_id = p_neighborhood_id, trigger = p_trigger::public.notification_trigger,
+        business_minutes = p_business_minutes, repeat_minutes = p_repeat_minutes,
+        max_repeats = p_max_repeats, quiet_hours = coalesce(p_quiet_hours, '{}'::jsonb),
+        escalation_route_id = p_escalation_route_id, enabled = p_enabled,
+        updated_at = now(), version = version + 1
+    where organization_id = p_organization_id and id = p_id
+    returning * into result;
+  end if;
+  perform private.append_audit(p_organization_id, 'catalog.notification_rule.saved', auth.uid(), jsonb_build_object('before', before_row, 'after', to_jsonb(result)));
+  return result;
+end;
+$$;
+
+-- 4. Catalog status toggle (Escalation route & Notification rule require Org Admin)
+create or replace function public.admin_set_catalog_status(
+  p_organization_id uuid,
+  p_entity text,
+  p_id uuid,
+  p_active boolean
+) returns jsonb language plpgsql security definer set search_path = '' as $$
+declare required_permission text; before_row jsonb; after_row jsonb;
+begin
+  required_permission := case
+    when p_entity in ('division','neighborhood','home') then 'structure.manage'
+    when p_entity in ('company','specialty','roster') then 'roster.manage'
+    when p_entity in ('checklist_template','escalation_route','notification_rule','inspection_engagement') then 'config.manage'
+    else null end;
+  if required_permission is null then raise exception using errcode='22023',message='unsupported catalog entity'; end if;
+
+  if p_entity in ('escalation_route', 'notification_rule') then
+    perform private.require_org_admin_permission(p_organization_id, 'config.manage');
+  else
+    perform private.require_admin_permission(p_organization_id, required_permission);
+  end if;
+
+  if p_entity='division' then
+    select to_jsonb(t) into before_row from public.divisions t where t.organization_id=p_organization_id and t.id=p_id for update;
+    update public.divisions set status=(case when p_active then 'active' else 'archived' end)::public.organization_status,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(divisions.*) into after_row;
+  elsif p_entity='neighborhood' then
+    select to_jsonb(t) into before_row from public.neighborhoods t where t.organization_id=p_organization_id and t.id=p_id for update;
+    if not p_active and exists(select 1 from public.work_items w where w.organization_id=p_organization_id and w.neighborhood_id=p_id and w.state not in ('verified','cancelled')) then raise exception using errcode='23514',message='neighborhood has open work'; end if;
+    update public.neighborhoods set status=(case when p_active then 'active' else 'archived' end)::public.organization_status,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(neighborhoods.*) into after_row;
+  elsif p_entity='home' then
+    select to_jsonb(t) into before_row from public.homes t where t.organization_id=p_organization_id and t.id=p_id for update;
+    if not p_active and exists(select 1 from public.work_items w where w.organization_id=p_organization_id and w.home_id=p_id and w.state not in ('verified','cancelled')) then raise exception using errcode='23514',message='home has open work'; end if;
+    update public.homes set archived_at=case when p_active then null else now() end,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(homes.*) into after_row;
+  elsif p_entity='company' then
+    select to_jsonb(t) into before_row from public.companies t where t.organization_id=p_organization_id and t.id=p_id for update;
+    if not p_active and exists(select 1 from public.assignment_episodes ae join public.work_items w on w.organization_id=ae.organization_id and w.id=ae.work_item_id where ae.organization_id=p_organization_id and ae.company_id=p_id and ae.ended_at is null and w.state not in ('verified','cancelled')) then raise exception using errcode='23514',message='company has active assignments'; end if;
+    update public.companies set status=(case when p_active then 'active' else 'archived' end)::public.organization_status,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(companies.*) into after_row;
+  elsif p_entity='specialty' then
+    select to_jsonb(t) into before_row from public.trade_specialties t where t.organization_id=p_organization_id and t.id=p_id for update;
+    update public.trade_specialties set active=p_active,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(trade_specialties.*) into after_row;
+  elsif p_entity='roster' then
+    select to_jsonb(t) into before_row from public.neighborhood_trade_rosters t where t.organization_id=p_organization_id and t.id=p_id for update;
+    update public.neighborhood_trade_rosters set status=(case when p_active then 'active' else 'archived' end)::public.organization_status,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(neighborhood_trade_rosters.*) into after_row;
+  elsif p_entity='checklist_template' then
+    select to_jsonb(t) into before_row from public.checklist_templates t where t.organization_id=p_organization_id and t.id=p_id for update;
+    update public.checklist_templates set active=p_active,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(checklist_templates.*) into after_row;
+  elsif p_entity='escalation_route' then
+    select to_jsonb(t) into before_row from public.escalation_routes t where t.organization_id=p_organization_id and t.id=p_id for update;
+    if not p_active and exists(select 1 from public.notification_rules n where n.organization_id=p_organization_id and n.escalation_route_id=p_id and n.enabled) then raise exception using errcode='23514',message='disable dependent notification rules first'; end if;
+    update public.escalation_routes set active=p_active,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(escalation_routes.*) into after_row;
+  elsif p_entity='notification_rule' then
+    select to_jsonb(t) into before_row from public.notification_rules t where t.organization_id=p_organization_id and t.id=p_id for update;
+    update public.notification_rules set enabled=p_active,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(notification_rules.*) into after_row;
+  elsif p_entity='inspection_engagement' then
+    select to_jsonb(t) into before_row from public.inspection_engagements t where t.organization_id=p_organization_id and t.id=p_id for update;
+    update public.inspection_engagements set revoked_at=case when p_active then null else now() end,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(inspection_engagements.*) into after_row;
+  end if;
+  perform private.append_audit(p_organization_id,'catalog.'||p_entity||'.status_changed',auth.uid(),jsonb_build_object('before',before_row,'after',after_row));
+  return after_row;
+end;
+$$;
+
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202611030057_grant_can_view_profile.sql
+-- ============================================================================
+
+begin;
+
+-- Grant execute privilege on private.can_view_profile so authenticated users can evaluate the RLS policy on public.profiles
+grant execute on function private.can_view_profile(uuid, uuid) to authenticated;
+
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202611030058_plan_space_checklists.sql
+-- ============================================================================
+
+begin;
+
+-- Inspection managers need to read the assigned plan even when their role
+-- does not include property editing.
+create policy plans_inspection_read on public.master_plans for select to authenticated using(
+  private.active_member(organization_id,auth.uid()) and exists(
+    select 1 from public.homes h where h.organization_id=master_plans.organization_id and h.master_plan_id=master_plans.id
+      and private.has_permission(h.organization_id,auth.uid(),'inspection.manage',h.neighborhood_id,h.id)));
+
+-- Reusable checklist templates now serve as room categories. Inspection snapshots
+-- stay in the existing version/question tables so responses and offline bundles
+-- continue to refer to immutable question IDs.
+alter table public.checklist_templates add column snapshot_home_id uuid;
+alter table public.checklist_templates add foreign key (organization_id, snapshot_home_id) references public.homes(organization_id,id);
+
+create function private.validate_plan_checklists() returns trigger
+language plpgsql security definer set search_path='' as $$
+declare space jsonb; item jsonb;
+begin
+  for space in select value from jsonb_array_elements(new.spaces) loop
+    if nullif(space->>'checklist_version_id','') is not null and not exists (
+      select 1 from public.checklist_versions v join public.checklist_templates t on t.organization_id=v.organization_id and t.id=v.template_id
+      where v.organization_id=new.organization_id and v.id=(space->>'checklist_version_id')::uuid and v.published_at is not null and t.active and t.snapshot_home_id is null
+    ) then raise check_violation using message='Choose a published room checklist category from this organization.'; end if;
+    if space ? 'checklist_items' then
+      if jsonb_typeof(space->'checklist_items')<>'array' or jsonb_array_length(space->'checklist_items')>100 then
+        raise check_violation using message='Each space supports up to 100 additional checklist items.';
+      end if;
+      for item in select value from jsonb_array_elements(space->'checklist_items') loop
+        if jsonb_typeof(item)<>'string' or length(trim(item #>> '{}'))>1000 or length(trim(item #>> '{}'))=1 then
+          raise check_violation using message='Checklist items must be between 2 and 1000 characters.';
+        end if;
+      end loop;
+    end if;
+  end loop;
+  return new;
+end; $$;
+create trigger validate_plan_checklists before insert or update of spaces on public.master_plans for each row execute function private.validate_plan_checklists();
+
+create function private.snapshot_plan_checklist(p_org uuid,p_home uuid,p_operation uuid,p_version bigint,p_extras jsonb)
+returns uuid language plpgsql security definer set search_path='' as $$
+declare h public.homes; plan public.master_plans; space jsonb; item jsonb; q record; template uuid; ver uuid; position integer:=0; section_name text;
+begin
+  select * into h from public.homes where organization_id=p_org and id=p_home;
+  if not found or not private.require_aal2() or not private.has_permission(p_org,auth.uid(),'inspection.manage',h.neighborhood_id,h.id) then
+    raise insufficient_privilege using message='Inspection management permission is required for this property.';
+  end if;
+  perform pg_advisory_xact_lock(hashtextextended(p_operation::text,0));
+  -- Same operation always resolves to the same immutable snapshot on retries.
+  select v.id into ver from public.checklist_versions v join public.checklist_templates t on t.id=v.template_id
+    where t.id=p_operation and t.organization_id=p_org and t.snapshot_home_id=p_home;
+  if found then return ver; end if;
+  select * into plan from public.master_plans where organization_id=p_org and id=h.master_plan_id for share;
+  if not found then raise check_violation using message='Apply a floor plan before scheduling an inspection.'; end if;
+  if p_version is null or plan.version<>p_version then raise serialization_failure using message='The plan checklist changed. Reload before scheduling.'; end if;
+  if p_extras is null or jsonb_typeof(p_extras)<>'array' or jsonb_array_length(p_extras)>100 then
+    raise check_violation using message='Provide up to 100 property-only checklist items.';
+  end if;
+  insert into public.checklist_templates(id,organization_id,name,snapshot_home_id)
+    values(p_operation,p_org,left(plan.name || ' · Lot ' || h.lot_code || ' inspection',160),p_home) returning id into template;
+  insert into public.checklist_versions(organization_id,template_id,number,created_by)
+    values(p_org,template,1,auth.uid()) returning id into ver;
+  for space in select value from jsonb_array_elements(plan.spaces) loop
+    section_name:=space->>'name';
+    if nullif(space->>'checklist_version_id','') is not null then
+      if not exists(select 1 from public.checklist_versions v join public.checklist_templates t on t.id=v.template_id
+        where v.organization_id=p_org and v.id=(space->>'checklist_version_id')::uuid and v.published_at is not null and t.active and t.snapshot_home_id is null) then
+        raise check_violation using message='A plan space has an unavailable checklist category. Update the floor plan.';
+      end if;
+      for q in select * from public.checklist_questions where organization_id=p_org and version_id=(space->>'checklist_version_id')::uuid order by ordinal loop
+        position:=position+1;
+        insert into public.checklist_questions(organization_id,version_id,ordinal,section,label,requires_response)
+          values(p_org,ver,position,section_name,q.label,q.requires_response);
+      end loop;
+    end if;
+    for item in select value from jsonb_array_elements(coalesce(space->'checklist_items','[]'::jsonb)) loop
+      if nullif(trim(item #>> '{}'),'') is not null then
+        position:=position+1;
+        insert into public.checklist_questions(organization_id,version_id,ordinal,section,label)
+          values(p_org,ver,position,section_name,trim(item #>> '{}'));
+      end if;
+    end loop;
+  end loop;
+  for item in select value from jsonb_array_elements(p_extras) loop
+    if jsonb_typeof(item)<>'object' or length(trim(coalesce(item->>'label',''))) not between 2 and 1000
+      or not exists(select 1 from jsonb_array_elements(plan.spaces) s where s->>'name'=item->>'section') then
+      raise check_violation using message='Every property-only item needs a plan space and 2–1000 characters.';
+    end if;
+    position:=position+1;
+    insert into public.checklist_questions(organization_id,version_id,ordinal,section,label)
+      values(p_org,ver,position,item->>'section',trim(item->>'label'));
+  end loop;
+  if position=0 or position>5000 then raise check_violation using message='Configure between 1 and 5000 checklist items for this inspection.'; end if;
+  update public.checklist_versions set published_at=now() where id=ver;
+  perform private.append_audit(p_org,auth.uid(),'inspection.checklist_snapshot','checklist_version',ver,p_operation,null,null,jsonb_build_object('home_id',p_home,'plan_id',plan.id,'plan_version',plan.version,'property_items',jsonb_array_length(p_extras)));
+  return ver;
+end; $$;
+
+-- Preserve the command pipeline, including its permission checks, assignment
+-- rules, idempotency receipts, and individual/company scheduling support.
+alter function public.execute_command(text,jsonb) rename to execute_command_before_plan_checklists;
+revoke all on function public.execute_command_before_plan_checklists(text,jsonb) from public,anon,authenticated;
+create function public.execute_command(p_command_name text,p_envelope jsonb) returns jsonb
+language plpgsql security definer set search_path='' as $$
+declare payload jsonb:=p_envelope->'payload'; h public.homes; ver uuid;
+begin
+  if p_command_name in ('schedule_inspection','schedule_company_inspection') and coalesce((payload->>'plan_checklist')::boolean,false) then
+    select * into h from public.homes where id=(payload->>'home_id')::uuid;
+    ver:=private.snapshot_plan_checklist(h.organization_id,h.id,(p_envelope->>'operation_id')::uuid,(payload->>'plan_version')::bigint,coalesce(payload->'additional_items','[]'::jsonb));
+    p_envelope:=jsonb_set(p_envelope,'{payload,template_version_id}',to_jsonb(ver));
+  end if;
+  return public.execute_command_before_plan_checklists(p_command_name,p_envelope);
+end; $$;
+revoke all on function public.execute_command(text,jsonb) from public,anon;
+grant execute on function public.execute_command(text,jsonb) to authenticated;
+
+-- A property snapshot cannot be used to inspect another home, even through the
+-- legacy scheduling payload supported for previously published checklists.
+create function private.check_inspection_snapshot_home() returns trigger
+language plpgsql security definer set search_path='' as $$
+begin
+  if exists(select 1 from public.checklist_versions v join public.checklist_templates t on t.id=v.template_id
+    where v.id=new.template_version_id and t.snapshot_home_id is not null and t.snapshot_home_id<>new.home_id) then
+    raise check_violation using message='This inspection checklist belongs to another property.';
+  end if;
+  return new;
+end; $$;
+create trigger check_inspection_snapshot_home before insert or update of home_id,template_version_id on public.inspections
+  for each row execute function private.check_inspection_snapshot_home();
+revoke all on function private.snapshot_plan_checklist(uuid,uuid,uuid,bigint,jsonb), private.validate_plan_checklists(), private.check_inspection_snapshot_home() from public,anon,authenticated;
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202611030059_remove_work_categories.sql
+-- ============================================================================
+
+begin;
+
+-- Remove the retired classification model from existing and clean installations.
+do $migration$
+declare definition text;
+begin
+  select pg_get_functiondef('public.execute_command_before_plan_checklists(text,jsonb)'::regprocedure) into definition;
+  definition:=replace(definition,'origin, title, description, category_id, priority','origin, title, description, priority');
+  definition:=replace(definition,'trim(v_payload ->> ''description''), nullif(v_payload ->> ''category_id'','''')::uuid,','trim(v_payload ->> ''description''),');
+  definition:=replace(definition,'        category_id = coalesce(nullif(v_payload ->> ''category_id'','''')::uuid, category_id),' || chr(10),'');
+  execute definition;
+end; $migration$;
+
+create or replace function public.admin_create_checklist_version(p_organization_id uuid,p_template_id uuid,p_template_name text,p_questions jsonb)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare template_row public.checklist_templates; version_row public.checklist_versions; question jsonb; position integer:=0;
+begin
+  perform private.require_admin_permission(p_organization_id, 'config.manage');
+  if jsonb_typeof(p_questions)<>'array' or jsonb_array_length(p_questions)<1 or jsonb_array_length(p_questions)>250 then raise exception using errcode='22023', message='one to 250 checklist questions are required'; end if;
+  if p_template_id is null then
+    if length(trim(coalesce(p_template_name,''))) not between 1 and 160 then raise exception using errcode='22023', message='template name is required'; end if;
+    insert into public.checklist_templates(organization_id,name) values(p_organization_id,trim(p_template_name)) returning * into template_row;
+  else
+    select * into template_row from public.checklist_templates where organization_id=p_organization_id and id=p_template_id and active for update;
+    if not found then raise exception using errcode='02000', message='active checklist template not found'; end if;
+  end if;
+  insert into public.checklist_versions(organization_id,template_id,number,created_by)
+    select p_organization_id,template_row.id,coalesce(max(number),0)+1,auth.uid() from public.checklist_versions where organization_id=p_organization_id and template_id=template_row.id returning * into version_row;
+  for question in select value from jsonb_array_elements(p_questions) loop
+    position:=position+1;
+    if length(trim(coalesce(question->>'label','')))<2 then raise exception using errcode='22023', message='every checklist question requires a label'; end if;
+    insert into public.checklist_questions(organization_id,version_id,ordinal,section,label,requires_response)
+      values(p_organization_id,version_row.id,position,coalesce(nullif(trim(question->>'section'),''),'General'),trim(question->>'label'),coalesce((question->>'requires_response')::boolean,true));
+  end loop;
+  perform private.append_audit(p_organization_id,auth.uid(),'checklist.version_created','checklist_version',version_row.id,null,null,to_jsonb(version_row),jsonb_build_object('question_count',position));
+  return jsonb_build_object('template_id',template_row.id,'version_id',version_row.id,'number',version_row.number,'question_count',position);
+end; $$;
+
+create or replace function public.admin_set_catalog_status(
+  p_organization_id uuid,
+  p_entity text,
+  p_id uuid,
+  p_active boolean
+) returns jsonb language plpgsql security definer set search_path = '' as $$
+declare required_permission text; before_row jsonb; after_row jsonb;
+begin
+  required_permission := case
+    when p_entity in ('division','neighborhood','home') then 'structure.manage'
+    when p_entity in ('company','specialty','roster') then 'roster.manage'
+    when p_entity in ('checklist_template','escalation_route','notification_rule','inspection_engagement') then 'config.manage'
+    else null end;
+  if required_permission is null then raise exception using errcode='22023',message='unsupported catalog entity'; end if;
+
+  if p_entity in ('escalation_route', 'notification_rule') then
+    perform private.require_org_admin_permission(p_organization_id, 'config.manage');
+  else
+    perform private.require_admin_permission(p_organization_id, required_permission);
+  end if;
+
+  if p_entity='division' then
+    select to_jsonb(t) into before_row from public.divisions t where t.organization_id=p_organization_id and t.id=p_id for update;
+    update public.divisions set status=(case when p_active then 'active' else 'archived' end)::public.organization_status,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(divisions.*) into after_row;
+  elsif p_entity='neighborhood' then
+    select to_jsonb(t) into before_row from public.neighborhoods t where t.organization_id=p_organization_id and t.id=p_id for update;
+    if not p_active and exists(select 1 from public.work_items w where w.organization_id=p_organization_id and w.neighborhood_id=p_id and w.state not in ('verified','cancelled')) then raise exception using errcode='23514',message='neighborhood has open work'; end if;
+    update public.neighborhoods set status=(case when p_active then 'active' else 'archived' end)::public.organization_status,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(neighborhoods.*) into after_row;
+  elsif p_entity='home' then
+    select to_jsonb(t) into before_row from public.homes t where t.organization_id=p_organization_id and t.id=p_id for update;
+    if not p_active and exists(select 1 from public.work_items w where w.organization_id=p_organization_id and w.home_id=p_id and w.state not in ('verified','cancelled')) then raise exception using errcode='23514',message='home has open work'; end if;
+    update public.homes set archived_at=case when p_active then null else now() end,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(homes.*) into after_row;
+  elsif p_entity='company' then
+    select to_jsonb(t) into before_row from public.companies t where t.organization_id=p_organization_id and t.id=p_id for update;
+    if not p_active and exists(select 1 from public.assignment_episodes ae join public.work_items w on w.organization_id=ae.organization_id and w.id=ae.work_item_id where ae.organization_id=p_organization_id and ae.company_id=p_id and ae.ended_at is null and w.state not in ('verified','cancelled')) then raise exception using errcode='23514',message='company has active assignments'; end if;
+    update public.companies set status=(case when p_active then 'active' else 'archived' end)::public.organization_status,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(companies.*) into after_row;
+  elsif p_entity='specialty' then
+    select to_jsonb(t) into before_row from public.trade_specialties t where t.organization_id=p_organization_id and t.id=p_id for update;
+    update public.trade_specialties set active=p_active,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(trade_specialties.*) into after_row;
+  elsif p_entity='roster' then
+    select to_jsonb(t) into before_row from public.neighborhood_trade_rosters t where t.organization_id=p_organization_id and t.id=p_id for update;
+    update public.neighborhood_trade_rosters set status=(case when p_active then 'active' else 'archived' end)::public.organization_status,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(neighborhood_trade_rosters.*) into after_row;
+  elsif p_entity='checklist_template' then
+    select to_jsonb(t) into before_row from public.checklist_templates t where t.organization_id=p_organization_id and t.id=p_id for update;
+    update public.checklist_templates set active=p_active,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(checklist_templates.*) into after_row;
+  elsif p_entity='escalation_route' then
+    select to_jsonb(t) into before_row from public.escalation_routes t where t.organization_id=p_organization_id and t.id=p_id for update;
+    if not p_active and exists(select 1 from public.notification_rules n where n.organization_id=p_organization_id and n.escalation_route_id=p_id and n.enabled) then raise exception using errcode='23514',message='disable dependent notification rules first'; end if;
+    update public.escalation_routes set active=p_active,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(escalation_routes.*) into after_row;
+  elsif p_entity='notification_rule' then
+    select to_jsonb(t) into before_row from public.notification_rules t where t.organization_id=p_organization_id and t.id=p_id for update;
+    update public.notification_rules set enabled=p_active,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(notification_rules.*) into after_row;
+  elsif p_entity='inspection_engagement' then
+    select to_jsonb(t) into before_row from public.inspection_engagements t where t.organization_id=p_organization_id and t.id=p_id for update;
+    update public.inspection_engagements set revoked_at=case when p_active then null else now() end,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning to_jsonb(inspection_engagements.*) into after_row;
+  end if;
+  perform private.append_audit(p_organization_id,'catalog.'||p_entity||'.status_changed',auth.uid(),jsonb_build_object('before',before_row,'after',after_row));
+  return after_row;
+end;
+$$;
+
+drop view public.work_item_list;
+create view public.work_item_list with (security_invoker=true) as
+select w.id,w.organization_id,w.neighborhood_id,w.home_id,h.lot_code,
+ nullif(concat_ws(', ',h.address_line1,h.city,h.state_code),'') as address,
+ w.title,w.description,w.priority,w.state,w.safety_flag,w.due_at,
+ coalesce(c.name,p.display_name) as assigned_party_name,
+ w.updated_at,w.version,w.created_at,w.inspection_id,w.reinspection_status,
+ w.reinspection_assignee_user_id,w.reinspection_assigned_at,w.reinspection_completed_at,w.location_id
+from public.work_items w
+left join public.homes h on h.organization_id=w.organization_id and h.id=w.home_id
+left join public.assignment_episodes ae on ae.organization_id=w.organization_id and ae.id=w.current_assignment_id
+left join public.companies c on c.organization_id=ae.organization_id and c.id=ae.company_id
+left join public.profiles p on p.id=ae.internal_assignee_user_id;
+grant select on public.work_item_list to authenticated,service_role;
+
+drop function if exists public.admin_save_work_category(uuid,uuid,text,text,boolean);
+alter table public.checklist_questions drop column if exists category_id;
+alter table public.work_items drop column if exists category_id;
+drop table if exists public.work_categories;
+
+-- Fail if a live function still depends on the retired classification model.
+do $$ begin
+ if exists(select 1 from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+ where n.nspname in ('public','private') and (p.prosrc ~* 'work_categor|category_id' or p.proname ~* 'work_categor')) then
+ raise exception 'A stored function still references the retired classification model';
+ end if;
+end; $$;
+notify pgrst,'reload schema';
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202611030060_space_type_checklist_categories.sql
+-- ============================================================================
+
+begin;
+
+-- Starter checklist categories for the user's existing project organization.
+-- Names follow the authoritative live space-type labels. Existing published
+-- categories are reused; no existing questions or plan assignments are changed.
+do $seed$
+declare
+ target_org constant uuid:='e46a5e61-db90-4053-b92d-defd077839eb';
+ catalog constant jsonb:=$catalog${
+  "kitchen": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Cabinet doors and drawers are aligned and operate correctly",
+    "Countertops, backsplash joints, and sink seals are finished",
+    "Sink fixtures and accessible connections show no leaks during normal use",
+    "Installed appliances and extraction have handover or commissioning records"
+  ],
+  "living": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Floor transitions and room openings match the approved layout",
+    "Specified ceiling features, lighting positions, and fitted joinery are complete"
+  ],
+  "dining": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Floor transitions and room openings match the approved layout",
+    "Specified ceiling features, lighting positions, and fitted joinery are complete"
+  ],
+  "great_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Floor transitions and room openings match the approved layout",
+    "Specified ceiling features, lighting positions, and fitted joinery are complete"
+  ],
+  "family_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Floor transitions and room openings match the approved layout",
+    "Specified ceiling features, lighting positions, and fitted joinery are complete"
+  ],
+  "breakfast_nook": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Floor transitions and room openings match the approved layout",
+    "Specified ceiling features, lighting positions, and fitted joinery are complete"
+  ],
+  "formal_dining_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Floor transitions and room openings match the approved layout",
+    "Specified ceiling features, lighting positions, and fitted joinery are complete"
+  ],
+  "sitting_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Floor transitions and room openings match the approved layout",
+    "Specified ceiling features, lighting positions, and fitted joinery are complete"
+  ],
+  "sunroom": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Glazing, window seals, and visible frame joints are complete",
+    "Operable windows and shading systems function where installed"
+  ],
+  "conservatory": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Glazing, roof panels, and visible seals show no damage",
+    "Ventilation and installed shading controls operate"
+  ],
+  "den": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Floor transitions and room openings match the approved layout",
+    "Specified ceiling features, lighting positions, and fitted joinery are complete"
+  ],
+  "library": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Bookcases, shelf supports, and end panels are securely installed",
+    "Aisles and access to upper storage are clear"
+  ],
+  "home_office": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Desk-area power and data points match the approved layout",
+    "Installed desk, shelving, and cable-management fittings are secure"
+  ],
+  "study": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Study shelving and work surfaces are securely installed",
+    "Task lighting and specified data points are complete"
+  ],
+  "playroom": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Accessible built-ins and play fittings have no loose or sharp edges",
+    "Storage units and protective floor finishes are complete"
+  ],
+  "game_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Equipment locations and associated power points match the plan",
+    "Installed game-room storage and fixtures are secure"
+  ],
+  "media_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Media power, data, and cable outlets are identified and finished",
+    "Installed media cabinets and wall mounts are secure"
+  ],
+  "home_theater": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Installed seating, screen supports, and acoustic finishes are secure",
+    "Record the audio-visual installer demonstration and unresolved issues"
+  ],
+  "music_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Acoustic panels and instrument-storage fittings are secure",
+    "Specified power and audio connection plates are installed"
+  ],
+  "craft_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Craft worktops and storage are secure and finished",
+    "Specified sink, task lighting, and extraction fittings are complete"
+  ],
+  "hobby_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Hobby work surfaces and storage fittings are complete",
+    "Specified service connections are identified and finished"
+  ],
+  "home_gym": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Installed equipment supports and floor finishes are complete",
+    "Record supplied equipment installation and handover details"
+  ],
+  "yoga_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Floor finish is continuous and free of raised edges",
+    "Installed mirrors and storage are securely fixed"
+  ],
+  "prayer_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Built-in storage and specified room fittings are complete",
+    "Floor finish and any designated washing-area transition are finished"
+  ],
+  "guest_lounge": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors and windows open, close, and latch correctly",
+    "Lights, switches, and accessible outlets have covers and show no visible damage",
+    "Room ventilation openings are installed and unobstructed",
+    "Installed trim, cabinetry, and built-ins are secure and finished",
+    "Guest seating-area lighting and fitted storage are complete",
+    "Installed service points and shared access hardware match the plan"
+  ],
+  "bedroom": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, windows, and installed hardware operate correctly",
+    "Lights, switches, and accessible outlets are complete and visibly undamaged",
+    "Ventilation openings are installed and unobstructed",
+    "Installed storage, accessories, and trim are secure and finished",
+    "Closet doors, shelves, and hanging rails are secure and operate correctly",
+    "Window hardware and any designated escape opening are accessible"
+  ],
+  "primary_bedroom": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, windows, and installed hardware operate correctly",
+    "Lights, switches, and accessible outlets are complete and visibly undamaged",
+    "Ventilation openings are installed and unobstructed",
+    "Installed storage, accessories, and trim are secure and finished",
+    "Primary closet and any connecting bathroom access match the plan",
+    "Bed-area lighting and bedside outlets match the approved layout"
+  ],
+  "guest_bedroom": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, windows, and installed hardware operate correctly",
+    "Lights, switches, and accessible outlets are complete and visibly undamaged",
+    "Ventilation openings are installed and unobstructed",
+    "Installed storage, accessories, and trim are secure and finished",
+    "Guest storage and window coverings are complete where specified",
+    "Guest-room locks and connecting doors operate correctly"
+  ],
+  "childrens_bedroom": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, windows, and installed hardware operate correctly",
+    "Lights, switches, and accessible outlets are complete and visibly undamaged",
+    "Ventilation openings are installed and unobstructed",
+    "Installed storage, accessories, and trim are secure and finished",
+    "Accessible trim, fittings, and built-ins have no sharp or loose edges",
+    "Window hardware and installed restrictors are complete where specified"
+  ],
+  "nursery": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, windows, and installed hardware operate correctly",
+    "Lights, switches, and accessible outlets are complete and visibly undamaged",
+    "Ventilation openings are installed and unobstructed",
+    "Installed storage, accessories, and trim are secure and finished",
+    "Built-in storage and accessible fittings are securely fixed",
+    "Window coverings and their installed operating hardware are complete"
+  ],
+  "bunk_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, windows, and installed hardware operate correctly",
+    "Lights, switches, and accessible outlets are complete and visibly undamaged",
+    "Ventilation openings are installed and unobstructed",
+    "Installed storage, accessories, and trim are secure and finished",
+    "Built-in bunks, ladders, and guards are securely fixed where supplied",
+    "Access around each installed bunk is clear"
+  ],
+  "bathroom": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, windows, and installed hardware operate correctly",
+    "Lights, switches, and accessible outlets are complete and visibly undamaged",
+    "Ventilation openings are installed and unobstructed",
+    "Installed storage, accessories, and trim are secure and finished",
+    "Sink, toilet, bath, and shower fixtures operate during normal use",
+    "Visible supply and waste connections show no leaks",
+    "Wet-area joints, grout, and sealant are complete",
+    "Extract fan and installed bathroom accessories are complete"
+  ],
+  "primary_bathroom": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, windows, and installed hardware operate correctly",
+    "Lights, switches, and accessible outlets are complete and visibly undamaged",
+    "Ventilation openings are installed and unobstructed",
+    "Installed storage, accessories, and trim are secure and finished",
+    "Vanities, mirrors, and accessories match the approved layout",
+    "Bath, shower, and toilet fixtures have no visible leaks during normal use"
+  ],
+  "guest_bathroom": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, windows, and installed hardware operate correctly",
+    "Lights, switches, and accessible outlets are complete and visibly undamaged",
+    "Ventilation openings are installed and unobstructed",
+    "Installed storage, accessories, and trim are secure and finished",
+    "Guest bathroom fittings and accessories are complete",
+    "All installed sanitary fixtures operate without visible leakage"
+  ],
+  "powder_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, windows, and installed hardware operate correctly",
+    "Lights, switches, and accessible outlets are complete and visibly undamaged",
+    "Ventilation openings are installed and unobstructed",
+    "Installed storage, accessories, and trim are secure and finished",
+    "Toilet and hand basin operate with no visible leaks",
+    "Basin seals, mirror, and accessories are finished"
+  ],
+  "shower_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, windows, and installed hardware operate correctly",
+    "Lights, switches, and accessible outlets are complete and visibly undamaged",
+    "Ventilation openings are installed and unobstructed",
+    "Installed storage, accessories, and trim are secure and finished",
+    "Shower screen, door, and fittings are secure",
+    "Shower drains during normal use without visible leakage beyond the wet area"
+  ],
+  "wet_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, windows, and installed hardware operate correctly",
+    "Lights, switches, and accessible outlets are complete and visibly undamaged",
+    "Ventilation openings are installed and unobstructed",
+    "Installed storage, accessories, and trim are secure and finished",
+    "Wet-room drains are clear and drain during normal use",
+    "Floor transitions and visible waterproofing finish details are complete"
+  ],
+  "toilet_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, windows, and installed hardware operate correctly",
+    "Lights, switches, and accessible outlets are complete and visibly undamaged",
+    "Ventilation openings are installed and unobstructed",
+    "Installed storage, accessories, and trim are secure and finished",
+    "Toilet flush, seat, and visible supply connections are complete",
+    "Handwashing facilities are complete where shown on the plan"
+  ],
+  "dressing_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, windows, and installed hardware operate correctly",
+    "Lights, switches, and accessible outlets are complete and visibly undamaged",
+    "Ventilation openings are installed and unobstructed",
+    "Installed storage, accessories, and trim are secure and finished",
+    "Mirrors, drawers, and dressing-room fittings are secure",
+    "Storage compartments and lighting match the approved layout"
+  ],
+  "walk_in_closet": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, windows, and installed hardware operate correctly",
+    "Lights, switches, and accessible outlets are complete and visibly undamaged",
+    "Ventilation openings are installed and unobstructed",
+    "Installed storage, accessories, and trim are secure and finished",
+    "Hanging rails, shelving, and drawer units are secure",
+    "Closet lighting and access around storage are complete"
+  ],
+  "linen_closet": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, windows, and installed hardware operate correctly",
+    "Lights, switches, and accessible outlets are complete and visibly undamaged",
+    "Ventilation openings are installed and unobstructed",
+    "Installed storage, accessories, and trim are secure and finished",
+    "Linen shelves are secure, smooth, and clean",
+    "Closet door and any ventilation opening are complete"
+  ],
+  "sauna": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, windows, and installed hardware operate correctly",
+    "Lights, switches, and accessible outlets are complete and visibly undamaged",
+    "Ventilation openings are installed and unobstructed",
+    "Installed storage, accessories, and trim are secure and finished",
+    "Benches, lining, door hardware, and visible heater guards are complete",
+    "Record the sauna installer handover and operating-control demonstration"
+  ],
+  "steam_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, windows, and installed hardware operate correctly",
+    "Lights, switches, and accessible outlets are complete and visibly undamaged",
+    "Ventilation openings are installed and unobstructed",
+    "Installed storage, accessories, and trim are secure and finished",
+    "Benches, glazed doors, seals, and drainage finishes are complete",
+    "Record the steam-system installer handover and commissioning report"
+  ],
+  "entry_foyer": [
+    "Walking surfaces are complete and free of trip hazards",
+    "Doors, thresholds, and access hardware operate as intended",
+    "Lighting and installed wayfinding are complete",
+    "Handrails, guards, and edge protection are present where shown on the approved plan",
+    "Routes and access points are free of stored materials and construction debris",
+    "Entry door seals, locks, and threshold are finished",
+    "Entry mat recess and adjoining floor transitions are flush and complete"
+  ],
+  "vestibule": [
+    "Walking surfaces are complete and free of trip hazards",
+    "Doors, thresholds, and access hardware operate as intended",
+    "Lighting and installed wayfinding are complete",
+    "Handrails, guards, and edge protection are present where shown on the approved plan",
+    "Routes and access points are free of stored materials and construction debris",
+    "Inner and outer door sets open and close without interference",
+    "Door seals and floor transitions are complete"
+  ],
+  "hallway": [
+    "Walking surfaces are complete and free of trip hazards",
+    "Doors, thresholds, and access hardware operate as intended",
+    "Lighting and installed wayfinding are complete",
+    "Handrails, guards, and edge protection are present where shown on the approved plan",
+    "Routes and access points are free of stored materials and construction debris",
+    "Wall projections and service covers are flush and finished",
+    "Connecting door swings do not obstruct the planned route"
+  ],
+  "corridor": [
+    "Walking surfaces are complete and free of trip hazards",
+    "Doors, thresholds, and access hardware operate as intended",
+    "Lighting and installed wayfinding are complete",
+    "Handrails, guards, and edge protection are present where shown on the approved plan",
+    "Routes and access points are free of stored materials and construction debris",
+    "Corridor signage and door identification match the plan",
+    "Installed wall protection and service access covers are finished"
+  ],
+  "landing": [
+    "Walking surfaces are complete and free of trip hazards",
+    "Doors, thresholds, and access hardware operate as intended",
+    "Lighting and installed wayfinding are complete",
+    "Handrails, guards, and edge protection are present where shown on the approved plan",
+    "Routes and access points are free of stored materials and construction debris",
+    "Stair-to-landing floor transitions are complete",
+    "Landing guards and adjacent door swings match the plan"
+  ],
+  "staircase": [
+    "Walking surfaces are complete and free of trip hazards",
+    "Doors, thresholds, and access hardware operate as intended",
+    "Lighting and installed wayfinding are complete",
+    "Handrails, guards, and edge protection are present where shown on the approved plan",
+    "Routes and access points are free of stored materials and construction debris",
+    "Treads, risers, nosings, and visible fixings are complete",
+    "Handrails and balustrade fittings are securely installed"
+  ],
+  "stairwell": [
+    "Walking surfaces are complete and free of trip hazards",
+    "Doors, thresholds, and access hardware operate as intended",
+    "Lighting and installed wayfinding are complete",
+    "Handrails, guards, and edge protection are present where shown on the approved plan",
+    "Routes and access points are free of stored materials and construction debris",
+    "Stairwell doors and installed closing hardware operate",
+    "Stairwell lighting and visible guard fixings are complete"
+  ],
+  "elevator_lobby": [
+    "Walking surfaces are complete and free of trip hazards",
+    "Doors, thresholds, and access hardware operate as intended",
+    "Lighting and installed wayfinding are complete",
+    "Handrails, guards, and edge protection are present where shown on the approved plan",
+    "Routes and access points are free of stored materials and construction debris",
+    "Landing door surrounds and call-button plates are complete",
+    "Record elevator handover status from the responsible specialist"
+  ],
+  "elevator_shaft": [
+    "Walking surfaces are complete and free of trip hazards",
+    "Doors, thresholds, and access hardware operate as intended",
+    "Lighting and installed wayfinding are complete",
+    "Handrails, guards, and edge protection are present where shown on the approved plan",
+    "Routes and access points are free of stored materials and construction debris",
+    "Record specialist shaft inspection and elevator commissioning status",
+    "Shaft access doors and visible exclusion controls are complete; assess from authorized accessible areas"
+  ],
+  "mudroom": [
+    "Walking surfaces are complete and free of trip hazards",
+    "Doors, thresholds, and access hardware operate as intended",
+    "Lighting and installed wayfinding are complete",
+    "Handrails, guards, and edge protection are present where shown on the approved plan",
+    "Routes and access points are free of stored materials and construction debris",
+    "Boot storage, hooks, and any bench are securely installed",
+    "Entry seals and floor finishes are complete"
+  ],
+  "breezeway": [
+    "Walking surfaces are complete and free of trip hazards",
+    "Doors, thresholds, and access hardware operate as intended",
+    "Lighting and installed wayfinding are complete",
+    "Handrails, guards, and edge protection are present where shown on the approved plan",
+    "Routes and access points are free of stored materials and construction debris",
+    "Roof-to-wall junctions and visible weather seals are finished",
+    "Openings and floor transitions are free of debris"
+  ],
+  "accessibility_ramp": [
+    "Walking surfaces are complete and free of trip hazards",
+    "Doors, thresholds, and access hardware operate as intended",
+    "Lighting and installed wayfinding are complete",
+    "Handrails, guards, and edge protection are present where shown on the approved plan",
+    "Routes and access points are free of stored materials and construction debris",
+    "Ramp surface transitions and landings match the approved plan",
+    "Installed handrails and edge protection are secure"
+  ],
+  "laundry": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Washer connections and accessible valves are complete and show no visible leaks",
+    "Dryer vent termination and laundry extraction are complete where specified"
+  ],
+  "utility_room": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Utility sink and visible plumbing connections are complete",
+    "Installed appliance service points are identified and accessible"
+  ],
+  "pantry": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Food-storage shelving and worktops are smooth and finished",
+    "Pantry door and ventilation openings are complete"
+  ],
+  "walk_in_pantry": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Shelving, counters, and appliance niches match the plan",
+    "Access around shelves and installed appliances is clear"
+  ],
+  "butlers_pantry": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Cabinetry and countertop joints are finished",
+    "Sink and supplied appliance connections show no visible leaks"
+  ],
+  "scullery": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Wash-up fixtures and work surfaces are complete",
+    "Accessible supply and waste connections show no visible leaks"
+  ],
+  "storage_room": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Storage racks and specified load-identification labels are complete",
+    "Access to all installed storage bays is clear"
+  ],
+  "closet": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Closet shelves, hanging rails, and brackets are secure",
+    "Closet doors and installed lighting operate correctly"
+  ],
+  "coat_closet": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Coat hooks, hanging rails, and shelves are secure",
+    "Closet door clears stored-coat fittings"
+  ],
+  "under_stair_storage": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Under-stair doors and any pull-out storage operate freely",
+    "Accessible stair-enclosure lining and storage finishes are complete"
+  ],
+  "attic": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Access hatch, ladder, and visible guards are complete where supplied",
+    "Record visible insulation gaps or moisture from accessible areas"
+  ],
+  "basement": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Accessible basement surfaces show no visible water ingress",
+    "Installed sump or drainage equipment has handover records where specified"
+  ],
+  "crawl_space": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Access hatch and visible ground-cover edges are complete",
+    "Record visible moisture, standing water, or damaged supports from accessible areas"
+  ],
+  "wine_cellar": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Wine racks and bottle-storage fittings are securely installed",
+    "Record cellar temperature-control equipment handover where supplied"
+  ],
+  "cold_storage": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Insulated doors, seals, and visible lining joints are finished",
+    "Record refrigeration commissioning and temperature display demonstration"
+  ],
+  "safe_room": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Door, lock, and visible enclosure fittings match the approved specification",
+    "Record installer handover and outstanding enclosure defects"
+  ],
+  "storm_shelter": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Shelter door, visible anchorage details, and ventilation openings are complete",
+    "Record the responsible specialist inspection and handover documentation"
+  ],
+  "workshop": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Workbenches, fixed storage, and tool-mount supports are secure",
+    "Specified extraction fittings and service points are complete"
+  ],
+  "garage": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Garage door, visible tracks, and controls have installer handover records",
+    "Garage floor, door seals, and visible wall junctions are complete"
+  ],
+  "carport": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Visible roof supports, fixings, and rainwater goods are complete",
+    "Vehicle clearance and parking layout match the plan"
+  ],
+  "bicycle_storage": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Bicycle racks and wall mounts are securely installed",
+    "Access and maneuvering space around installed racks are clear"
+  ],
+  "refuse_room": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Refuse storage surfaces and visible drainage details are complete",
+    "Refuse doors, ventilation openings, and washdown points are installed"
+  ],
+  "janitor_closet": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Mop sink and visible service connections are complete",
+    "Cleaning-equipment shelving and door hardware are secure"
+  ],
+  "package_room": [
+    "Floors, walls, and ceilings are complete and free of visible damage or moisture",
+    "Doors, access panels, and hardware operate correctly",
+    "Shelves, racks, and fixed storage are secure and finished",
+    "Lighting and ventilation openings are installed and unobstructed",
+    "Service access and circulation are clear of stored materials",
+    "Parcel lockers or shelving are securely installed and identified",
+    "Installed access-control hardware has handover records"
+  ],
+  "mechanical_room": [
+    "Equipment identification and service labels are installed and readable",
+    "Visible equipment supports, enclosures, and covers are complete and undamaged",
+    "Access doors and service routes are clear",
+    "Visible pipes, cables, and penetrations are supported and finished",
+    "Record the responsible specialist commissioning or inspection report and outstanding issues",
+    "Visible pipe insulation, equipment labels, and drip trays are complete",
+    "Record mechanical-system commissioning and outstanding defects"
+  ],
+  "electrical_room": [
+    "Equipment identification and service labels are installed and readable",
+    "Visible equipment supports, enclosures, and covers are complete and undamaged",
+    "Access doors and service routes are clear",
+    "Visible pipes, cables, and penetrations are supported and finished",
+    "Record the responsible specialist commissioning or inspection report and outstanding issues",
+    "Electrical enclosures and labels are visibly complete; do not open energized equipment",
+    "Record the qualified electrician inspection and commissioning report"
+  ],
+  "hvac_closet": [
+    "Equipment identification and service labels are installed and readable",
+    "Visible equipment supports, enclosures, and covers are complete and undamaged",
+    "Access doors and service routes are clear",
+    "Visible pipes, cables, and penetrations are supported and finished",
+    "Record the responsible specialist commissioning or inspection report and outstanding issues",
+    "Air-handler enclosure, filter access, and visible condensate routing are complete",
+    "Record HVAC commissioning and filter handover details"
+  ],
+  "air_handler_room": [
+    "Equipment identification and service labels are installed and readable",
+    "Visible equipment supports, enclosures, and covers are complete and undamaged",
+    "Access doors and service routes are clear",
+    "Visible pipes, cables, and penetrations are supported and finished",
+    "Record the responsible specialist commissioning or inspection report and outstanding issues",
+    "Visible duct joints, filter access, and condensate fittings are complete",
+    "Record air-handler commissioning and balancing report status"
+  ],
+  "boiler_room": [
+    "Equipment identification and service labels are installed and readable",
+    "Visible equipment supports, enclosures, and covers are complete and undamaged",
+    "Access doors and service routes are clear",
+    "Visible pipes, cables, and penetrations are supported and finished",
+    "Record the responsible specialist commissioning or inspection report and outstanding issues",
+    "Visible boiler casing, pipe labels, and insulation are complete",
+    "Record boiler commissioning and specialist inspection status"
+  ],
+  "water_heater_closet": [
+    "Equipment identification and service labels are installed and readable",
+    "Visible equipment supports, enclosures, and covers are complete and undamaged",
+    "Access doors and service routes are clear",
+    "Visible pipes, cables, and penetrations are supported and finished",
+    "Record the responsible specialist commissioning or inspection report and outstanding issues",
+    "Visible heater connections, labeling, and drain-pan fittings are complete",
+    "Record water-heater commissioning and handover status"
+  ],
+  "pump_room": [
+    "Equipment identification and service labels are installed and readable",
+    "Visible equipment supports, enclosures, and covers are complete and undamaged",
+    "Access doors and service routes are clear",
+    "Visible pipes, cables, and penetrations are supported and finished",
+    "Record the responsible specialist commissioning or inspection report and outstanding issues",
+    "Visible pump mounts, pipe labels, and guards are complete",
+    "Record pump-system commissioning and operating demonstration"
+  ],
+  "fire_sprinkler_room": [
+    "Equipment identification and service labels are installed and readable",
+    "Visible equipment supports, enclosures, and covers are complete and undamaged",
+    "Access doors and service routes are clear",
+    "Visible pipes, cables, and penetrations are supported and finished",
+    "Record the responsible specialist commissioning or inspection report and outstanding issues",
+    "Visible valve identification, pipe labels, and access provisions are complete",
+    "Record fire-protection specialist inspection and acceptance-test status"
+  ],
+  "communications_room": [
+    "Equipment identification and service labels are installed and readable",
+    "Visible equipment supports, enclosures, and covers are complete and undamaged",
+    "Access doors and service routes are clear",
+    "Visible pipes, cables, and penetrations are supported and finished",
+    "Record the responsible specialist commissioning or inspection report and outstanding issues",
+    "Data racks, cable labels, and cable-management fittings are complete",
+    "Record communications-system test and handover report status"
+  ],
+  "server_room": [
+    "Equipment identification and service labels are installed and readable",
+    "Visible equipment supports, enclosures, and covers are complete and undamaged",
+    "Access doors and service routes are clear",
+    "Visible pipes, cables, and penetrations are supported and finished",
+    "Record the responsible specialist commissioning or inspection report and outstanding issues",
+    "Installed rack fixings, cable routes, and access hardware are complete",
+    "Record cooling and supplied IT-infrastructure commissioning status"
+  ],
+  "solar_equipment_area": [
+    "Equipment identification and service labels are installed and readable",
+    "Visible equipment supports, enclosures, and covers are complete and undamaged",
+    "Access doors and service routes are clear",
+    "Visible pipes, cables, and penetrations are supported and finished",
+    "Record the responsible specialist commissioning or inspection report and outstanding issues",
+    "Visible solar equipment enclosures and identification labels are complete",
+    "Record solar installer commissioning and handover documentation"
+  ],
+  "battery_storage_room": [
+    "Equipment identification and service labels are installed and readable",
+    "Visible equipment supports, enclosures, and covers are complete and undamaged",
+    "Access doors and service routes are clear",
+    "Visible pipes, cables, and penetrations are supported and finished",
+    "Record the responsible specialist commissioning or inspection report and outstanding issues",
+    "Visible battery enclosures, labels, and access controls are complete",
+    "Record battery-system installer commissioning and handover status"
+  ],
+  "generator_room": [
+    "Equipment identification and service labels are installed and readable",
+    "Visible equipment supports, enclosures, and covers are complete and undamaged",
+    "Access doors and service routes are clear",
+    "Visible pipes, cables, and penetrations are supported and finished",
+    "Record the responsible specialist commissioning or inspection report and outstanding issues",
+    "Visible generator enclosure, supports, and identification labels are complete",
+    "Record generator installer testing and handover status"
+  ],
+  "meter_room": [
+    "Equipment identification and service labels are installed and readable",
+    "Visible equipment supports, enclosures, and covers are complete and undamaged",
+    "Access doors and service routes are clear",
+    "Visible pipes, cables, and penetrations are supported and finished",
+    "Record the responsible specialist commissioning or inspection report and outstanding issues",
+    "Meter labels and visible service covers are complete",
+    "Record provider installation or connection status for each supplied meter"
+  ],
+  "service_shaft": [
+    "Equipment identification and service labels are installed and readable",
+    "Visible equipment supports, enclosures, and covers are complete and undamaged",
+    "Access doors and service routes are clear",
+    "Visible pipes, cables, and penetrations are supported and finished",
+    "Record the responsible specialist commissioning or inspection report and outstanding issues",
+    "Accessible service-shaft doors and visible penetration finishes are complete",
+    "Record concealed-services inspection evidence supplied by the responsible specialist"
+  ],
+  "exterior": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Visible cladding, exterior trim, and penetration seals are complete",
+    "External doors, windows, and rainwater goods show no unresolved visible defects"
+  ],
+  "patio": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Surface joints, thresholds, and adjoining weather seals are complete",
+    "Visible railing, screen, or perimeter fittings are secure where supplied"
+  ],
+  "porch": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Surface joints, thresholds, and adjoining weather seals are complete",
+    "Visible railing, screen, or perimeter fittings are secure where supplied"
+  ],
+  "front_porch": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Surface joints, thresholds, and adjoining weather seals are complete",
+    "Visible railing, screen, or perimeter fittings are secure where supplied"
+  ],
+  "rear_porch": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Surface joints, thresholds, and adjoining weather seals are complete",
+    "Visible railing, screen, or perimeter fittings are secure where supplied"
+  ],
+  "screened_porch": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Surface joints, thresholds, and adjoining weather seals are complete",
+    "Visible railing, screen, or perimeter fittings are secure where supplied"
+  ],
+  "deck": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Surface joints, thresholds, and adjoining weather seals are complete",
+    "Visible railing, screen, or perimeter fittings are secure where supplied"
+  ],
+  "balcony": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Surface joints, thresholds, and adjoining weather seals are complete",
+    "Visible railing, screen, or perimeter fittings are secure where supplied"
+  ],
+  "terrace": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Surface joints, thresholds, and adjoining weather seals are complete",
+    "Visible railing, screen, or perimeter fittings are secure where supplied"
+  ],
+  "roof_terrace": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Surface joints, thresholds, and adjoining weather seals are complete",
+    "Visible railing, screen, or perimeter fittings are secure where supplied"
+  ],
+  "courtyard": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Visible posts, overhead framing, and connection finishes are complete",
+    "Installed paving and adjoining landscape transitions are finished"
+  ],
+  "front_yard": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Planting, topsoil, and landscape edging match the approved layout",
+    "Visible irrigation fittings are complete where specified"
+  ],
+  "back_yard": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Planting, topsoil, and landscape edging match the approved layout",
+    "Visible irrigation fittings are complete where specified"
+  ],
+  "side_yard": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Planting, topsoil, and landscape edging match the approved layout",
+    "Visible irrigation fittings are complete where specified"
+  ],
+  "garden": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Planting, topsoil, and landscape edging match the approved layout",
+    "Visible irrigation fittings are complete where specified"
+  ],
+  "landscape_area": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Planting, topsoil, and landscape edging match the approved layout",
+    "Visible irrigation fittings are complete where specified"
+  ],
+  "driveway": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Paving joints and transitions are finished without visible displacement",
+    "Installed markings, bollards, and drainage fittings match the plan"
+  ],
+  "walkway": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Paving joints and transitions are finished without visible displacement",
+    "Installed markings, bollards, and drainage fittings match the plan"
+  ],
+  "sidewalk": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Paving joints and transitions are finished without visible displacement",
+    "Installed markings, bollards, and drainage fittings match the plan"
+  ],
+  "parking_area": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Paving joints and transitions are finished without visible displacement",
+    "Installed markings, bollards, and drainage fittings match the plan"
+  ],
+  "loading_area": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Paving joints and transitions are finished without visible displacement",
+    "Installed markings, bollards, and drainage fittings match the plan"
+  ],
+  "pool": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Visible pool lining, fittings, and edge finishes are complete",
+    "Record pool-system commissioning and barrier-inspection status"
+  ],
+  "pool_deck": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Surface joints, thresholds, and adjoining weather seals are complete",
+    "Visible railing, screen, or perimeter fittings are secure where supplied"
+  ],
+  "spa": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Visible spa lining, fittings, and access covers are complete",
+    "Record spa-system commissioning and operating-control demonstration"
+  ],
+  "outdoor_kitchen": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Outdoor cabinets, counters, and weather-exposed joints are finished",
+    "Record supplied appliance and utility-connection installer handover"
+  ],
+  "barbecue_area": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Barbecue supports, counters, and surrounding finishes are complete",
+    "Record supplied cooking-appliance installer handover"
+  ],
+  "pergola": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Visible posts, overhead framing, and connection finishes are complete",
+    "Installed paving and adjoining landscape transitions are finished"
+  ],
+  "gazebo": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Visible posts, overhead framing, and connection finishes are complete",
+    "Installed paving and adjoining landscape transitions are finished"
+  ],
+  "shed": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Shed roof, cladding, and visible fixings are complete",
+    "Shed door locks and floor finishes are complete"
+  ],
+  "greenhouse": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Greenhouse glazing, frames, and visible seals are complete",
+    "Doors, ventilation openings, and supplied controls operate"
+  ],
+  "playground": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Visible play-equipment fixings and protective surfaces are complete",
+    "Record playground installer inspection and equipment handover"
+  ],
+  "pet_area": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Pet-area fencing, gates, and installed fixtures are complete",
+    "Visible drainage and washable surfaces are clear and finished"
+  ],
+  "retaining_wall_area": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Visible wall faces, joints, and drainage outlets are complete",
+    "Record retaining-wall specialist inspection status where specified"
+  ],
+  "fence_and_gate_area": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Fence panels, posts, and visible fixings are complete",
+    "Gate hinges, latches, and supplied controls operate as demonstrated"
+  ],
+  "drainage_area": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Visible drainage inlets, channels, and outlets are clear",
+    "Record drainage installation testing or specialist inspection status"
+  ],
+  "septic_area": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Visible access covers and location identification are complete",
+    "Record septic installer commissioning and inspection documentation"
+  ],
+  "well_house": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Visible well equipment enclosure and access fittings are complete",
+    "Record well-system commissioning and handover documentation"
+  ],
+  "dock": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Visible dock surfaces, edge fittings, and access connections are complete",
+    "Record dock installer or specialist inspection and handover status"
+  ],
+  "roof": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Record visible roof covering and rainwater-goods defects from accessible inspection points",
+    "Record roofing installer completion and any specialist inspection evidence"
+  ],
+  "foundation_perimeter": [
+    "Installed surfaces and structures are complete and free of visible damage",
+    "Routes and access points are clear of construction debris",
+    "Visible drainage paths are clear and show no standing water at inspection",
+    "Edges, transitions, and installed guards are complete where shown on the approved plan",
+    "Installed fixtures and site finishes match the approved layout",
+    "Visible perimeter surfaces and penetrations show no unresolved damage",
+    "Drainage and finished-ground transitions match the approved details"
+  ],
+  "reception": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, access hardware, and installed signage are complete",
+    "Lighting and accessible electrical fixtures are complete and visibly undamaged",
+    "Installed furniture, storage, and fixed equipment are secure and finished",
+    "Circulation and service access are clear of construction debris",
+    "Built-in counters, workstations, or shared storage match the approved layout",
+    "Specified data, access-control, and communication points are complete"
+  ],
+  "lobby": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, access hardware, and installed signage are complete",
+    "Lighting and accessible electrical fixtures are complete and visibly undamaged",
+    "Installed furniture, storage, and fixed equipment are secure and finished",
+    "Circulation and service access are clear of construction debris",
+    "Built-in counters, workstations, or shared storage match the approved layout",
+    "Specified data, access-control, and communication points are complete"
+  ],
+  "mail_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, access hardware, and installed signage are complete",
+    "Lighting and accessible electrical fixtures are complete and visibly undamaged",
+    "Installed furniture, storage, and fixed equipment are secure and finished",
+    "Circulation and service access are clear of construction debris",
+    "Built-in counters, workstations, or shared storage match the approved layout",
+    "Specified data, access-control, and communication points are complete"
+  ],
+  "community_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, access hardware, and installed signage are complete",
+    "Lighting and accessible electrical fixtures are complete and visibly undamaged",
+    "Installed furniture, storage, and fixed equipment are secure and finished",
+    "Circulation and service access are clear of construction debris",
+    "Built-in counters, workstations, or shared storage match the approved layout",
+    "Specified data, access-control, and communication points are complete"
+  ],
+  "meeting_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, access hardware, and installed signage are complete",
+    "Lighting and accessible electrical fixtures are complete and visibly undamaged",
+    "Installed furniture, storage, and fixed equipment are secure and finished",
+    "Circulation and service access are clear of construction debris",
+    "Built-in counters, workstations, or shared storage match the approved layout",
+    "Specified data, access-control, and communication points are complete"
+  ],
+  "coworking_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, access hardware, and installed signage are complete",
+    "Lighting and accessible electrical fixtures are complete and visibly undamaged",
+    "Installed furniture, storage, and fixed equipment are secure and finished",
+    "Circulation and service access are clear of construction debris",
+    "Built-in counters, workstations, or shared storage match the approved layout",
+    "Specified data, access-control, and communication points are complete"
+  ],
+  "fitness_center": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, access hardware, and installed signage are complete",
+    "Lighting and accessible electrical fixtures are complete and visibly undamaged",
+    "Installed furniture, storage, and fixed equipment are secure and finished",
+    "Circulation and service access are clear of construction debris",
+    "Installed equipment supports and mirrors are secure",
+    "Record supplied fitness-equipment installation and handover status"
+  ],
+  "locker_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, access hardware, and installed signage are complete",
+    "Lighting and accessible electrical fixtures are complete and visibly undamaged",
+    "Installed furniture, storage, and fixed equipment are secure and finished",
+    "Circulation and service access are clear of construction debris",
+    "Locker doors, locks, benches, and visible fixings are complete",
+    "Wet-area finishes and drains are complete where supplied"
+  ],
+  "shared_restroom": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, access hardware, and installed signage are complete",
+    "Lighting and accessible electrical fixtures are complete and visibly undamaged",
+    "Installed furniture, storage, and fixed equipment are secure and finished",
+    "Circulation and service access are clear of construction debris",
+    "Sanitary fixtures operate without visible supply or waste leaks",
+    "Cubicle doors, locks, accessories, and extraction fittings are complete"
+  ],
+  "shared_kitchen": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, access hardware, and installed signage are complete",
+    "Lighting and accessible electrical fixtures are complete and visibly undamaged",
+    "Installed furniture, storage, and fixed equipment are secure and finished",
+    "Circulation and service access are clear of construction debris",
+    "Shared cabinetry, counters, and sink seals are finished",
+    "Accessible appliance and plumbing connections have no visible defects"
+  ],
+  "security_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, access hardware, and installed signage are complete",
+    "Lighting and accessible electrical fixtures are complete and visibly undamaged",
+    "Installed furniture, storage, and fixed equipment are secure and finished",
+    "Circulation and service access are clear of construction debris",
+    "Security console, access-control fittings, and cable outlets are complete",
+    "Record supplied security-system test and handover status"
+  ],
+  "management_office": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, access hardware, and installed signage are complete",
+    "Lighting and accessible electrical fixtures are complete and visibly undamaged",
+    "Installed furniture, storage, and fixed equipment are secure and finished",
+    "Circulation and service access are clear of construction debris",
+    "Built-in counters, workstations, or shared storage match the approved layout",
+    "Specified data, access-control, and communication points are complete"
+  ],
+  "maintenance_room": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, access hardware, and installed signage are complete",
+    "Lighting and accessible electrical fixtures are complete and visibly undamaged",
+    "Installed furniture, storage, and fixed equipment are secure and finished",
+    "Circulation and service access are clear of construction debris",
+    "Maintenance worktops, racks, and fixed storage are secure",
+    "Specified service points and equipment access are complete"
+  ],
+  "leasing_office": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, access hardware, and installed signage are complete",
+    "Lighting and accessible electrical fixtures are complete and visibly undamaged",
+    "Installed furniture, storage, and fixed equipment are secure and finished",
+    "Circulation and service access are clear of construction debris",
+    "Built-in counters, workstations, or shared storage match the approved layout",
+    "Specified data, access-control, and communication points are complete"
+  ],
+  "retail_unit": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, access hardware, and installed signage are complete",
+    "Lighting and accessible electrical fixtures are complete and visibly undamaged",
+    "Installed furniture, storage, and fixed equipment are secure and finished",
+    "Circulation and service access are clear of construction debris",
+    "Shopfront, entry hardware, and visible fit-out finishes match the plan",
+    "Meter identification and tenant service handover information are complete"
+  ],
+  "guest_suite": [
+    "Wall, ceiling, and floor finishes are complete and free of visible damage",
+    "Doors, access hardware, and installed signage are complete",
+    "Lighting and accessible electrical fixtures are complete and visibly undamaged",
+    "Installed furniture, storage, and fixed equipment are secure and finished",
+    "Circulation and service access are clear of construction debris",
+    "Sleeping, storage, and kitchenette fittings match the approved layout",
+    "Supplied bathroom fixtures operate without visible leaks"
+  ],
+  "other": [
+    "Space name, intended use, and approved layout are recorded",
+    "Visible surfaces, fixtures, and installed finishes are complete",
+    "Doors and access points operate correctly",
+    "Accessible services and lighting are complete and visibly undamaged",
+    "Space is clear of construction debris and outstanding defects are recorded",
+    "Any items specific to this space use are recorded on the plan or property checklist"
+  ]
+}$catalog$::jsonb;
+ creator uuid; space record; template uuid; ver uuid; item text; position integer;
+ created_templates integer:=0; created_versions integer:=0;
+begin
+ perform 1 from public.organizations where id=target_org and status='active' for update;
+ if not found then return; end if;
+ select a.user_id into creator
+ from public.role_assignments a
+ join public.organization_memberships m on m.organization_id=a.organization_id and m.user_id=a.user_id
+ join public.role_permissions rp on rp.role_code=a.role_code and rp.permission_code='config.manage'
+ where a.organization_id=target_org and a.scope_kind='organization'
+  and a.revoked_at is null and a.starts_at<=now() and (a.ends_at is null or a.ends_at>now())
+  and m.status='active' and private.role_grant_enabled(a)
+ order by (a.role_code='org_admin') desc,a.user_id limit 1;
+ if creator is null then raise exception 'No active organization checklist administrator is available for category ownership'; end if;
+ for space in select code,label from public.space_types where active order by code loop
+  if not catalog ? space.code then raise exception 'Missing starter checklist content for active space type %',space.code; end if;
+  select t.id into template from public.checklist_templates t
+   where t.organization_id=target_org and t.active and t.snapshot_home_id is null and lower(trim(t.name))=lower(trim(space.label))
+   order by t.created_at,t.id limit 1;
+  if template is null then
+   insert into public.checklist_templates(organization_id,name) values(target_org,space.label) returning id into template;
+   created_templates:=created_templates+1;
+  end if;
+  if exists(select 1 from public.checklist_versions where organization_id=target_org and template_id=template and published_at is not null) then continue; end if;
+  insert into public.checklist_versions(organization_id,template_id,number,created_by)
+   select target_org,template,coalesce(max(number),0)+1,creator from public.checklist_versions where organization_id=target_org and template_id=template returning id into ver;
+  position:=0;
+  for item in select jsonb_array_elements_text(catalog->space.code) loop
+   if length(trim(item)) not between 2 and 1000 then raise exception 'Invalid starter item for %',space.code; end if;
+   position:=position+1;
+   insert into public.checklist_questions(organization_id,version_id,ordinal,section,label,requires_response)
+    values(target_org,ver,position,space.label,item,true);
+  end loop;
+  if position=0 then raise exception 'Cannot publish empty checklist for %',space.code; end if;
+  update public.checklist_versions set published_at=now() where id=ver;
+  created_versions:=created_versions+1;
+ end loop;
+ if created_templates>0 or created_versions>0 then
+  perform private.append_audit(target_org,null,'checklist.space_catalog_seeded','organization',target_org,null,null,
+   jsonb_build_object('categories_created',created_templates,'versions_published',created_versions),
+   jsonb_build_object('source','migration_060','starter_content',true,'version_owner',creator));
+ end if;
+end; $seed$;
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202611030061_inspection_observations_and_repairs.sql
+-- ============================================================================
+
+begin;
+
+create table public.inspection_observations (
+ id uuid primary key default gen_random_uuid(),
+ organization_id uuid not null references public.organizations(id),
+ inspection_id uuid not null, home_id uuid not null, neighborhood_id uuid not null,
+ question_id uuid, location_id uuid, space_name text not null,
+ title text not null check(length(trim(title)) between 2 and 160),
+ description text not null check(length(trim(description)) between 2 and 10000),
+ priority public.work_priority not null default 'normal', safety_flag boolean not null default false,
+ status text not null default 'open' check(status in ('open','actioned','disregarded')),
+ review_notes text, reviewed_by uuid references auth.users(id), reviewed_at timestamptz,
+ created_by uuid not null references auth.users(id), created_at timestamptz not null default now(),
+ updated_at timestamptz not null default now(), version bigint not null default 1,
+ unique(organization_id,id),
+ foreign key(organization_id,inspection_id) references public.inspections(organization_id,id),
+ foreign key(organization_id,home_id) references public.homes(organization_id,id),
+ foreign key(organization_id,question_id) references public.checklist_questions(organization_id,id),
+ foreign key(organization_id,home_id,location_id) references public.home_locations(organization_id,home_id,id)
+);
+create index inspection_observations_report on public.inspection_observations(organization_id,inspection_id,question_id);
+create index inspection_observations_home on public.inspection_observations(organization_id,home_id,status);
+alter table public.inspection_observations enable row level security;
+grant select on public.inspection_observations to authenticated;
+grant all on public.inspection_observations to service_role;
+create policy observation_read on public.inspection_observations for select to authenticated using(private.can_read_inspection(auth.uid(),inspection_id));
+create trigger inspection_observations_touch before update on public.inspection_observations for each row execute function private.touch_version();
+alter table public.work_items add column observation_id uuid,
+ add foreign key(organization_id,observation_id) references public.inspection_observations(organization_id,id);
+create index work_items_observation on public.work_items(organization_id,observation_id) where observation_id is not null;
+
+-- A failed answer points to a recorded issue, not a prematurely created task.
+do $$ declare c record; begin
+ for c in select conname from pg_constraint where conrelid='public.inspection_responses'::regclass and contype='c' and pg_get_constraintdef(oid) like '%finding_work_item_id%' loop
+  execute format('alter table public.inspection_responses drop constraint %I',c.conname);
+ end loop;
+end; $$;
+create function private.guard_observation_workflow() returns trigger language plpgsql security definer set search_path='' as $$
+declare i public.inspections; o public.inspection_observations;
+begin
+ if tg_table_name='inspection_responses' then
+  select * into i from public.inspections where id=new.inspection_id and organization_id=new.organization_id;
+  if not exists(select 1 from public.checklist_questions q where q.id=new.question_id and q.organization_id=new.organization_id and q.version_id=i.template_version_id) then
+   raise check_violation using message='This checklist item does not belong to the inspection.';
+  end if;
+  if new.result='fail' and new.finding_work_item_id is null and not exists(select 1 from public.inspection_observations where organization_id=new.organization_id and inspection_id=new.inspection_id and question_id=new.question_id and status<>'disregarded') then
+   raise check_violation using message='Add an observation describing what needs fixing before saving this result.';
+  end if;
+ elsif tg_table_name='work_items' then
+  if new.observation_id is null then return new; end if;
+  select * into o from public.inspection_observations where organization_id=new.organization_id and id=new.observation_id;
+  if o.id is null or o.home_id is distinct from new.home_id or o.inspection_id is distinct from new.inspection_id or o.neighborhood_id is distinct from new.neighborhood_id then
+   raise check_violation using message='A repair task must belong to its observation property and inspection.';
+  end if;
+ elsif tg_table_name='inspections' then
+  if new.reviewed_at is not null and (new.reviewed_at is distinct from old.reviewed_at) and exists(
+   select 1 from public.inspection_observations ob where ob.organization_id=new.organization_id and ob.inspection_id=new.id
+    and (ob.status='open' or ob.status='actioned' and not exists(select 1 from public.work_items w where w.organization_id=ob.organization_id and w.observation_id=ob.id and w.state<>'cancelled'))
+  ) then raise check_violation using message='Create repair tasks or disregard every observation before completing report review.'; end if;
+ end if;
+ return new;
+end; $$;
+create trigger guard_observation_response before insert or update on public.inspection_responses for each row execute function private.guard_observation_workflow();
+create trigger guard_observation_work before insert or update on public.work_items for each row execute function private.guard_observation_workflow();
+create trigger guard_observation_report_review before update on public.inspections for each row execute function private.guard_observation_workflow();
+
+create table private.observation_command_receipts(
+ operation_id uuid primary key, actor_id uuid not null, organization_id uuid not null,
+ request_hash text not null, result jsonb not null, created_at timestamptz not null default now()
+);
+create function private.inspection_observation_command(p_name text,p_envelope jsonb) returns jsonb
+language plpgsql security definer set search_path='' as $$
+declare actor uuid:=auth.uid(); payload jsonb:=p_envelope->'payload'; op uuid:=(p_envelope->>'operation_id')::uuid;
+ i public.inspections; o public.inspection_observations; w public.work_items; q public.checklist_questions;
+ receipt private.observation_command_receipts; fingerprint text; result jsonb; nested jsonb; task jsonb; ids jsonb:='[]'; room text; room_id uuid;
+begin
+ if actor is null then raise insufficient_privilege using message='Sign in to continue.'; end if;
+ if op is null then raise check_violation using message='An operation ID is required.'; end if;
+ if nullif(p_envelope->>'captured_at','')::timestamptz < now()-interval '90 days' then raise check_violation using message='This saved operation has expired.'; end if;
+ if p_name='record_inspection_observation' then
+  select * into i from public.inspections where id=(payload->>'inspection_id')::uuid for update;
+ else
+  select * into o from public.inspection_observations where id=(payload->>'observation_id')::uuid for update;
+  select * into i from public.inspections where id=o.inspection_id for update;
+ end if;
+ if i.id is null or not private.active_member(i.organization_id,actor) or not private.can_read_inspection(actor,i.id)
+  or (payload ? 'organization_id' and (payload->>'organization_id')::uuid<>i.organization_id) then raise insufficient_privilege using message='This inspection is outside your access.'; end if;
+ if p_name='record_inspection_observation' then
+  if not (private.has_permission(i.organization_id,actor,'inspection.manage',i.neighborhood_id,i.home_id) or
+   private.has_permission(i.organization_id,actor,'inspection.perform',i.neighborhood_id,i.home_id) and (i.lead_inspector_user_id=actor or exists(select 1 from public.inspection_participants ip where ip.inspection_id=i.id and ip.user_id=actor and ip.can_edit_draft))) then
+   raise insufficient_privilege using message='Only an assigned Inspector or inspection manager can add observations.';
+  end if;
+ else
+  if not private.require_aal2() or not private.has_permission(i.organization_id,actor,'inspection.manage',i.neighborhood_id,i.home_id) then raise insufficient_privilege using message='Inspection management permission is required to review observations.'; end if;
+ end if;
+ perform pg_advisory_xact_lock(hashtextextended(op::text,0));
+ fingerprint:=encode(extensions.digest(jsonb_build_object('command',p_name,'envelope',p_envelope)::text,'sha256'),'hex');
+ select * into receipt from private.observation_command_receipts where operation_id=op;
+ if found then
+  if receipt.actor_id<>actor or receipt.organization_id<>i.organization_id or receipt.request_hash<>fingerprint then return private.command_error(op,'OPERATION_REUSE','This operation was already used with different input.'); end if;
+  return jsonb_set(receipt.result,'{replayed}','true');
+ end if;
+ if p_name='record_inspection_observation' then
+  if i.status not in ('draft','in_progress','amended') then raise check_violation using message='Observations can only be added to an open inspection.'; end if;
+  if nullif(payload->>'question_id','') is not null then
+   select * into q from public.checklist_questions where organization_id=i.organization_id and version_id=i.template_version_id and id=(payload->>'question_id')::uuid;
+   if not found then raise check_violation using message='Choose a checklist item from this inspection.'; end if;
+   room:=q.section;
+   select id into room_id from public.home_locations where organization_id=i.organization_id and home_id=i.home_id and active and name=q.section order by id limit 1;
+  elsif nullif(payload->>'location_id','') is not null then
+   select id,name into room_id,room from public.home_locations where organization_id=i.organization_id and home_id=i.home_id and active and id=(payload->>'location_id')::uuid;
+   if not found then raise check_violation using message='Choose an active room from this property.'; end if;
+  else room:='Whole property'; end if;
+  insert into public.inspection_observations(id,organization_id,inspection_id,home_id,neighborhood_id,question_id,location_id,space_name,title,description,priority,safety_flag,created_by)
+  values(coalesce(nullif(payload->>'id','')::uuid,gen_random_uuid()),i.organization_id,i.id,i.home_id,i.neighborhood_id,q.id,room_id,room,trim(payload->>'title'),trim(payload->>'description'),coalesce(nullif(payload->>'priority','')::public.work_priority,'normal'),coalesce((payload->>'safety_flag')::boolean,false),actor) returning * into o;
+ elsif p_name='create_observation_work' then
+  if i.status<>'submitted' or o.status='disregarded' then raise check_violation using message='Submit the inspection before creating repair tasks from its observations.'; end if;
+  if o.version is distinct from nullif(p_envelope->>'expected_version','')::bigint then raise serialization_failure using message='The observation changed. Refresh before creating tasks.'; end if;
+  if jsonb_typeof(payload->'tasks') is distinct from 'array' or jsonb_array_length(payload->'tasks') not between 1 and 25 then raise check_violation using message='Add between 1 and 25 repair tasks.'; end if;
+  for task in select value from jsonb_array_elements(payload->'tasks') loop
+   nested:=public.execute_command('create_work_item',jsonb_build_object('operation_id',gen_random_uuid(),'payload',jsonb_build_object(
+    'organization_id',i.organization_id,'neighborhood_id',i.neighborhood_id,'home_id',i.home_id,'location_id',o.location_id,
+    'origin','internal_observation',
+    'title',task->>'title','description',coalesce(nullif(trim(task->>'description'),''),o.description),'priority',coalesce(task->>'priority',o.priority::text),'safety_flag',o.safety_flag)));
+   if not coalesce((nested->>'ok')::boolean,false) then raise check_violation using message=nested->'error'->>'message'; end if;
+   select * into w from public.work_items where id=(nested->'data'->>'id')::uuid;
+   update public.work_items set observation_id=o.id,inspection_id=i.id,origin=case when i.type='external_quality' then 'external_inspection'::public.work_origin else 'internal_inspection'::public.work_origin end,state='submitted',submitted_at=now() where id=w.id returning * into w;
+   perform private.append_work_event(w,'work.submitted','draft','submitted',actor,op,jsonb_build_object('observation_id',o.id));
+   nested:=public.execute_command('assign_work_item',jsonb_build_object('operation_id',gen_random_uuid(),'expected_version',w.version,'payload',
+    coalesce(task->'assignment','{}')||jsonb_build_object('organization_id',i.organization_id,'item_id',w.id,'reason','Repair task created during observation review')));
+   if not coalesce((nested->>'ok')::boolean,false) then raise check_violation using message=nested->'error'->>'message'; end if;
+   ids:=ids||jsonb_build_array(w.id);
+  end loop;
+  update public.inspection_observations set status='actioned',reviewed_by=actor,reviewed_at=now() where id=o.id returning * into o;
+ elsif p_name='disregard_inspection_observation' then
+  if i.status<>'submitted' or o.version is distinct from nullif(p_envelope->>'expected_version','')::bigint then raise check_violation using message='Review the current submitted observation before disregarding it.'; end if;
+  if length(trim(coalesce(payload->>'reason',''))) not between 2 and 2000 then raise check_violation using message='Record why no repair is needed.'; end if;
+  if exists(select 1 from public.work_items where organization_id=i.organization_id and observation_id=o.id and state<>'cancelled') then raise check_violation using message='Cancel existing repair tasks before disregarding the observation.'; end if;
+  update public.inspection_observations set status='disregarded',review_notes=trim(payload->>'reason'),reviewed_by=actor,reviewed_at=now() where id=o.id returning * into o;
+ else raise check_violation using message='Unknown observation action.';
+ end if;
+ perform private.append_audit(i.organization_id,actor,p_name,'inspection_observation',o.id,op,null,to_jsonb(o),jsonb_build_object('work_item_ids',ids));
+ result:=private.command_success(op,jsonb_build_object('id',o.id,'version',o.version,'work_item_ids',ids));
+ insert into private.observation_command_receipts values(op,actor,i.organization_id,fingerprint,result,now());
+ return result;
+exception when insufficient_privilege then return private.command_error(op,'FORBIDDEN',sqlerrm);
+ when serialization_failure then return private.command_error(op,'VERSION_CONFLICT',sqlerrm);
+ when check_violation or foreign_key_violation or not_null_violation or invalid_text_representation or unique_violation then return private.command_error(op,'VALIDATION_ERROR',sqlerrm);
+end; $$;
+
+-- Preserve the existing scheduling, assignment, repair, and reinspection engine.
+do $$ declare definition text; begin
+ definition:=pg_get_functiondef('public.execute_command(text,jsonb)'::regprocedure);
+ definition:=replace(definition,'if p_command_name in (''schedule_inspection'',''schedule_company_inspection'')',
+  'if p_command_name in (''record_inspection_observation'',''create_observation_work'',''disregard_inspection_observation'') then return private.inspection_observation_command(p_command_name,p_envelope); end if;
+  if p_command_name in (''schedule_inspection'',''schedule_company_inspection'')');
+ if strpos(definition,'private.inspection_observation_command')=0 then raise exception 'Observation command dispatch patch did not apply'; end if;
+ execute definition;
+ -- Freeze observations in the immutable submitted-report snapshot as well.
+ definition:=pg_get_functiondef('public.execute_command_before_plan_checklists(text,jsonb)'::regprocedure);
+ definition:=replace(definition,'''finding_ids'', coalesce(','''observations'', coalesce((select jsonb_agg(to_jsonb(ob) order by ob.created_at,ob.id) from public.inspection_observations ob where ob.organization_id=v_organization_id and ob.inspection_id=v_inspection.id),''[]''::jsonb),
+              ''finding_ids'', coalesce(');
+ execute definition;
+end; $$;
+
+create function private.property_repairs_ready(p_org uuid,p_home uuid) returns boolean language sql volatile security definer set search_path='' as $$
+ select exists(select 1 from public.inspection_observations where organization_id=p_org and home_id=p_home and status='actioned')
+ and not exists(select 1 from public.inspection_observations o join public.inspections i on i.id=o.inspection_id where o.organization_id=p_org and o.home_id=p_home and o.status<>'disregarded'
+  and (o.status='open' or i.status<>'submitted' or i.reviewed_at is null or not exists(select 1 from public.work_items w where w.organization_id=p_org and w.observation_id=o.id and w.state<>'cancelled')))
+ and not exists(select 1 from public.work_items where organization_id=p_org and home_id=p_home and state not in ('ready_for_verification','verified','cancelled'))
+ and exists(select 1 from public.work_items where organization_id=p_org and home_id=p_home and observation_id is not null and state='ready_for_verification');
+$$;
+create function public.inspection_repair_readiness(p_org uuid,p_home uuid default null) returns table(
+ home_id uuid,lot_code text,address_line1 text,observation_count bigint,unreviewed_count bigint,repair_count bigint,incomplete_count bigint,ready_for_reinspection boolean)
+language sql stable security definer set search_path='' as $$
+ select h.id,h.lot_code,h.address_line1,
+ (select count(*) from public.inspection_observations o where o.organization_id=p_org and o.home_id=h.id),
+ (select count(*) from public.inspection_observations o join public.inspections i on i.id=o.inspection_id where o.organization_id=p_org and o.home_id=h.id and o.status<>'disregarded' and (o.status='open' or i.reviewed_at is null)),
+ (select count(*) from public.work_items w where w.organization_id=p_org and w.home_id=h.id and w.observation_id is not null and w.state<>'cancelled'),
+ (select count(*) from public.work_items w where w.organization_id=p_org and w.home_id=h.id and w.state not in ('ready_for_verification','verified','cancelled')),
+ private.property_repairs_ready(p_org,h.id)
+ from public.homes h where h.organization_id=p_org and (p_home is null or h.id=p_home) and private.has_permission(p_org,auth.uid(),'inspection.manage',h.neighborhood_id,h.id);
+$$;
+revoke all on function public.inspection_repair_readiness(uuid,uuid) from public,anon;
+grant execute on function public.inspection_repair_readiness(uuid,uuid) to authenticated;
+
+create table private.property_reinspection_state(home_id uuid primary key references public.homes(id),ready boolean not null default false);
+create function private.notify_property_repairs_ready() returns trigger language plpgsql security definer set search_path='' as $$
+declare org uuid:=new.organization_id; home uuid:=new.home_id; previous boolean; current_ready boolean; lot text;
+begin
+ if home is null or not exists(select 1 from public.inspection_observations where organization_id=org and home_id=home) then return new; end if;
+ insert into private.property_reinspection_state(home_id) values(home) on conflict do nothing;
+ select ready into previous from private.property_reinspection_state where home_id=home for update;
+ current_ready:=private.property_repairs_ready(org,home);
+ update private.property_reinspection_state set ready=current_ready where home_id=home;
+ if current_ready and not previous then
+  select lot_code into lot from public.homes where id=home;
+  insert into public.notifications(organization_id,recipient_user_id,title,body,deep_link)
+  select org,m.user_id,'Property ready for reinspection','Lot '||lot||': all repair tasks are complete and the inspection report has been reviewed.','/org/'||org||'/homes/'||home||'?tab=inspections'
+   from public.organization_memberships m where m.organization_id=org and m.status='active' and private.has_permission(org,m.user_id,'inspection.manage',new.neighborhood_id,home);
+ end if;
+ return new;
+end; $$;
+create trigger notify_observation_readiness after insert or update on public.inspection_observations for each row execute function private.notify_property_repairs_ready();
+create trigger notify_repair_readiness after insert or update on public.work_items for each row execute function private.notify_property_repairs_ready();
+create trigger notify_report_repair_readiness after update on public.inspections for each row execute function private.notify_property_repairs_ready();
+revoke all on function private.guard_observation_workflow(),private.inspection_observation_command(text,jsonb),private.property_repairs_ready(uuid,uuid),private.notify_property_repairs_ready() from public,anon,authenticated;
+notify pgrst,'reload schema';
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202611030062_observation_property_readiness.sql
+-- ============================================================================
+
+begin;
+
+-- Unreviewed issues also block final property/milestone readiness.
+create or replace view public.home_summary with (security_invoker = true) as
+-- Keep the original view column order. Homes gained plan/layout columns after
+-- this view was introduced; h.* would insert them before the computed fields
+-- and PostgreSQL correctly refuses that incompatible replacement.
+select h.id,h.organization_id,h.neighborhood_id,h.lot_code,h.address_line1,h.address_line2,
+  h.city,h.state_code,h.postal_code,h.phase,h.primary_supervisor_user_id,h.external_reference,
+  h.archived_at,h.created_at,h.updated_at,h.version,
+  case
+    when exists(select 1 from public.inspection_observations ob join public.inspections report on report.id=ob.inspection_id
+      where ob.organization_id=h.organization_id and ob.home_id=h.id and (report.reviewed_at is null or
+        ob.status<>'disregarded' and (ob.status='open' or not exists(select 1 from public.work_items repair where repair.organization_id=ob.organization_id and repair.observation_id=ob.id and repair.state<>'cancelled')))) then 'not_ready'
+    when exists (select 1 from public.work_items w where w.organization_id = h.organization_id and w.home_id = h.id and w.priority = 'critical' and w.state not in ('draft','verified','cancelled'))
+      or exists (
+        select 1 from public.milestone_requirements mr
+        where mr.organization_id = h.organization_id and mr.home_id = h.id and mr.required
+          and not exists (select 1 from public.inspections i where i.organization_id = h.organization_id and i.home_id = h.id and i.type = mr.required_inspection_type and i.status = 'submitted')
+      ) then 'not_ready'
+    when exists (select 1 from public.work_items w where w.organization_id = h.organization_id and w.home_id = h.id and w.state = 'ready_for_verification') then 'pending_verification'
+    when exists (select 1 from public.work_items w where w.organization_id = h.organization_id and w.home_id = h.id and w.state in ('submitted','assigned','acknowledged','in_progress','blocked','rework_required')) then 'open_work'
+    else 'ready_for_review'
+  end as readiness,
+  (select count(*)::integer from public.work_items w where w.organization_id = h.organization_id and w.home_id = h.id and w.state not in ('draft','verified','cancelled')) as open_count
+from public.homes h;
+
+create or replace function public.inspection_repair_readiness(p_org uuid,p_home uuid default null) returns table(
+ home_id uuid,lot_code text,address_line1 text,observation_count bigint,unreviewed_count bigint,repair_count bigint,incomplete_count bigint,ready_for_reinspection boolean)
+language sql stable security definer set search_path='' as $$
+ select h.id,h.lot_code,h.address_line1,
+ (select count(*) from public.inspection_observations o where o.organization_id=p_org and o.home_id=h.id),
+ (select count(*) from public.inspection_observations o join public.inspections i on i.id=o.inspection_id where o.organization_id=p_org and o.home_id=h.id and (i.reviewed_at is null or o.status<>'disregarded' and (o.status='open' or not exists(select 1 from public.work_items assigned where assigned.organization_id=p_org and assigned.observation_id=o.id and assigned.state<>'cancelled')))),
+ (select count(*) from public.work_items w where w.organization_id=p_org and w.home_id=h.id and w.observation_id is not null and w.state<>'cancelled'),
+ (select count(*) from public.work_items w where w.organization_id=p_org and w.home_id=h.id and w.state not in ('ready_for_verification','verified','cancelled')),
+ private.property_repairs_ready(p_org,h.id)
+ from public.homes h where h.organization_id=p_org and (p_home is null or h.id=p_home) and private.has_permission(p_org,auth.uid(),'inspection.manage',h.neighborhood_id,h.id);
+$$;
+
+create function private.invalidate_observation_approval() returns trigger language plpgsql security definer set search_path='' as $$
+begin
+ update public.milestone_approvals set invalidated_at=now(),invalidation_reason='A new inspection observation needs review.'
+ where organization_id=new.organization_id and home_id=new.home_id and invalidated_at is null;
+ if found then perform private.append_audit(new.organization_id,new.created_by,'milestone.invalidated','home',new.home_id,null,null,null,jsonb_build_object('observation_id',new.id)); end if;
+ return new;
+end; $$;
+create trigger invalidate_observation_approval after insert on public.inspection_observations for each row execute function private.invalidate_observation_approval();
+revoke all on function private.invalidate_observation_approval() from public,anon,authenticated;
+notify pgrst,'reload schema';
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202611030063_floor_plan_numeric_levels.sql
+-- ============================================================================
+
+begin;
+
+alter table public.master_plans
+  add column if not exists levels integer not null default 1 check(levels between 1 and 50);
+
+-- Convert legacy labels and numeric strings to bounded JSON numbers. A legacy
+-- label such as "Main" becomes level 1 so every saved space follows one type.
+update public.master_plans mp set spaces=normalized.spaces,levels=normalized.levels
+from (
+  select p.id,
+    greatest(1,least(50,max(case when (s.value->>'level')~'^[0-9]+$' then (s.value->>'level')::int else 1 end))) levels,
+    jsonb_agg(jsonb_set(s.value,'{level}',to_jsonb(greatest(1,least(50,case when (s.value->>'level')~'^[0-9]+$' then (s.value->>'level')::int else 1 end))),true) order by s.ordinality) spaces
+  from public.master_plans p cross join lateral jsonb_array_elements(p.spaces) with ordinality s(value,ordinality)
+  group by p.id
+) normalized where normalized.id=mp.id;
+
+drop function if exists public.save_master_plan(uuid,uuid,uuid,text,jsonb,boolean,bigint);
+
+create or replace function public.save_master_plan(
+  p_org uuid,
+  p_id uuid,
+  p_division uuid,
+  p_name text,
+  p_spaces jsonb,
+  p_active boolean,
+  p_version bigint default null,
+  p_levels integer default null
+) returns jsonb language plpgsql security definer set search_path='' as $$
+declare
+  r public.master_plans;
+  previous public.master_plans;
+  v_levels integer;
+begin
+  if not private.active_member(p_org,auth.uid()) or not private.require_aal2() or not private.has_permission(p_org,auth.uid(),'plan.manage',null,null) and not exists(
+    select 1 from public.role_assignments a join public.role_permissions rp on rp.role_code=a.role_code and rp.permission_code='plan.manage'
+    where a.organization_id=p_org and a.user_id=auth.uid() and private.role_grant_enabled(a) and a.revoked_at is null and a.starts_at<=now() and (a.ends_at is null or a.ends_at>now())
+      and (a.scope_kind='organization' or a.scope_kind='division' and a.division_id=p_division)) then
+    raise insufficient_privilege using message='Plan management in this division requires a verified administrator.';
+  end if;
+
+  v_levels := coalesce(p_levels, (
+    select coalesce(max(case
+      when jsonb_typeof(s->'level') = 'number' then (s->>'level')::int
+      when (s->>'level') ~ '^[0-9]+$' then (s->>'level')::int
+      else 1 end), 1)
+    from jsonb_array_elements(p_spaces) s
+  ), 1);
+
+  if v_levels not between 1 and 50 then
+    raise check_violation using message='Number of levels must be between 1 and 50.';
+  end if;
+
+  if jsonb_typeof(p_spaces)<>'array' or jsonb_array_length(p_spaces) not between 1 and 200 or exists(
+    select 1 from jsonb_array_elements(p_spaces) s
+    where nullif(trim(s->>'name'),'') is null or length(s->>'name')>120
+      or not exists(select 1 from public.space_types t where t.code=s->>'type' and (t.active or exists(select 1 from public.master_plans prior_plan where prior_plan.organization_id=p_org and prior_plan.id=p_id and exists(select 1 from jsonb_array_elements(prior_plan.spaces) old_space where old_space->>'type'=t.code))))
+      or not (s ? 'level')
+      or jsonb_typeof(s->'level') <> 'number'
+      or (s->>'level')::numeric % 1 <> 0
+      or (s->>'level')::int not between 1 and v_levels
+      or s ? 'square_feet' and s->'square_feet' <> 'null'::jsonb and (jsonb_typeof(s->'square_feet')<>'number' or (s->>'square_feet')::numeric <= 0 or (s->>'square_feet')::numeric > 1000000)
+  ) or (select count(*) from jsonb_array_elements(p_spaces))<>(select count(distinct lower(trim(s->>'name'))) from jsonb_array_elements(p_spaces) s) then
+    raise check_violation using message='Choose a space type, unique name, valid level, and valid square footage for every space (1–200).';
+  end if;
+
+  if p_id is not null then
+    select * into previous from public.master_plans where organization_id=p_org and id=p_id for update;
+    if not found or previous.division_id<>p_division then raise insufficient_privilege using message='Plan is unavailable in this division.'; end if;
+    if p_version is null or previous.version<>p_version then raise serialization_failure using message='This plan changed. Refresh before saving.'; end if;
+    update public.master_plans set name=trim(p_name),spaces=p_spaces,levels=v_levels,active=p_active,version=version+1,updated_at=now() where id=p_id returning * into r;
+  else
+    insert into public.master_plans(organization_id,division_id,name,spaces,levels,active) values(p_org,p_division,trim(p_name),p_spaces,v_levels,p_active) returning * into r;
+  end if;
+
+  perform private.append_audit(p_org,auth.uid(),'plan.saved','master_plan',r.id,null,to_jsonb(previous),to_jsonb(r));
+  return to_jsonb(r);
+end; $$;
+
+revoke all on function public.save_master_plan(uuid,uuid,uuid,text,jsonb,boolean,bigint,integer) from public,anon;
+grant execute on function public.save_master_plan(uuid,uuid,uuid,text,jsonb,boolean,bigint,integer) to authenticated;
+
+notify pgrst, 'reload schema';
+
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202611030064_materialize_plan_checklist_items.sql
+-- ============================================================================
+
+begin;
+
+-- A checklist category is an import source, not a permanent relationship.
+-- Materialize every legacy category question into the space's editable item
+-- list, preserve custom items, remove duplicates, and discard the reference.
+with migrated as (
+  select p.id,
+    jsonb_agg(
+      (space.value - 'checklist_version_id') || jsonb_build_object(
+        'checklist_items',
+        coalesce((
+          select jsonb_agg(to_jsonb(item.label) order by item.source_rank,item.item_order)
+          from (
+            select deduplicated.label,deduplicated.source_rank,deduplicated.item_order
+            from (
+              select combined.label,combined.source_rank,combined.item_order,
+                row_number() over(partition by lower(combined.label) order by combined.source_rank,combined.item_order) duplicate_rank
+              from (
+                select trim(q.label) label,0 source_rank,q.ordinal::bigint item_order
+                from public.checklist_questions q
+                where q.organization_id=p.organization_id
+                  and q.version_id=nullif(space.value->>'checklist_version_id','')::uuid
+                union all
+                select trim(existing.value #>> '{}') label,1 source_rank,existing.ordinality::bigint item_order
+                from jsonb_array_elements(coalesce(space.value->'checklist_items','[]'::jsonb)) with ordinality existing(value,ordinality)
+                where jsonb_typeof(existing.value)='string'
+              ) combined
+              where length(combined.label) between 2 and 1000
+            ) deduplicated
+            where deduplicated.duplicate_rank=1
+            order by deduplicated.source_rank,deduplicated.item_order
+            limit 100
+          ) item
+        ),'[]'::jsonb)
+      )
+      order by space.ordinality
+    ) spaces
+  from public.master_plans p
+  cross join lateral jsonb_array_elements(p.spaces) with ordinality space(value,ordinality)
+  group by p.id
+)
+update public.master_plans plan
+set spaces=migrated.spaces,updated_at=now()
+from migrated
+where migrated.id=plan.id
+  and exists(select 1 from jsonb_array_elements(plan.spaces) space where space ? 'checklist_version_id');
+
+create or replace function private.validate_plan_checklists() returns trigger
+language plpgsql security definer set search_path='' as $$
+declare space jsonb; item jsonb;
+begin
+  for space in select value from jsonb_array_elements(new.spaces) loop
+    if space ? 'checklist_version_id' then
+      raise check_violation using message='Import checklist category items instead of assigning a category to a space.';
+    end if;
+    if space ? 'checklist_items' then
+      if jsonb_typeof(space->'checklist_items')<>'array' or jsonb_array_length(space->'checklist_items')>100 then
+        raise check_violation using message='Each space supports up to 100 checklist items.';
+      end if;
+      for item in select value from jsonb_array_elements(space->'checklist_items') loop
+        if jsonb_typeof(item)<>'string' or length(trim(item #>> '{}')) not between 2 and 1000 then
+          raise check_violation using message='Checklist items must be between 2 and 1000 characters.';
+        end if;
+      end loop;
+    end if;
+  end loop;
+  return new;
+end; $$;
+
+notify pgrst, 'reload schema';
+
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202611030065_scoped_vendor_administration.sql
+-- ============================================================================
+
+begin;
+
+-- Vendor administration is intentionally split by capability:
+--   organization admin: company identity, coverage, lifecycle, all local work
+--   division admin: contact/services, team, eligibility in the division
+--   neighborhood admin: team and eligibility in assigned neighborhoods
+-- Smaller authority numbers remain stronger and higher grants stay protected.
+create or replace function private.company_team_level(p_org uuid,p_actor uuid,p_company uuid) returns smallint
+language sql stable security definer set search_path='' as $$
+  select min(private.management_level(p_org,p_actor,'access.manage','neighborhood',null,n.id,null))::smallint
+  from public.neighborhoods n
+  where n.organization_id=p_org and n.status='active' and private.company_covers(p_org,p_company,n.id)
+    and private.management_level(p_org,p_actor,'access.manage','neighborhood',null,n.id,null) is not null;
+$$;
+
+create or replace function private.company_team_visible(p_org uuid,p_actor uuid,p_company uuid) returns boolean
+language sql stable security definer set search_path='' as $$
+  select private.active_member(p_org,p_actor) and (
+    private.vendor_admin(p_org,p_actor,p_company) or private.company_team_level(p_org,p_actor,p_company) is not null
+  );
+$$;
+
+create or replace function private.can_manage_company_member(p_actor uuid,p_member public.company_memberships) returns boolean
+language sql stable security definer set search_path='' as $$
+  select coalesce(private.company_team_level(p_member.organization_id,p_actor,p_member.company_id)<=p_member.authority_level,false)
+    or (p_member.authority_level=4 and private.vendor_admin(p_member.organization_id,p_actor,p_member.company_id));
+$$;
+
+create or replace function private.can_edit_company_profile(p_org uuid,p_actor uuid,p_company uuid) returns boolean
+language sql stable security definer set search_path='' as $$
+  select private.vendor_admin(p_org,p_actor,p_company)
+    or private.company_team_level(p_org,p_actor,p_company) in (1,2);
+$$;
+
+create or replace function private.delegation_level(p_org uuid,p_actor uuid,p_role text,p_scope public.scope_kind,
+  p_division uuid,p_neighborhood uuid,p_home uuid,p_company uuid,p_start timestamptz,p_end timestamptz)
+returns smallint language plpgsql stable security definer set search_path='' as $$
+declare requested public.roles; level smallint;
+begin
+  select * into requested from public.roles where code=p_role and private.role_enabled(p_org,code);
+  if not found or not(p_scope=any(requested.allowed_scope_kinds)) or p_start is null or (p_end is not null and p_end<=p_start)
+    or not private.active_member(p_org,p_actor) then return null; end if;
+  if p_scope='organization' and (p_division is not null or p_neighborhood is not null or p_home is not null or p_company is not null) then return null; end if;
+  if p_scope='division' and (p_division is null or p_neighborhood is not null or p_home is not null or p_company is not null or not exists(select 1 from public.divisions where organization_id=p_org and id=p_division and status='active')) then return null; end if;
+  if p_scope in ('neighborhood','home') and (p_division is not null or p_neighborhood is null or (p_scope='neighborhood' and p_home is not null)
+    or not exists(select 1 from public.neighborhoods where organization_id=p_org and id=p_neighborhood and status='active')) then return null; end if;
+  if p_scope='home' and (p_home is null or not exists(select 1 from public.homes where organization_id=p_org and neighborhood_id=p_neighborhood and id=p_home and archived_at is null)) then return null; end if;
+  if requested.requires_company and (p_company is null or not exists(select 1 from public.companies where organization_id=p_org and id=p_company and status='active')) then return null; end if;
+  if p_scope='company' then
+    if not requested.requires_company or p_company is null or p_division is not null or p_neighborhood is not null or p_home is not null then return null; end if;
+    if private.vendor_admin(p_org,p_actor,p_company) and p_role in ('vendor_admin','trade_technician') then return 4; end if;
+    level:=private.company_team_level(p_org,p_actor,p_company);
+    if level is null then return null; end if;
+    return level;
+  elsif requested.requires_company and not private.company_covers(p_org,p_company,p_neighborhood) then return null;
+  end if;
+  select min(case a.scope_kind when 'organization' then 1 when 'division' then 2 when 'neighborhood' then 3 end)::smallint into level
+  from public.role_assignments a where a.organization_id=p_org and a.user_id=p_actor and a.revoked_at is null
+    and a.starts_at<=now() and private.role_grant_enabled(a) and (a.ends_at is null or (p_end is not null and p_end<=a.ends_at))
+    and exists(select 1 from public.role_permissions rp where rp.role_code=a.role_code and rp.permission_code='access.manage')
+    and private.scope_contains(p_org,a.scope_kind,a.division_id,a.neighborhood_id,a.home_id,p_scope,p_division,p_neighborhood,p_home)
+    and (a.scope_kind='organization' or not exists(select 1 from public.role_permissions wanted where wanted.role_code=p_role and wanted.permission_code<>'company.users.manage'
+      and not exists(select 1 from public.role_permissions held where held.role_code=a.role_code and held.permission_code=wanted.permission_code)));
+  return level;
+end; $$;
+
+-- Existing access editing can use a locally covered company, but the stored
+-- authority level still prevents a local admin from changing/removing a member
+-- granted by an organization or division administrator.
+do $migration$
+declare definition text; needle text;
+begin
+  definition:=replace(pg_get_functiondef('public.admin_onboard_vendor(uuid,text,text,public.scope_kind,uuid,uuid)'::regprocedure),chr(13)||chr(10),chr(10));
+  needle:='if not private.require_aal2() or level is null or p_scope not in (''organization'',''division'',''neighborhood'') then';
+  if strpos(definition,needle)=0 then raise exception 'vendor onboarding authority guard changed; review scoped vendor migration'; end if;
+  definition:=replace(definition,needle,'if not private.require_aal2() or level is null or level>2 or p_scope not in (''organization'',''division'',''neighborhood'') then');
+  execute definition;
+
+  definition:=replace(pg_get_functiondef('public.admin_set_member_access(uuid,uuid,public.affiliation_kind,jsonb,uuid,text)'::regprocedure),chr(13)||chr(10),chr(10));
+  needle:='if not private.controls_company(p_organization_id,auth.uid(),p_company_id) and not private.vendor_admin(p_organization_id,auth.uid(),p_company_id) then raise exception using errcode=''42501'',message=''this company is outside your management authority''; end if;';
+  if strpos(definition,needle)=0 then raise exception 'member company authority guard changed; review scoped vendor migration'; end if;
+  definition:=replace(definition,needle,'if private.company_team_level(p_organization_id,auth.uid(),p_company_id) is null and not private.vendor_admin(p_organization_id,auth.uid(),p_company_id) then raise exception using errcode=''42501'',message=''this company team is outside your management authority''; end if;');
+  needle:='select case when private.vendor_admin(p_organization_id,auth.uid(),p_company_id) and not private.controls_company(p_organization_id,auth.uid(),p_company_id) then 4'||chr(10)||
+    '      else private.admin_level(p_organization_id,auth.uid(),c.owner_scope_kind,c.owner_division_id,c.owner_neighborhood_id,null) end into company_level from public.companies c where c.id=p_company_id;';
+  if strpos(definition,needle)=0 then raise exception 'member company level calculation changed; review scoped vendor migration'; end if;
+  definition:=replace(definition,needle,'select case when private.vendor_admin(p_organization_id,auth.uid(),p_company_id) then 4 else private.company_team_level(p_organization_id,auth.uid(),p_company_id) end into company_level;');
+  execute definition;
+
+  definition:=replace(pg_get_functiondef('public.admin_set_vendor_coverage(uuid,uuid,public.scope_kind,uuid,uuid,uuid,boolean)'::regprocedure),chr(13)||chr(10),chr(10));
+  needle:='begin'||chr(10)||'  if auth.uid() is null or not private.require_aal2() then';
+  if strpos(definition,needle)=0 then raise exception 'vendor coverage guard changed; review scoped vendor migration'; end if;
+  definition:=replace(definition,needle,'begin'||chr(10)||'  if private.admin_level(p_organization_id,auth.uid(),''organization'') is distinct from 1::smallint then raise exception using errcode=''42501'',message=''only an organization administrator may change approved vendor coverage''; end if;'||chr(10)||'  if auth.uid() is null or not private.require_aal2() then');
+  execute definition;
+end; $migration$;
+
+create or replace function public.administration_context(p_organization_id uuid) returns jsonb
+language plpgsql stable security definer set search_path='' as $$
+begin
+  if not private.active_member(p_organization_id,auth.uid()) then raise exception using errcode='42501',message='active membership required'; end if;
+  return jsonb_build_object('organization_admin',coalesce(private.admin_level(p_organization_id,auth.uid(),'organization')=1,false),
+    'companies',coalesce((select jsonb_agg(jsonb_build_object('id',c.id,'name',c.name) order by c.name) from public.companies c where c.organization_id=p_organization_id and c.status='active'
+      and private.company_team_visible(p_organization_id,auth.uid(),c.id)),'[]'::jsonb),
+    'grants',coalesce((select jsonb_agg(jsonb_build_object('scope_kind',a.scope_kind,'division_id',a.division_id,'neighborhood_id',a.neighborhood_id,'home_id',a.home_id,'company_id',a.company_id,'ends_at',a.ends_at,
+        'permissions',(select jsonb_agg(rp.permission_code) from public.role_permissions rp where rp.role_code=a.role_code)))
+      from public.role_assignments a where a.organization_id=p_organization_id and a.user_id=auth.uid() and a.revoked_at is null and a.starts_at<=now()
+        and (a.ends_at is null or a.ends_at>now()) and private.role_grant_enabled(a)
+        and exists(select 1 from public.role_permissions rp where rp.role_code=a.role_code and rp.permission_code in ('access.manage','company.users.manage','structure.manage','roster.manage'))),'[]'::jsonb));
+end; $$;
+
+create or replace function public.vendor_access_context(p_organization_id uuid,p_company_id uuid) returns jsonb
+language plpgsql stable security definer set search_path='' as $$
+declare company public.companies; org_admin boolean; team_level smallint;
+begin
+  select * into company from public.companies where organization_id=p_organization_id and id=p_company_id;
+  if not found or not private.can_read_company(p_organization_id,auth.uid(),p_company_id) then raise exception using errcode='42501',message='vendor is outside your access'; end if;
+  org_admin:=coalesce(private.admin_level(p_organization_id,auth.uid(),'organization')=1,false);
+  team_level:=private.company_team_level(p_organization_id,auth.uid(),p_company_id);
+  return jsonb_build_object(
+    'can_edit',org_admin,
+    'can_edit_company_details',org_admin,
+    'can_edit_profile',private.can_edit_company_profile(p_organization_id,auth.uid(),p_company_id),
+    'can_deactivate',org_admin,
+    'can_manage_coverage',org_admin,
+    'can_manage_team',team_level is not null or private.vendor_admin(p_organization_id,auth.uid(),p_company_id),
+    'can_manage_eligibility',exists(select 1 from public.neighborhoods n where n.organization_id=p_organization_id and n.status='active'
+      and private.company_covers(p_organization_id,p_company_id,n.id)
+      and private.management_level(p_organization_id,auth.uid(),'roster.manage','neighborhood',null,n.id,null) is not null),
+    'owner_scope_kind',company.owner_scope_kind,
+    'owner_label',case company.owner_scope_kind when 'organization' then 'Organization' when 'division' then (select name from public.divisions where id=company.owner_division_id) else (select name from public.neighborhoods where id=company.owner_neighborhood_id) end,
+    'coverage',coalesce((select jsonb_agg(to_jsonb(g)||jsonb_build_object('label',case g.scope_kind when 'organization' then 'Entire organization' when 'division' then (select name from public.divisions where id=g.division_id) else (select name from public.neighborhoods where id=g.neighborhood_id) end,
+      'can_remove',org_admin)) from public.company_access_grants g where g.organization_id=p_organization_id and g.company_id=p_company_id and g.revoked_at is null),'[]'::jsonb));
+end; $$;
+
+create or replace function public.company_profile_context(p_org uuid,p_company uuid) returns jsonb
+language plpgsql stable security definer set search_path='' as $$
+declare profile_editor boolean; ein_editor boolean;
+begin
+  if not private.can_read_company(p_org,auth.uid(),p_company) then raise insufficient_privilege using message='Company is unavailable.'; end if;
+  profile_editor:=private.can_edit_company_profile(p_org,auth.uid(),p_company);
+  ein_editor:=coalesce(private.admin_level(p_org,auth.uid(),'organization')=1,false) or private.vendor_admin(p_org,auth.uid(),p_company);
+  return jsonb_build_object('can_edit',profile_editor,'can_edit_profile',profile_editor,'can_edit_ein',ein_editor,
+    'ein',case when ein_editor then (select ein from public.company_private_details where organization_id=p_org and company_id=p_company) end);
+end; $$;
+
+create or replace function public.save_company_profile(p_org uuid,p_company uuid,p_email text,p_phone text,p_address text,p_ein text,p_categories text[],p_version bigint)
+returns jsonb language plpgsql security definer set search_path='' as $$
+declare c public.companies; ein_editor boolean;
+begin
+  select * into c from public.companies where organization_id=p_org and id=p_company for update;
+  if not found or not private.require_aal2() or not private.can_edit_company_profile(p_org,auth.uid(),p_company) then raise insufficient_privilege using message='Contact and service management is unavailable for this company.'; end if;
+  if c.version<>p_version then raise serialization_failure using message='Company changed. Refresh before saving.'; end if;
+  if nullif(trim(p_email),'') is not null and p_email !~ '^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$' then raise check_violation using message='Enter a valid contact email.'; end if;
+  if not coalesce(p_categories,'{}')<@array['plumbing','framing','third_party_inspection','drywall','electrical','roofing','hvac','landscaping','other'] or length(coalesce(p_phone,''))>40 or length(coalesce(p_address,''))>1000 then raise check_violation using message='Invalid company contact details or categories.'; end if;
+  update public.companies set contact_email=nullif(trim(p_email),''),phone_number=nullif(trim(p_phone),''),physical_address=nullif(trim(p_address),''),categories=coalesce(p_categories,'{}'),updated_at=now(),version=version+1 where id=p_company returning * into c;
+  ein_editor:=coalesce(private.admin_level(p_org,auth.uid(),'organization')=1,false) or private.vendor_admin(p_org,auth.uid(),p_company);
+  if ein_editor then
+    if nullif(trim(p_ein),'') is not null and p_ein !~ '^[0-9]{2}-?[0-9]{7}$' then raise check_violation using message='EIN must contain nine digits.'; end if;
+    insert into public.company_private_details(organization_id,company_id,ein) values(p_org,p_company,nullif(trim(p_ein),'')) on conflict(company_id) do update set ein=excluded.ein;
+  end if;
+  perform private.append_audit(p_org,auth.uid(),'company.profile_updated','company',p_company,null,null,null,jsonb_build_object('categories',p_categories));
+  return to_jsonb(c);
+end; $$;
+
+create or replace function public.admin_save_company(p_organization_id uuid,p_id uuid,p_name text,p_external_vendor_reference text default null,p_status public.organization_status default 'active')
+returns public.companies language plpgsql security definer set search_path='' as $$
+declare result public.companies; before_row jsonb;
+begin
+  if not private.require_aal2() or private.admin_level(p_organization_id,auth.uid(),'organization') is distinct from 1::smallint then
+    raise exception using errcode='42501',message='only an organization administrator may change company identity details';
+  end if;
+  if length(trim(coalesce(p_name,''))) not between 1 and 160 then raise exception using errcode='22023',message='company name is required'; end if;
+  if p_id is null then insert into public.companies(organization_id,name,external_vendor_reference,status) values(p_organization_id,trim(p_name),nullif(trim(p_external_vendor_reference),''),p_status) returning * into result;
+  else select to_jsonb(c) into before_row from public.companies c where c.organization_id=p_organization_id and c.id=p_id for update;
+    update public.companies set name=trim(p_name),external_vendor_reference=nullif(trim(p_external_vendor_reference),''),status=p_status,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning * into result;
+    if not found then raise exception using errcode='02000',message='company not found'; end if;
+  end if;
+  perform private.append_audit(p_organization_id,auth.uid(),'company.saved','company',result.id,null,before_row,to_jsonb(result));
+  return result;
+end; $$;
+
+create or replace function public.admin_save_roster(
+  p_organization_id uuid,p_id uuid,p_neighborhood_id uuid,p_company_id uuid,
+  p_status public.organization_status default 'active',p_active_from timestamptz default now(),p_active_to timestamptz default null
+) returns public.neighborhood_trade_rosters language plpgsql security definer set search_path='' as $$
+declare result public.neighborhood_trade_rosters; existing public.neighborhood_trade_rosters; before_row jsonb; actor_level smallint;
+begin
+  actor_level:=private.management_level(p_organization_id,auth.uid(),'roster.manage','neighborhood',null,p_neighborhood_id,null);
+  if not private.require_aal2() or actor_level is null or not private.company_covers(p_organization_id,p_company_id,p_neighborhood_id) then
+    raise exception using errcode='42501',message='vendor eligibility is outside your scope or approved coverage';
+  end if;
+  if p_active_to is not null and p_active_to<=p_active_from then raise exception using errcode='22023',message='roster end must follow its start'; end if;
+  if not exists(select 1 from public.neighborhoods where organization_id=p_organization_id and id=p_neighborhood_id and status='active') then raise exception using errcode='22023',message='neighborhood is unavailable'; end if;
+  if not exists(select 1 from public.companies where organization_id=p_organization_id and id=p_company_id and status='active') then raise exception using errcode='22023',message='company is unavailable'; end if;
+  if p_id is not null then
+    select * into existing from public.neighborhood_trade_rosters where organization_id=p_organization_id and id=p_id for update;
+    if not found then raise exception using errcode='02000',message='roster entry not found'; end if;
+    if private.management_level(p_organization_id,auth.uid(),'roster.manage','neighborhood',null,existing.neighborhood_id,null) is null then
+      raise exception using errcode='42501',message='existing eligibility is outside your neighborhood authority';
+    end if;
+  end if;
+  if p_id is null then
+    insert into public.neighborhood_trade_rosters(organization_id,neighborhood_id,company_id,status,active_from,active_to,granted_by,authority_level)
+      values(p_organization_id,p_neighborhood_id,p_company_id,p_status,p_active_from,p_active_to,auth.uid(),actor_level) returning * into result;
+  else
+    before_row:=to_jsonb(existing);
+    update public.neighborhood_trade_rosters set neighborhood_id=p_neighborhood_id,company_id=p_company_id,status=p_status,active_from=p_active_from,active_to=p_active_to
+      where organization_id=p_organization_id and id=p_id returning * into result;
+    if not found then raise exception using errcode='02000',message='roster entry not found'; end if;
+  end if;
+  perform private.append_audit(p_organization_id,auth.uid(),'roster.saved','neighborhood_trade_roster',result.id,null,before_row,to_jsonb(result));
+  return result;
+end; $$;
+
+-- Company lifecycle remains an organization-level action. Eligibility status
+-- changes retain the creator-level protection already used for people access.
+do $status_guard$
+declare definition text; needle text;
+begin
+  definition:=replace(pg_get_functiondef('public.admin_set_catalog_status(uuid,text,uuid,boolean)'::regprocedure),chr(13)||chr(10),chr(10));
+  needle:='if required_permission is null then raise exception using errcode=''22023'',message=''unsupported catalog entity''; end if;';
+  if strpos(definition,needle)=0 then raise exception 'catalog status validation changed; review scoped vendor migration'; end if;
+  definition:=replace(definition,needle,needle||chr(10)||
+    '  if p_entity=''company'' and private.admin_level(p_organization_id,auth.uid(),''organization'') is distinct from 1::smallint then raise exception using errcode=''42501'',message=''only an organization administrator may change company status''; end if;'||chr(10)||
+    '  if p_entity=''roster'' and exists(select 1 from public.neighborhood_trade_rosters r where r.organization_id=p_organization_id and r.id=p_id and (private.management_level(p_organization_id,auth.uid(),''roster.manage'',''neighborhood'',null,r.neighborhood_id,null) is null or private.management_level(p_organization_id,auth.uid(),''roster.manage'',''neighborhood'',null,r.neighborhood_id,null)>r.authority_level)) then raise exception using errcode=''42501'',message=''eligibility status was set by a higher administrator''; end if;');
+  execute definition;
+end; $status_guard$;
+
+revoke all on function private.company_team_level(uuid,uuid,uuid),private.company_team_visible(uuid,uuid,uuid),private.can_manage_company_member(uuid,public.company_memberships),private.can_edit_company_profile(uuid,uuid,uuid) from public,anon,authenticated;
+
+notify pgrst, 'reload schema';
+
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202611030066_restore_company_team_policy_execute.sql
+-- ============================================================================
+
+begin;
+
+-- company_memberships_scoped_select evaluates this predicate as the querying
+-- authenticated user. The function is security definer and returns only a
+-- boolean, so expose EXECUTE without exposing its underlying tables.
+grant execute on function private.company_team_visible(uuid,uuid,uuid) to authenticated;
+
+notify pgrst, 'reload schema';
+
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202611030067_expand_company_categories.sql
+-- ============================================================================
+
+begin;
+
+insert into public.master_catalog_entries(kind,code,label,sort_order) values
+  ('company_category','general_contractor','General contractor',100),
+  ('company_category','excavation_grading','Excavation & grading',110),
+  ('company_category','site_utilities','Site utilities',120),
+  ('company_category','concrete_masonry','Concrete & masonry',130),
+  ('company_category','structural_steel','Structural steel',140),
+  ('company_category','carpentry','Carpentry',150),
+  ('company_category','cabinetry_millwork','Cabinetry & millwork',160),
+  ('company_category','gutters','Gutters & drainage',170),
+  ('company_category','waterproofing','Waterproofing',180),
+  ('company_category','insulation','Insulation',190),
+  ('company_category','painting_coatings','Painting & coatings',200),
+  ('company_category','flooring_tile','Flooring & tile',210),
+  ('company_category','countertops','Countertops',220),
+  ('company_category','doors_windows','Doors & windows',230),
+  ('company_category','garage_doors','Garage doors',240),
+  ('company_category','fire_protection','Fire protection',250),
+  ('company_category','low_voltage_security','Low voltage & security',260),
+  ('company_category','solar_energy','Solar energy',270),
+  ('company_category','elevators_lifts','Elevators & lifts',280),
+  ('company_category','appliances','Appliances',290),
+  ('company_category','fencing','Fencing',300),
+  ('company_category','pools_spas','Pools & spas',310),
+  ('company_category','pest_control','Pest control',320),
+  ('company_category','final_cleaning','Final cleaning',330),
+  ('company_category','waste_management','Waste management',340),
+  ('company_category','engineering_testing','Engineering & testing',350)
+on conflict(kind,code) do nothing;
+
+-- Validate against the master catalog so platform-added categories and future
+-- catalog expansion do not require another company-profile function rewrite.
+create or replace function public.save_company_profile(p_org uuid,p_company uuid,p_email text,p_phone text,p_address text,p_ein text,p_categories text[],p_version bigint)
+returns jsonb language plpgsql security definer set search_path='' as $$
+declare c public.companies; ein_editor boolean; normalized_categories text[];
+begin
+  select * into c from public.companies where organization_id=p_org and id=p_company for update;
+  if not found or not private.require_aal2() or not private.can_edit_company_profile(p_org,auth.uid(),p_company) then raise insufficient_privilege using message='Contact and service management is unavailable for this company.'; end if;
+  if c.version<>p_version then raise serialization_failure using message='Company changed. Refresh before saving.'; end if;
+  if nullif(trim(p_email),'') is not null and p_email !~ '^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$' then raise check_violation using message='Enter a valid contact email.'; end if;
+  normalized_categories:=array(select distinct category from unnest(coalesce(p_categories,'{}')) category where nullif(trim(category),'') is not null order by category);
+  if exists(select 1 from unnest(normalized_categories) category where not exists(
+      select 1 from public.master_catalog_entries entry where entry.kind='company_category' and entry.code=category and (entry.active or category=any(c.categories))))
+    or length(coalesce(p_phone,''))>40 or length(coalesce(p_address,''))>1000 then
+    raise check_violation using message='Invalid company contact details or categories.';
+  end if;
+  update public.companies set contact_email=nullif(trim(p_email),''),phone_number=nullif(trim(p_phone),''),physical_address=nullif(trim(p_address),''),categories=normalized_categories,updated_at=now(),version=version+1 where id=p_company returning * into c;
+  ein_editor:=coalesce(private.admin_level(p_org,auth.uid(),'organization')=1,false) or private.vendor_admin(p_org,auth.uid(),p_company);
+  if ein_editor then
+    if nullif(trim(p_ein),'') is not null and p_ein !~ '^[0-9]{2}-?[0-9]{7}$' then raise check_violation using message='EIN must contain nine digits.'; end if;
+    insert into public.company_private_details(organization_id,company_id,ein) values(p_org,p_company,nullif(trim(p_ein),'')) on conflict(company_id) do update set ein=excluded.ein;
+  end if;
+  perform private.append_audit(p_org,auth.uid(),'company.profile_updated','company',p_company,null,null,null,jsonb_build_object('categories',normalized_categories));
+  return to_jsonb(c);
+end; $$;
+
+notify pgrst, 'reload schema';
+
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202611030068_delete_home_space.sql
+-- ============================================================================
+
+begin;
+
+create or replace function public.delete_home_space(p_org uuid, p_id uuid, p_home uuid)
+returns jsonb language plpgsql security definer set search_path='' as $$
+declare
+  result public.home_locations;
+  h public.homes;
+begin
+  if not private.require_aal2() then
+    raise insufficient_privilege using message='MFA verification is required.';
+  end if;
+
+  select * into h from public.homes
+  where organization_id=p_org and id=p_home;
+
+  if not found or not private.has_permission(p_org,auth.uid(),'structure.manage',h.neighborhood_id,h.id) then
+    raise insufficient_privilege using message='Home management permission is required for this property.';
+  end if;
+
+  select * into result from public.home_locations
+  where organization_id=p_org and home_id=p_home and id=p_id for update;
+
+  if not found then
+    raise check_violation using message='Location was not found.';
+  end if;
+
+  if exists(select 1 from public.home_locations where organization_id=p_org and home_id=p_home and parent_location_id=p_id) then
+    raise check_violation using message='Remove or reassign sub-areas before deleting this location.';
+  end if;
+
+  if exists(select 1 from public.work_items where organization_id=p_org and home_id=p_home and location_id=p_id)
+     or exists(select 1 from public.inspection_observations where organization_id=p_org and home_id=p_home and location_id=p_id) then
+    raise check_violation using message='This location has recorded work items or inspection findings. Mark it inactive instead of deleting.';
+  end if;
+
+  delete from public.home_locations where organization_id=p_org and home_id=p_home and id=p_id;
+
+  perform private.append_audit(p_org,auth.uid(),'home_location.deleted','home_location',p_id,null,to_jsonb(result),null);
+
+  return to_jsonb(result);
+end; $$;
+
+revoke all on function public.delete_home_space(uuid,uuid,uuid) from public,anon;
+grant execute on function public.delete_home_space(uuid,uuid,uuid) to authenticated;
+
+notify pgrst, 'reload schema';
+
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202611030069_inspection_observation_upsert.sql
+-- ============================================================================
+
+begin;
+
+-- Enhance upsert_inspection_response to clean up open observations if response changes from fail
+-- and enhance record_inspection_observation to update existing open observation for the same question.
+
+create or replace function private.inspection_observation_command(p_name text,p_envelope jsonb) returns jsonb
+language plpgsql security definer set search_path='' as $$
+declare actor uuid:=auth.uid(); payload jsonb:=p_envelope->'payload'; op uuid:=(p_envelope->>'operation_id')::uuid;
+ i public.inspections; o public.inspection_observations; w public.work_items; q public.checklist_questions;
+ receipt private.observation_command_receipts; fingerprint text; result jsonb; nested jsonb; task jsonb; ids jsonb:='[]'; room text; room_id uuid;
+begin
+ if actor is null then raise insufficient_privilege using message='Sign in to continue.'; end if;
+ if op is null then raise check_violation using message='An operation ID is required.'; end if;
+ if nullif(p_envelope->>'captured_at','')::timestamptz < now()-interval '90 days' then raise check_violation using message='This saved operation has expired.'; end if;
+ if p_name='record_inspection_observation' then
+  select * into i from public.inspections where id=(payload->>'inspection_id')::uuid for update;
+ else
+  select * into o from public.inspection_observations where id=(payload->>'observation_id')::uuid for update;
+  select * into i from public.inspections where id=o.inspection_id for update;
+ end if;
+ if i.id is null or not private.active_member(i.organization_id,actor) or not private.can_read_inspection(actor,i.id)
+  or (payload ? 'organization_id' and (payload->>'organization_id')::uuid<>i.organization_id) then raise insufficient_privilege using message='This inspection is outside your access.'; end if;
+ if p_name='record_inspection_observation' then
+  if not (private.has_permission(i.organization_id,actor,'inspection.manage',i.neighborhood_id,i.home_id) or
+   private.has_permission(i.organization_id,actor,'inspection.perform',i.neighborhood_id,i.home_id) and (i.lead_inspector_user_id=actor or exists(select 1 from public.inspection_participants ip where ip.inspection_id=i.id and ip.user_id=actor and ip.can_edit_draft))) then
+   raise insufficient_privilege using message='Only an assigned Inspector or inspection manager can add observations.';
+  end if;
+ else
+  if not private.require_aal2() or not private.has_permission(i.organization_id,actor,'inspection.manage',i.neighborhood_id,i.home_id) then raise insufficient_privilege using message='Inspection management permission is required to review observations.'; end if;
+ end if;
+ perform pg_advisory_xact_lock(hashtextextended(op::text,0));
+ fingerprint:=encode(extensions.digest(jsonb_build_object('command',p_name,'envelope',p_envelope)::text,'sha256'),'hex');
+ select * into receipt from private.observation_command_receipts where operation_id=op;
+ if found then
+  if receipt.actor_id<>actor or receipt.organization_id<>i.organization_id or receipt.request_hash<>fingerprint then return private.command_error(op,'OPERATION_REUSE','This operation was already used with different input.'); end if;
+  return jsonb_set(receipt.result,'{replayed}','true');
+ end if;
+ if p_name='record_inspection_observation' then
+  if i.status not in ('draft','in_progress','amended') then raise check_violation using message='Observations can only be added to an open inspection.'; end if;
+  if nullif(payload->>'question_id','') is not null then
+   select * into q from public.checklist_questions where organization_id=i.organization_id and version_id=i.template_version_id and id=(payload->>'question_id')::uuid;
+   if not found then raise check_violation using message='Choose a checklist item from this inspection.'; end if;
+   room:=q.section;
+   select id into room_id from public.home_locations where organization_id=i.organization_id and home_id=i.home_id and active and name=q.section order by id limit 1;
+  elsif nullif(payload->>'location_id','') is not null then
+   select id,name into room_id,room from public.home_locations where organization_id=i.organization_id and home_id=i.home_id and active and id=(payload->>'location_id')::uuid;
+   if not found then raise check_violation using message='Choose an active room from this property.'; end if;
+  else room:='Whole property'; end if;
+
+  if nullif(payload->>'question_id','') is not null and exists(
+    select 1 from public.inspection_observations
+    where organization_id=i.organization_id and inspection_id=i.id and question_id=(payload->>'question_id')::uuid and status='open'
+  ) then
+    update public.inspection_observations set
+      title=coalesce(nullif(trim(payload->>'title'),''),title),
+      description=trim(payload->>'description'),
+      priority=coalesce(nullif(payload->>'priority','')::public.work_priority,'normal'),
+      safety_flag=coalesce((payload->>'safety_flag')::boolean,false)
+    where organization_id=i.organization_id and inspection_id=i.id and question_id=(payload->>'question_id')::uuid and status='open'
+    returning * into o;
+  else
+    insert into public.inspection_observations(id,organization_id,inspection_id,home_id,neighborhood_id,question_id,location_id,space_name,title,description,priority,safety_flag,created_by)
+    values(coalesce(nullif(payload->>'id','')::uuid,gen_random_uuid()),i.organization_id,i.id,i.home_id,i.neighborhood_id,q.id,room_id,room,coalesce(nullif(trim(payload->>'title'),''),coalesce(q.label,'Observation')),trim(payload->>'description'),coalesce(nullif(payload->>'priority','')::public.work_priority,'normal'),coalesce((payload->>'safety_flag')::boolean,false),actor) returning * into o;
+  end if;
+ elsif p_name='create_observation_work' then
+  if i.status<>'submitted' or o.status='disregarded' then raise check_violation using message='Submit the inspection before creating repair tasks from its observations.'; end if;
+  if o.version is distinct from nullif(p_envelope->>'expected_version','')::bigint then raise serialization_failure using message='The observation changed. Refresh before creating tasks.'; end if;
+  if jsonb_typeof(payload->'tasks') is distinct from 'array' or jsonb_array_length(payload->'tasks') not between 1 and 25 then raise check_violation using message='Add between 1 and 25 repair tasks.'; end if;
+  for task in select value from jsonb_array_elements(payload->'tasks') loop
+   nested:=public.execute_command('create_work_item',jsonb_build_object('operation_id',gen_random_uuid(),'payload',jsonb_build_object(
+    'organization_id',i.organization_id,'neighborhood_id',i.neighborhood_id,'home_id',i.home_id,'location_id',o.location_id,
+    'origin','internal_observation',
+    'title',task->>'title','description',coalesce(nullif(trim(task->>'description'),''),o.description),'priority',coalesce(task->>'priority',o.priority::text),'safety_flag',o.safety_flag)));
+   if not coalesce((nested->>'ok')::boolean,false) then raise check_violation using message=nested->'error'->>'message'; end if;
+   select * into w from public.work_items where id=(nested->'data'->>'id')::uuid;
+   update public.work_items set observation_id=o.id,inspection_id=i.id,origin=case when i.type='external_quality' then 'external_inspection'::public.work_origin else 'internal_inspection'::public.work_origin end,state='submitted',submitted_at=now() where id=w.id returning * into w;
+   perform private.append_work_event(w,'work.submitted','draft','submitted',actor,op,jsonb_build_object('observation_id',o.id));
+   nested:=public.execute_command('assign_work_item',jsonb_build_object('operation_id',gen_random_uuid(),'expected_version',w.version,'payload',
+    coalesce(task->'assignment','{}')||jsonb_build_object('organization_id',i.organization_id,'item_id',w.id,'reason','Repair task created during observation review')));
+   if not coalesce((nested->>'ok')::boolean,false) then raise check_violation using message=nested->'error'->>'message'; end if;
+   ids:=ids||jsonb_build_array(w.id);
+  end loop;
+  update public.inspection_observations set status='actioned',reviewed_by=actor,reviewed_at=now() where id=o.id returning * into o;
+ elsif p_name='disregard_inspection_observation' then
+  if i.status<>'submitted' or o.version is distinct from nullif(p_envelope->>'expected_version','')::bigint then raise check_violation using message='Review the current submitted observation before disregarding it.'; end if;
+  if length(trim(coalesce(payload->>'reason',''))) not between 2 and 2000 then raise check_violation using message='Record why no repair is needed.'; end if;
+  if exists(select 1 from public.work_items where organization_id=i.organization_id and observation_id=o.id and state<>'cancelled') then raise check_violation using message='Cancel existing repair tasks before disregarding the observation.'; end if;
+  update public.inspection_observations set status='disregarded',review_notes=trim(payload->>'reason'),reviewed_by=actor,reviewed_at=now() where id=o.id returning * into o;
+ else raise check_violation using message='Unknown observation action.'; end if;
+ result:=private.command_success(op,jsonb_build_object('id',o.id,'status',o.status,'version',o.version,'work_item_ids',ids));
+ insert into private.observation_command_receipts(operation_id,actor_id,organization_id,request_hash,result)
+ values(op,actor,i.organization_id,fingerprint,result);
+ return result;
+end; $$;
+
+notify pgrst, 'reload schema';
+
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202611030070_inspection_version_concurrency.sql
+-- ============================================================================
+
+begin;
+
+-- In execute_command, loosen the strict inspection version lock for upsert_inspection_response so that:
+-- 1. An inspector answering multiple checklist questions or saving drafts does not trigger false VERSION_CONFLICT errors.
+-- 2. Inspections already in 'in_progress' or 'amended' are not repeatedly updated on every response (preventing unnecessary version bumps).
+-- 3. Strict version locks remain intact for lifecycle transitions: begin_inspection_amendment and submit_inspection.
+
+create or replace function public.execute_command(p_command_name text, p_envelope jsonb)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare
+  v_actor uuid := auth.uid();
+  v_operation_id uuid;
+  v_expected_version bigint;
+  v_captured_at timestamptz;
+  v_payload jsonb;
+  v_organization_id uuid;
+  v_existing private.client_operations;
+  v_request_hash text;
+  v_item public.work_items;
+  v_item_before public.work_items;
+  v_old_state public.work_state;
+  v_target_state public.work_state;
+  v_episode public.assignment_episodes;
+  v_inspection public.inspections;
+  v_id uuid;
+  v_due_at timestamptz;
+  v_result jsonb;
+  v_rows jsonb;
+  v_row jsonb;
+  v_row_index integer;
+  v_row_results jsonb;
+  v_success_count integer;
+  v_failure_count integer;
+  v_lot text;
+  v_plan text;
+  v_address text;
+  v_city text;
+  v_state text;
+  v_zip text;
+  v_row_error text;
+begin
+  if v_actor is null then
+    return private.command_error(gen_random_uuid(), 'UNAUTHENTICATED', 'Authentication is required.');
+  end if;
+
+  v_payload := coalesce(p_envelope -> 'payload', '{}'::jsonb);
+  if p_envelope ? 'operation_id' then
+    v_operation_id := (p_envelope ->> 'operation_id')::uuid;
+  end if;
+  if v_operation_id is null then
+    return private.command_error(gen_random_uuid(), 'VALIDATION_ERROR', 'operation_id is required.');
+  end if;
+
+  begin
+    if p_envelope ? 'expected_version' then
+      v_expected_version := (p_envelope ->> 'expected_version')::bigint;
+    end if;
+    if p_envelope ? 'captured_at' then
+      v_captured_at := (p_envelope ->> 'captured_at')::timestamptz;
+    end if;
+  exception when others then
+    return private.command_error(v_operation_id, 'VALIDATION_ERROR', 'Invalid expected_version or captured_at.');
+  end;
+
+  if v_captured_at is not null and v_captured_at < now() - interval '90 days' then
+    return private.command_error(v_operation_id, 'OPERATION_EXPIRED', 'Offline operation is older than the accepted retry window.');
+  end if;
+
+  begin
+    if v_payload ? 'organization_id' then
+      v_organization_id := (v_payload ->> 'organization_id')::uuid;
+    elsif v_payload ? 'item_id' then
+      select organization_id into v_organization_id from public.work_items where id = (v_payload ->> 'item_id')::uuid;
+    elsif v_payload ? 'inspection_id' then
+      select organization_id into v_organization_id from public.inspections where id = (v_payload ->> 'inspection_id')::uuid;
+    elsif v_payload ? 'home_id' then
+      select organization_id into v_organization_id from public.homes where id = (v_payload ->> 'home_id')::uuid;
+    end if;
+  exception when others then
+    return private.command_error(v_operation_id, 'VALIDATION_ERROR', 'Invalid entity identifier.');
+  end;
+
+  if v_organization_id is null or not private.active_member(v_organization_id, v_actor) then
+    return private.command_error(v_operation_id, 'NOT_FOUND', 'The requested record was not found.');
+  end if;
+
+  v_request_hash := encode(extensions.digest((jsonb_build_object('command_name', p_command_name, 'envelope', p_envelope))::text, 'sha256'), 'hex');
+  insert into private.client_operations(organization_id, user_id, operation_id, command_name, request_hash)
+    values (v_organization_id, v_actor, v_operation_id, p_command_name, v_request_hash)
+    on conflict (organization_id, user_id, operation_id) do nothing;
+
+  select * into v_existing from private.client_operations
+    where organization_id = v_organization_id and user_id = v_actor and operation_id = v_operation_id
+    for update;
+  if v_existing.request_hash <> v_request_hash or v_existing.command_name <> p_command_name then
+    return private.command_error(v_operation_id, 'OPERATION_REUSE', 'This operation_id was already used with different input.');
+  end if;
+  if v_existing.created_at < now() - interval '90 days' then
+    return private.command_error(v_operation_id, 'OPERATION_EXPIRED', 'The idempotency record has expired.');
+  end if;
+  if v_existing.result is not null then
+    if not private.active_member(v_organization_id, v_actor) then
+      return private.command_error(v_operation_id, 'NOT_FOUND', 'The requested record was not found.');
+    end if;
+    return jsonb_set(v_existing.result, '{replayed}', 'true'::jsonb, true);
+  end if;
+
+  if p_command_name = 'create_work_item' then
+    if not private.has_permission(v_organization_id, v_actor, 'work.create', (v_payload ->> 'neighborhood_id')::uuid, nullif(v_payload ->> 'home_id','')::uuid) then
+      return private.command_error(v_operation_id, 'FORBIDDEN', 'You do not have permission to create work in this scope.');
+    end if;
+    v_id := coalesce(nullif(v_payload ->> 'id', '')::uuid, gen_random_uuid());
+    insert into public.work_items(
+      id, organization_id, neighborhood_id, home_id, location_id, common_area_location, inspection_id,
+      origin, title, description, priority, safety_flag, created_by, client_captured_at
+    ) values (
+      v_id, v_organization_id, (v_payload ->> 'neighborhood_id')::uuid,
+      nullif(v_payload ->> 'home_id','')::uuid, nullif(v_payload ->> 'location_id','')::uuid,
+      nullif(trim(v_payload ->> 'common_area_location'), ''), nullif(v_payload ->> 'inspection_id','')::uuid,
+      coalesce(v_payload ->> 'origin', 'internal_observation')::public.work_origin,
+      trim(v_payload ->> 'title'), trim(v_payload ->> 'description'),
+      coalesce(v_payload ->> 'priority','normal')::public.work_priority, coalesce((v_payload ->> 'safety_flag')::boolean, false),
+      v_actor, v_captured_at
+    ) returning * into v_item;
+    perform private.append_work_event(v_item, 'work.created', null, 'draft', v_actor, v_operation_id, '{}'::jsonb, null, v_captured_at);
+    perform private.append_audit(v_organization_id, v_actor, 'work.created', 'work_item', v_item.id, v_operation_id, null, to_jsonb(v_item));
+    v_result := private.command_success(v_operation_id, jsonb_build_object('id', v_item.id, 'version', v_item.version, 'state', v_item.state));
+
+  elsif p_command_name in ('update_work_draft','submit_work_item','triage_work_item','assign_work_item','delegate_company_work','acknowledge_work','start_work','block_work','unblock_work','submit_correction','verify_correction','reopen_work','cancel_work','update_due_date','issue_evidence_exception') then
+    select * into v_item from public.work_items where id = (v_payload ->> 'item_id')::uuid and organization_id = v_organization_id for update;
+    if not found or not private.can_read_work(v_actor, v_item.id) then
+      return private.command_error(v_operation_id, 'NOT_FOUND', 'The requested work item was not found.');
+    end if;
+    if v_expected_version is null then
+      return private.command_error(v_operation_id, 'VALIDATION_ERROR', 'expected_version is required.');
+    end if;
+    if v_expected_version <> v_item.version then
+      return private.command_error(v_operation_id, 'VERSION_CONFLICT', 'The work item changed. Refresh before retrying.', false, v_item.version);
+    end if;
+    v_item_before := v_item;
+    v_old_state := v_item.state;
+
+    if p_command_name = 'update_work_draft' then
+      if v_item.state <> 'draft' or not (v_item.created_by = v_actor or private.has_permission(v_organization_id, v_actor, 'work.triage', v_item.neighborhood_id, v_item.home_id)) then
+        return private.command_error(v_operation_id, 'FORBIDDEN', 'Only an authorized draft editor may change this item.');
+      end if;
+      update public.work_items set
+        title = coalesce(nullif(trim(v_payload ->> 'title'), ''), title),
+        description = coalesce(nullif(trim(v_payload ->> 'description'), ''), description),
+        priority = coalesce(nullif(v_payload ->> 'priority','')::public.work_priority, priority),
+        safety_flag = coalesce((v_payload ->> 'safety_flag')::boolean, safety_flag)
+      where id = v_item.id returning * into v_item;
+      perform private.append_work_event(v_item, 'work.draft_updated', 'draft', 'draft', v_actor, v_operation_id);
+
+    elsif p_command_name = 'submit_work_item' then
+      if v_item.state <> 'draft' or not (v_item.created_by = v_actor or private.has_permission(v_organization_id, v_actor, 'work.triage', v_item.neighborhood_id, v_item.home_id)) then
+        return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'Only an authorized draft can be submitted.');
+      end if;
+      if v_item.inspection_id is not null then
+        return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'Inspection findings are submitted with their inspection.');
+      end if;
+      update public.work_items set state = 'submitted', submitted_at = now() where id = v_item.id returning * into v_item;
+      perform private.append_work_event(v_item, 'work.submitted', v_old_state, v_item.state, v_actor, v_operation_id, '{}'::jsonb, null, v_captured_at);
+
+    elsif p_command_name = 'triage_work_item' then
+      if not private.has_permission(v_organization_id, v_actor, 'work.triage', v_item.neighborhood_id, v_item.home_id) then
+        return private.command_error(v_operation_id, 'FORBIDDEN', 'Triage permission is required.');
+      end if;
+      if v_item.state <> 'submitted' then
+        return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'Only submitted work can be triaged.');
+      end if;
+      update public.work_items set
+        priority = coalesce(nullif(v_payload ->> 'priority','')::public.work_priority, v_item.priority),
+        safety_flag = coalesce((v_payload ->> 'safety_flag')::boolean, v_item.safety_flag),
+        location_id = coalesce(nullif(v_payload ->> 'location_id','')::uuid, v_item.location_id)
+      where id = v_item.id returning * into v_item;
+      perform private.append_work_event(v_item, 'work.triaged', v_old_state, v_item.state, v_actor, v_operation_id, jsonb_build_object('notes', v_payload ->> 'notes'));
+
+    elsif p_command_name in ('assign_work_item', 'delegate_company_work') then
+      if p_command_name = 'delegate_company_work' then
+        if not private.has_company_membership(v_organization_id, (v_payload ->> 'company_id')::uuid, v_actor, array['owner','admin','lead']::public.company_role[]) then
+          return private.command_error(v_operation_id, 'FORBIDDEN', 'You are not authorized to delegate work for this trade partner.');
+        end if;
+      else
+        if not private.has_permission(v_organization_id, v_actor, 'work.assign', v_item.neighborhood_id, v_item.home_id) then
+          return private.command_error(v_operation_id, 'FORBIDDEN', 'Assignment permission is required.');
+        end if;
+      end if;
+      if v_item.state not in ('submitted', 'assigned', 'acknowledged', 'rework_required') then
+        return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'This work item cannot be assigned in its current state.');
+      end if;
+
+      v_episode := private.create_assignment_episode(
+        v_organization_id, v_item,
+        nullif(v_payload ->> 'internal_assignee_user_id','')::uuid,
+        nullif(v_payload ->> 'company_id','')::uuid,
+        nullif(v_payload ->> 'technician_user_id','')::uuid,
+        nullif(v_payload ->> 'specialty_id','')::uuid,
+        v_actor,
+        coalesce(nullif(v_payload ->> 'due_at','')::timestamptz, now() + interval '2 days'),
+        v_payload ->> 'reason',
+        nullif(v_payload ->> 'instructions','')
+      );
+      update public.work_items set
+        state = 'assigned',
+        current_assignment_id = v_episode.id,
+        due_at = v_episode.due_at,
+        assigned_at = now()
+      where id = v_item.id returning * into v_item;
+      perform private.item_readiness_invalidate(v_item, 'Work assigned.', v_actor, v_operation_id);
+      perform private.append_work_event(v_item, 'work.assigned', v_old_state, v_item.state, v_actor, v_operation_id, jsonb_build_object('assignment_episode_id', v_episode.id, 'reason', v_payload ->> 'reason'), v_episode.id);
+
+    elsif p_command_name = 'acknowledge_work' then
+      if not private.can_execute_work(v_actor, v_item.id) then
+        return private.command_error(v_operation_id, 'FORBIDDEN', 'Only the assigned party may acknowledge this work.');
+      end if;
+      if v_item.state <> 'assigned' then
+        return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'Only assigned work can be acknowledged.');
+      end if;
+      update public.assignment_episodes set acknowledged_at = now() where id = v_item.current_assignment_id;
+      update public.work_items set state = 'acknowledged' where id = v_item.id returning * into v_item;
+      perform private.append_work_event(v_item, 'work.acknowledged', v_old_state, v_item.state, v_actor, v_operation_id, '{}'::jsonb, v_item.current_assignment_id);
+
+    elsif p_command_name = 'start_work' then
+      if not private.can_execute_work(v_actor, v_item.id) then
+        return private.command_error(v_operation_id, 'FORBIDDEN', 'Only the assigned party may start this work.');
+      end if;
+      if v_item.state not in ('assigned','acknowledged') then
+        return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'Only assigned or acknowledged work can be started.');
+      end if;
+      update public.assignment_episodes set started_at = now(), acknowledged_at = coalesce(acknowledged_at, now()) where id = v_item.current_assignment_id;
+      update public.work_items set state = 'in_progress' where id = v_item.id returning * into v_item;
+      perform private.append_work_event(v_item, 'work.started', v_old_state, v_item.state, v_actor, v_operation_id, '{}'::jsonb, v_item.current_assignment_id);
+
+    elsif p_command_name = 'block_work' then
+      if v_item.state not in ('assigned','acknowledged','in_progress','rework_required') or not (private.can_execute_work(v_actor, v_item.id) or private.has_permission(v_organization_id, v_actor, 'work.assign', v_item.neighborhood_id, v_item.home_id)) then
+        return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'This item cannot be blocked by the current user.');
+      end if;
+      if nullif(trim(v_payload ->> 'notes'),'') is null then
+        return private.command_error(v_operation_id, 'VALIDATION_ERROR', 'Blocker notes are required.');
+      end if;
+      insert into public.blocker_events(organization_id, work_item_id, assignment_episode_id, cause, notes, opened_by)
+        values (v_organization_id, v_item.id, v_item.current_assignment_id, coalesce(v_payload ->> 'cause','other'), trim(v_payload ->> 'notes'), v_actor);
+      update public.work_items set state = 'blocked', blocked_from_state = v_old_state, blocked_reason = trim(v_payload ->> 'notes') where id = v_item.id returning * into v_item;
+      perform private.append_work_event(v_item, 'work.blocked', v_old_state, v_item.state, v_actor, v_operation_id, jsonb_build_object('cause', v_payload ->> 'cause', 'notes', v_payload ->> 'notes'), v_item.current_assignment_id, v_captured_at);
+
+    elsif p_command_name = 'unblock_work' then
+      if v_item.state <> 'blocked' or not (private.can_execute_work(v_actor, v_item.id) or private.has_permission(v_organization_id, v_actor, 'work.assign', v_item.neighborhood_id, v_item.home_id)) then
+        return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'This blocked item cannot be resumed by the current user.');
+      end if;
+      if nullif(trim(v_payload ->> 'resolution'),'') is null then
+        return private.command_error(v_operation_id, 'VALIDATION_ERROR', 'A blocker resolution is required.');
+      end if;
+      v_target_state := coalesce(v_item.blocked_from_state, 'assigned');
+      update public.blocker_events set resolved_at = now(), resolved_by = v_actor, resolution = trim(v_payload ->> 'resolution')
+        where organization_id = v_organization_id and work_item_id = v_item.id and resolved_at is null;
+      update public.work_items set state = v_target_state, blocked_from_state = null, blocked_reason = null where id = v_item.id returning * into v_item;
+      perform private.append_work_event(v_item, 'work.unblocked', v_old_state, v_item.state, v_actor, v_operation_id, jsonb_build_object('resolution', v_payload ->> 'resolution'), v_item.current_assignment_id, v_captured_at);
+
+    elsif p_command_name = 'submit_correction' then
+      if not private.can_execute_work(v_actor, v_item.id) then
+        return private.command_error(v_operation_id, 'FORBIDDEN', 'Only the assigned party may submit a correction.');
+      end if;
+      if v_item.state not in ('assigned','acknowledged','in_progress','rework_required') then
+        return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'Work is not in an executable state.');
+      end if;
+      insert into public.correction_attempts(organization_id, work_item_id, assignment_episode_id, summary, submitted_by)
+        values (v_organization_id, v_item.id, v_item.current_assignment_id, trim(v_payload ->> 'summary'), v_actor)
+        returning id into v_id;
+      update public.work_items set state = 'ready_for_verification' where id = v_item.id returning * into v_item;
+      perform private.append_work_event(v_item, 'work.correction_submitted', v_old_state, v_item.state, v_actor, v_operation_id, jsonb_build_object('correction_id', v_id, 'summary', v_payload ->> 'summary'), v_item.current_assignment_id, v_captured_at);
+
+    elsif p_command_name = 'verify_correction' then
+      if not private.has_permission(v_organization_id, v_actor, 'work.verify', v_item.neighborhood_id, v_item.home_id) then
+        return private.command_error(v_operation_id, 'FORBIDDEN', 'Verification permission is required.');
+      end if;
+      if v_item.created_by = v_actor and not private.has_permission(v_organization_id, v_actor, 'work.assign', v_item.neighborhood_id, v_item.home_id) then
+        return private.command_error(v_operation_id, 'INDEPENDENCE_REQUIRED', 'Independent verification is required.');
+      end if;
+      if v_item.state <> 'ready_for_verification' then
+        return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'Only work marked ready for verification can be verified.');
+      end if;
+      if not exists (select 1 from public.assignment_episodes where id = v_item.current_assignment_id and technician_user_id = v_actor)
+         and not private.has_permission(v_organization_id, v_actor, 'work.assign', v_item.neighborhood_id, v_item.home_id) then
+        return private.command_error(v_operation_id, 'FORBIDDEN', 'Verifier must be independent.');
+      end if;
+      if not exists (
+        select 1 from public.attachments a
+        where a.organization_id = v_organization_id and a.work_item_id = v_item.id and a.status = 'ready'
+      ) and not exists (
+        select 1 from public.evidence_exceptions e
+        where e.organization_id = v_organization_id and e.work_item_id = v_item.id and (e.expires_at is null or e.expires_at > now())
+      ) then
+        return private.command_error(v_operation_id, 'EVIDENCE_NOT_READY', 'Ready photo evidence or an active exception is required before verification.');
+      end if;
+
+      insert into public.verifications(organization_id, work_item_id, verified_by, notes)
+        values (v_organization_id, v_item.id, v_actor, nullif(trim(v_payload ->> 'notes'),''))
+        returning id into v_id;
+      update public.assignment_episodes set ended_at = now(), end_reason = 'verified' where id = v_item.current_assignment_id;
+      update public.work_items set state = 'verified', verified_at = now() where id = v_item.id returning * into v_item;
+      perform private.item_readiness_invalidate(v_item, 'Work verified.', v_actor, v_operation_id);
+      perform private.append_work_event(v_item, 'work.verified', v_old_state, v_item.state, v_actor, v_operation_id, jsonb_build_object('verification_id', v_id), v_item.current_assignment_id);
+
+    elsif p_command_name = 'reopen_work' then
+      if not private.has_permission(v_organization_id, v_actor, 'work.verify', v_item.neighborhood_id, v_item.home_id) then
+        return private.command_error(v_operation_id, 'FORBIDDEN', 'Verification permission is required to reopen work.');
+      end if;
+      if v_item.state not in ('ready_for_verification', 'verified') then
+        return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'Only completed work can be reopened.');
+      end if;
+      if nullif(trim(v_payload ->> 'reason'),'') is null then
+        return private.command_error(v_operation_id, 'VALIDATION_ERROR', 'A reopen reason is required.');
+      end if;
+      select * into v_episode from public.assignment_episodes where id = v_item.current_assignment_id;
+      if not found then
+        return private.command_error(v_operation_id, 'NOT_FOUND', 'The prior assignment episode was not found.');
+      end if;
+      insert into public.assignment_episodes(organization_id, work_item_id, internal_assignee_user_id, company_id, technician_user_id, specialty_id, assigned_by, due_at, reassignment_reason)
+        values (v_organization_id, v_item.id, v_episode.internal_assignee_user_id, v_episode.company_id, v_episode.technician_user_id, v_episode.specialty_id, v_actor, coalesce(v_item.due_at, now() + interval '1 day'), 'Reopened: ' || trim(v_payload ->> 'reason'))
+        returning * into v_episode;
+      update public.work_items set state = 'rework_required', reopened_count = reopened_count + 1, current_assignment_id = v_episode.id where id = v_item.id returning * into v_item;
+      perform private.item_readiness_invalidate(v_item, 'Verified work was reopened.', v_actor, v_operation_id);
+      perform private.append_work_event(v_item, 'work.reopened', v_old_state, v_item.state, v_actor, v_operation_id, jsonb_build_object('reason', v_payload ->> 'reason'), v_episode.id);
+
+    elsif p_command_name = 'cancel_work' then
+      if v_item.state = 'verified' or v_item.state = 'cancelled' then
+        return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'Verified or cancelled work cannot be cancelled directly.');
+      end if;
+      if not ((v_item.state = 'draft' and v_item.created_by = v_actor) or private.has_permission(v_organization_id, v_actor, 'work.triage', v_item.neighborhood_id, v_item.home_id)) then
+        return private.command_error(v_operation_id, 'FORBIDDEN', 'Cancellation requires triage permission.');
+      end if;
+      if nullif(trim(v_payload ->> 'reason'),'') is null then
+        return private.command_error(v_operation_id, 'VALIDATION_ERROR', 'A cancellation reason is required.');
+      end if;
+      update public.assignment_episodes set ended_at = now(), end_reason = 'cancelled' where organization_id = v_organization_id and work_item_id = v_item.id and ended_at is null;
+      update public.blocker_events set resolved_at = now(), resolved_by = v_actor, resolution = 'Cancelled' where organization_id = v_organization_id and work_item_id = v_item.id and resolved_at is null;
+      update public.work_items set state = 'cancelled', duplicate_of_id = nullif(v_payload ->> 'duplicate_of_id','')::uuid, blocked_from_state = null, blocked_reason = null where id = v_item.id returning * into v_item;
+      perform private.append_work_event(v_item, 'work.cancelled', v_old_state, v_item.state, v_actor, v_operation_id, jsonb_build_object('reason', v_payload ->> 'reason', 'duplicate_of_id', v_payload ->> 'duplicate_of_id'));
+
+    elsif p_command_name = 'update_due_date' then
+      if not private.has_permission(v_organization_id, v_actor, 'work.assign', v_item.neighborhood_id, v_item.home_id) or v_item.current_assignment_id is null then
+        return private.command_error(v_operation_id, 'FORBIDDEN', 'Assignment permission and an active assignment are required.');
+      end if;
+      v_due_at := nullif(v_payload ->> 'new_due_at','')::timestamptz;
+      if v_due_at is null or nullif(trim(v_payload ->> 'reason'),'') is null then
+        return private.command_error(v_operation_id, 'VALIDATION_ERROR', 'A new due date and reason are required.');
+      end if;
+      update public.assignment_episodes set due_at = v_due_at where id = v_item.current_assignment_id;
+      update public.work_items set due_at = v_due_at where id = v_item.id returning * into v_item;
+      update public.notification_outbox set status = 'cancelled', updated_at = now() where organization_id = v_organization_id and assignment_episode_id = v_item.current_assignment_id and status in ('pending','failed');
+      perform private.append_work_event(v_item, 'work.due_date_changed', v_old_state, v_item.state, v_actor, v_operation_id, jsonb_build_object('old_due_at', v_item_before.due_at, 'new_due_at', v_due_at, 'reason', v_payload ->> 'reason'), v_item.current_assignment_id);
+
+    elsif p_command_name = 'issue_evidence_exception' then
+      if not private.has_permission(v_organization_id, v_actor, 'work.assign', v_item.neighborhood_id, v_item.home_id) then
+        return private.command_error(v_operation_id, 'FORBIDDEN', 'Assignment permission is required to authorize an evidence exception.');
+      end if;
+      if nullif(trim(v_payload ->> 'reason'),'') is null then
+        return private.command_error(v_operation_id, 'VALIDATION_ERROR', 'An exception reason is required.');
+      end if;
+      insert into public.evidence_exceptions(organization_id, work_item_id, authorized_by, reason, expires_at)
+        values (v_organization_id, v_item.id, v_actor, trim(v_payload ->> 'reason'), nullif(v_payload ->> 'expires_at','')::timestamptz)
+        returning id into v_id;
+      update public.work_items set updated_at = now() where id = v_item.id returning * into v_item;
+      perform private.append_work_event(v_item, 'evidence.exception_issued', v_old_state, v_item.state, v_actor, v_operation_id, jsonb_build_object('exception_id', v_id, 'reason', v_payload ->> 'reason'));
+    end if;
+
+    perform private.append_audit(v_organization_id, v_actor, p_command_name, 'work_item', v_item.id, v_operation_id, to_jsonb(v_item_before), to_jsonb(v_item));
+    v_result := private.command_success(v_operation_id, jsonb_build_object('id', v_item.id, 'version', v_item.version, 'state', v_item.state));
+
+  elsif p_command_name = 'schedule_inspection' then
+    if not private.has_permission(v_organization_id, v_actor, 'inspection.schedule', (v_payload ->> 'neighborhood_id')::uuid, (v_payload ->> 'home_id')::uuid) then
+      return private.command_error(v_operation_id, 'FORBIDDEN', 'Inspection schedule permission is required.');
+    end if;
+    v_id := coalesce(nullif(v_payload ->> 'id', '')::uuid, gen_random_uuid());
+    insert into public.inspections(organization_id, neighborhood_id, home_id, type, template_version_id, scheduled_at, lead_inspector_user_id)
+      values (
+        v_organization_id, (v_payload ->> 'neighborhood_id')::uuid, (v_payload ->> 'home_id')::uuid,
+        (v_payload ->> 'type')::public.inspection_type, (v_payload ->> 'template_version_id')::uuid,
+        nullif(v_payload ->> 'scheduled_at','')::timestamptz, coalesce(nullif(v_payload ->> 'lead_inspector_user_id','')::uuid, v_actor)
+      ) returning * into v_inspection;
+    insert into public.inspection_participants(organization_id, inspection_id, user_id, can_edit_draft)
+      values (v_organization_id, v_inspection.id, v_inspection.lead_inspector_user_id, true) on conflict do nothing;
+    perform private.append_audit(v_organization_id, v_actor, 'inspection.scheduled', 'inspection', v_inspection.id, v_operation_id, null, to_jsonb(v_inspection));
+    v_result := private.command_success(v_operation_id, jsonb_build_object('id', v_inspection.id, 'version', v_inspection.version, 'status', v_inspection.status));
+
+  elsif p_command_name in ('upsert_inspection_response','submit_inspection','begin_inspection_amendment','approve_milestone') then
+    if p_command_name = 'approve_milestone' then
+      select neighborhood_id into v_id from public.homes where id = (v_payload ->> 'home_id')::uuid and organization_id = v_organization_id;
+      if v_id is null or not private.has_permission(v_organization_id, v_actor, 'milestone.approve', v_id, (v_payload ->> 'home_id')::uuid) then
+        return private.command_error(v_operation_id, 'FORBIDDEN', 'Milestone approval permission is required.');
+      end if;
+      perform 1 from public.homes where id = (v_payload ->> 'home_id')::uuid and organization_id = v_organization_id for update;
+      if exists (select 1 from public.home_summary h where h.id = (v_payload ->> 'home_id')::uuid and h.readiness <> 'ready_for_review') then
+        return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'The home is not ready for milestone review.');
+      end if;
+      insert into public.milestone_approvals(organization_id, home_id, milestone_code, approved_by, snapshot)
+        values (v_organization_id, (v_payload ->> 'home_id')::uuid, v_payload ->> 'milestone_code', v_actor, jsonb_build_object('approved_at', now()))
+        returning id into v_id;
+      perform private.append_audit(v_organization_id, v_actor, 'milestone.approved', 'home', (v_payload ->> 'home_id')::uuid, v_operation_id, null, jsonb_build_object('approval_id', v_id));
+      v_result := private.command_success(v_operation_id, jsonb_build_object('id', v_id, 'status', 'approved'));
+    else
+      select * into v_inspection from public.inspections where id = (v_payload ->> 'inspection_id')::uuid and organization_id = v_organization_id for update;
+      if not found or not private.can_read_inspection(v_actor, v_inspection.id) then
+        return private.command_error(v_operation_id, 'NOT_FOUND', 'The requested inspection was not found.');
+      end if;
+
+      -- Enforce strict version check only for lifecycle amendments and final submission, not individual question responses
+      if p_command_name in ('begin_inspection_amendment', 'submit_inspection') then
+        if v_expected_version is null or v_expected_version <> v_inspection.version then
+          return private.command_error(v_operation_id, 'VERSION_CONFLICT', 'The inspection changed. Refresh before retrying.', false, v_inspection.version);
+        end if;
+      end if;
+
+      if p_command_name = 'begin_inspection_amendment' then
+        if not private.has_permission(v_organization_id, v_actor, 'inspection.manage', v_inspection.neighborhood_id, v_inspection.home_id) then
+          return private.command_error(v_operation_id, 'FORBIDDEN', 'Inspection management permission is required to begin an amendment.');
+        end if;
+        if v_inspection.status <> 'submitted' then
+          return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'Only a submitted inspection can be amended.');
+        end if;
+        update public.inspections set current_revision = current_revision + 1, status = 'amended' where id = v_inspection.id returning * into v_inspection;
+        perform private.append_audit(v_organization_id, v_actor, 'inspection.amendment_started', 'inspection', v_inspection.id, v_operation_id, null, to_jsonb(v_inspection));
+        v_result := private.command_success(v_operation_id, jsonb_build_object('id', v_inspection.id, 'version', v_inspection.version, 'status', v_inspection.status, 'revision', v_inspection.current_revision));
+      elsif p_command_name = 'upsert_inspection_response' then
+        if not (
+          private.has_permission(v_organization_id, v_actor, 'inspection.perform', v_inspection.neighborhood_id, v_inspection.home_id)
+          or private.has_permission(v_organization_id, v_actor, 'inspection.manage', v_inspection.neighborhood_id, v_inspection.home_id)
+          or exists (select 1 from public.inspection_participants ip where ip.organization_id = v_organization_id and ip.inspection_id = v_inspection.id and ip.user_id = v_actor and ip.can_edit_draft)
+        ) then
+          return private.command_error(v_operation_id, 'FORBIDDEN', 'You cannot edit this inspection draft.');
+        end if;
+        if v_inspection.status not in ('draft','in_progress','amended') then
+          return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'Submitted inspection responses are immutable.');
+        end if;
+        insert into public.inspection_responses(organization_id, inspection_id, question_id, result, explanation, finding_work_item_id)
+          values (v_organization_id, v_inspection.id, (v_payload ->> 'question_id')::uuid, (v_payload ->> 'response')::public.inspection_result,
+            nullif(trim(v_payload ->> 'reason'),''), nullif(v_payload ->> 'finding_id','')::uuid)
+          on conflict (organization_id, inspection_id, question_id) do update set result = excluded.result, explanation = excluded.explanation, finding_work_item_id = excluded.finding_work_item_id;
+
+        -- Only transition from 'draft' to 'in_progress'; do not update inspections if already 'in_progress' or 'amended'
+        if v_inspection.status = 'draft' then
+          update public.inspections set status = 'in_progress' where id = v_inspection.id returning * into v_inspection;
+        end if;
+        v_result := private.command_success(v_operation_id, jsonb_build_object('id', v_inspection.id, 'version', v_inspection.version, 'status', v_inspection.status));
+      else
+        if not (
+          private.has_permission(v_organization_id, v_actor, 'inspection.perform', v_inspection.neighborhood_id, v_inspection.home_id)
+          or private.has_permission(v_organization_id, v_actor, 'inspection.manage', v_inspection.neighborhood_id, v_inspection.home_id)
+          or exists (select 1 from public.inspection_participants ip where ip.organization_id = v_organization_id and ip.inspection_id = v_inspection.id and ip.user_id = v_actor and ip.can_edit_draft)
+        ) then
+          return private.command_error(v_operation_id, 'FORBIDDEN', 'You cannot submit this inspection.');
+        end if;
+        if v_inspection.status not in ('draft','in_progress','amended') then
+          return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'This inspection cannot be submitted.');
+        end if;
+        if exists (
+          select 1 from public.checklist_questions q
+          where q.organization_id = v_organization_id and q.version_id = v_inspection.template_version_id and q.requires_response
+            and not exists (select 1 from public.inspection_responses r where r.organization_id = v_organization_id and r.inspection_id = v_inspection.id and r.question_id = q.id)
+        ) then
+          return private.command_error(v_operation_id, 'VALIDATION_ERROR', 'Every required checklist question must have a response.');
+        end if;
+        update public.work_items set state = 'submitted', submitted_at = now()
+          where organization_id = v_organization_id and inspection_id = v_inspection.id and state = 'draft';
+        insert into public.inspection_submissions(organization_id, inspection_id, revision_number, snapshot, submitted_by)
+          select v_organization_id, v_inspection.id, v_inspection.current_revision,
+            jsonb_build_object(
+              'inspection', to_jsonb(v_inspection),
+              'responses', coalesce((select jsonb_agg(to_jsonb(r) order by q.ordinal) from public.inspection_responses r join public.checklist_questions q on q.organization_id = r.organization_id and q.id = r.question_id where r.organization_id = v_organization_id and r.inspection_id = v_inspection.id), '[]'::jsonb),
+              'finding_ids', coalesce((select jsonb_agg(w.id) from public.work_items w where w.organization_id = v_organization_id and w.inspection_id = v_inspection.id), '[]'::jsonb),
+              'attachment_ids', coalesce((select jsonb_agg(a.id) from public.attachments a where a.organization_id = v_organization_id and a.inspection_id = v_inspection.id and a.status = 'ready'), '[]'::jsonb)
+            ), v_actor;
+        update public.inspections set status = 'submitted' where id = v_inspection.id returning * into v_inspection;
+        perform private.append_audit(v_organization_id, v_actor, 'inspection.submitted', 'inspection', v_inspection.id, v_operation_id, null, to_jsonb(v_inspection));
+        v_result := private.command_success(v_operation_id, jsonb_build_object('id', v_inspection.id, 'version', v_inspection.version, 'status', v_inspection.status, 'revision', v_inspection.current_revision));
+      end if;
+    end if;
+  elsif p_command_name = 'import_homes' then
+    if not private.require_aal2() or not private.has_permission(v_organization_id, v_actor, 'structure.manage', null, null) then
+      return private.command_error(v_operation_id, 'FORBIDDEN', 'Home import requires an aal2 administrator session.');
+    end if;
+    if not exists (select 1 from public.neighborhoods where organization_id = v_organization_id and id = (v_payload ->> 'neighborhood_id')::uuid) then
+      return private.command_error(v_operation_id, 'NOT_FOUND', 'The target neighborhood was not found.');
+    end if;
+    v_rows := coalesce(v_payload -> 'rows', '[]'::jsonb);
+    if jsonb_typeof(v_rows) <> 'array' or jsonb_array_length(v_rows) = 0 or jsonb_array_length(v_rows) > 1000 then
+      return private.command_error(v_operation_id, 'VALIDATION_ERROR', 'Home import requires between 1 and 1000 rows.');
+    end if;
+    v_row_results := '[]'::jsonb;
+    v_success_count := 0;
+    for v_row, v_row_index in
+      select value, (ordinality - 1)::integer from jsonb_array_elements(v_rows) with ordinality
+    loop
+      v_lot := trim(coalesce(v_row ->> 'lot_code', ''));
+      v_plan := trim(coalesce(v_row ->> 'plan_name', ''));
+      v_address := trim(coalesce(v_row ->> 'address_line1', ''));
+      v_city := trim(coalesce(v_row ->> 'city', ''));
+      v_state := trim(coalesce(v_row ->> 'state', ''));
+      v_zip := trim(coalesce(v_row ->> 'postal_code', ''));
+
+      v_row_error := null;
+      if v_lot = '' then
+        v_row_error := 'Lot code is required.';
+      elsif v_plan = '' then
+        v_row_error := 'Plan name is required.';
+      elsif v_address = '' then
+        v_row_error := 'Address line 1 is required.';
+      elsif v_city = '' or v_state = '' or v_zip = '' then
+        v_row_error := 'City, state, and postal code are required.';
+      end if;
+
+      if v_row_error is not null then
+        v_row_results := v_row_results || jsonb_build_object('row_index', v_row_index, 'ok', false, 'error', v_row_error);
+      else
+        insert into public.homes(organization_id, neighborhood_id, lot_code, plan_name, address_line1, city, state, postal_code)
+          values (v_organization_id, (v_payload ->> 'neighborhood_id')::uuid, v_lot, v_plan, v_address, v_city, v_state, v_zip)
+          on conflict (organization_id, neighborhood_id, lot_code) do update set
+            plan_name = excluded.plan_name,
+            address_line1 = excluded.address_line1,
+            city = excluded.city,
+            state = excluded.state,
+            postal_code = excluded.postal_code
+          returning id into v_id;
+        v_success_count := v_success_count + 1;
+        v_row_results := v_row_results || jsonb_build_object('row_index', v_row_index, 'ok', true, 'id', v_id);
+      end if;
+    end loop;
+    v_failure_count := jsonb_array_length(v_rows) - v_success_count;
+    perform private.append_audit(v_organization_id, v_actor, 'homes.imported', 'neighborhood', (v_payload ->> 'neighborhood_id')::uuid, v_operation_id, null, jsonb_build_object('success_count', v_success_count, 'failure_count', v_failure_count));
+    v_result := private.command_success(v_operation_id, jsonb_build_object('success_count', v_success_count, 'failure_count', v_failure_count, 'rows', v_row_results));
+  else
+    return private.command_error(v_operation_id, 'VALIDATION_ERROR', 'Unknown command.');
+  end if;
+
+  update private.client_operations
+    set result = v_result,
+        applied_at = now()
+    where organization_id = v_organization_id and user_id = v_actor and operation_id = v_operation_id;
+
+  return v_result;
+end;
+$$;
+
+notify pgrst, 'reload schema';
+
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202611030071_fix_client_operations_update.sql
+-- ============================================================================
+
+begin;
+
+-- Remove non-existent column applied_at from client_operations update in execute_command
+
+create or replace function public.execute_command(p_command_name text, p_envelope jsonb)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare
+  v_actor uuid := auth.uid();
+  v_operation_id uuid;
+  v_expected_version bigint;
+  v_captured_at timestamptz;
+  v_payload jsonb;
+  v_organization_id uuid;
+  v_existing private.client_operations;
+  v_request_hash text;
+  v_item public.work_items;
+  v_item_before public.work_items;
+  v_old_state public.work_state;
+  v_target_state public.work_state;
+  v_episode public.assignment_episodes;
+  v_inspection public.inspections;
+  v_id uuid;
+  v_due_at timestamptz;
+  v_result jsonb;
+  v_rows jsonb;
+  v_row jsonb;
+  v_row_index integer;
+  v_row_results jsonb;
+  v_success_count integer;
+  v_failure_count integer;
+  v_lot text;
+  v_plan text;
+  v_address text;
+  v_city text;
+  v_state text;
+  v_zip text;
+  v_row_error text;
+begin
+  if v_actor is null then
+    return private.command_error(gen_random_uuid(), 'UNAUTHENTICATED', 'Authentication is required.');
+  end if;
+
+  v_payload := coalesce(p_envelope -> 'payload', '{}'::jsonb);
+  if p_envelope ? 'operation_id' then
+    v_operation_id := (p_envelope ->> 'operation_id')::uuid;
+  end if;
+  if v_operation_id is null then
+    return private.command_error(gen_random_uuid(), 'VALIDATION_ERROR', 'operation_id is required.');
+  end if;
+
+  begin
+    if p_envelope ? 'expected_version' then
+      v_expected_version := (p_envelope ->> 'expected_version')::bigint;
+    end if;
+    if p_envelope ? 'captured_at' then
+      v_captured_at := (p_envelope ->> 'captured_at')::timestamptz;
+    end if;
+  exception when others then
+    return private.command_error(v_operation_id, 'VALIDATION_ERROR', 'Invalid expected_version or captured_at.');
+  end;
+
+  if v_captured_at is not null and v_captured_at < now() - interval '90 days' then
+    return private.command_error(v_operation_id, 'OPERATION_EXPIRED', 'Offline operation is older than the accepted retry window.');
+  end if;
+
+  begin
+    if v_payload ? 'organization_id' then
+      v_organization_id := (v_payload ->> 'organization_id')::uuid;
+    elsif v_payload ? 'item_id' then
+      select organization_id into v_organization_id from public.work_items where id = (v_payload ->> 'item_id')::uuid;
+    elsif v_payload ? 'inspection_id' then
+      select organization_id into v_organization_id from public.inspections where id = (v_payload ->> 'inspection_id')::uuid;
+    elsif v_payload ? 'home_id' then
+      select organization_id into v_organization_id from public.homes where id = (v_payload ->> 'home_id')::uuid;
+    end if;
+  exception when others then
+    return private.command_error(v_operation_id, 'VALIDATION_ERROR', 'Invalid entity identifier.');
+  end;
+
+  if v_organization_id is null or not private.active_member(v_organization_id, v_actor) then
+    return private.command_error(v_operation_id, 'NOT_FOUND', 'The requested record was not found.');
+  end if;
+
+  v_request_hash := encode(extensions.digest((jsonb_build_object('command_name', p_command_name, 'envelope', p_envelope))::text, 'sha256'), 'hex');
+  insert into private.client_operations(organization_id, user_id, operation_id, command_name, request_hash)
+    values (v_organization_id, v_actor, v_operation_id, p_command_name, v_request_hash)
+    on conflict (organization_id, user_id, operation_id) do nothing;
+
+  select * into v_existing from private.client_operations
+    where organization_id = v_organization_id and user_id = v_actor and operation_id = v_operation_id
+    for update;
+  if v_existing.request_hash <> v_request_hash or v_existing.command_name <> p_command_name then
+    return private.command_error(v_operation_id, 'OPERATION_REUSE', 'This operation_id was already used with different input.');
+  end if;
+  if v_existing.created_at < now() - interval '90 days' then
+    return private.command_error(v_operation_id, 'OPERATION_EXPIRED', 'The idempotency record has expired.');
+  end if;
+  if v_existing.result is not null then
+    if not private.active_member(v_organization_id, v_actor) then
+      return private.command_error(v_operation_id, 'NOT_FOUND', 'The requested record was not found.');
+    end if;
+    return jsonb_set(v_existing.result, '{replayed}', 'true'::jsonb, true);
+  end if;
+
+  if p_command_name = 'create_work_item' then
+    if not private.has_permission(v_organization_id, v_actor, 'work.create', (v_payload ->> 'neighborhood_id')::uuid, nullif(v_payload ->> 'home_id','')::uuid) then
+      return private.command_error(v_operation_id, 'FORBIDDEN', 'You do not have permission to create work in this scope.');
+    end if;
+    v_id := coalesce(nullif(v_payload ->> 'id', '')::uuid, gen_random_uuid());
+    insert into public.work_items(
+      id, organization_id, neighborhood_id, home_id, location_id, common_area_location, inspection_id,
+      origin, title, description, priority, safety_flag, created_by, client_captured_at
+    ) values (
+      v_id, v_organization_id, (v_payload ->> 'neighborhood_id')::uuid,
+      nullif(v_payload ->> 'home_id','')::uuid, nullif(v_payload ->> 'location_id','')::uuid,
+      nullif(trim(v_payload ->> 'common_area_location'), ''), nullif(v_payload ->> 'inspection_id','')::uuid,
+      coalesce(v_payload ->> 'origin', 'internal_observation')::public.work_origin,
+      trim(v_payload ->> 'title'), trim(v_payload ->> 'description'),
+      coalesce(v_payload ->> 'priority','normal')::public.work_priority, coalesce((v_payload ->> 'safety_flag')::boolean, false),
+      v_actor, v_captured_at
+    ) returning * into v_item;
+    perform private.append_work_event(v_item, 'work.created', null, 'draft', v_actor, v_operation_id, '{}'::jsonb, null, v_captured_at);
+    perform private.append_audit(v_organization_id, v_actor, 'work.created', 'work_item', v_item.id, v_operation_id, null, to_jsonb(v_item));
+    v_result := private.command_success(v_operation_id, jsonb_build_object('id', v_item.id, 'version', v_item.version, 'state', v_item.state));
+
+  elsif p_command_name in ('update_work_draft','submit_work_item','triage_work_item','assign_work_item','delegate_company_work','acknowledge_work','start_work','block_work','unblock_work','submit_correction','verify_correction','reopen_work','cancel_work','update_due_date','issue_evidence_exception') then
+    select * into v_item from public.work_items where id = (v_payload ->> 'item_id')::uuid and organization_id = v_organization_id for update;
+    if not found or not private.can_read_work(v_actor, v_item.id) then
+      return private.command_error(v_operation_id, 'NOT_FOUND', 'The requested work item was not found.');
+    end if;
+    if v_expected_version is null then
+      return private.command_error(v_operation_id, 'VALIDATION_ERROR', 'expected_version is required.');
+    end if;
+    if v_expected_version <> v_item.version then
+      return private.command_error(v_operation_id, 'VERSION_CONFLICT', 'The work item changed. Refresh before retrying.', false, v_item.version);
+    end if;
+    v_item_before := v_item;
+    v_old_state := v_item.state;
+
+    if p_command_name = 'update_work_draft' then
+      if v_item.state <> 'draft' or not (v_item.created_by = v_actor or private.has_permission(v_organization_id, v_actor, 'work.triage', v_item.neighborhood_id, v_item.home_id)) then
+        return private.command_error(v_operation_id, 'FORBIDDEN', 'Only an authorized draft editor may change this item.');
+      end if;
+      update public.work_items set
+        title = coalesce(nullif(trim(v_payload ->> 'title'), ''), title),
+        description = coalesce(nullif(trim(v_payload ->> 'description'), ''), description),
+        priority = coalesce(nullif(v_payload ->> 'priority','')::public.work_priority, priority),
+        safety_flag = coalesce((v_payload ->> 'safety_flag')::boolean, safety_flag)
+      where id = v_item.id returning * into v_item;
+      perform private.append_work_event(v_item, 'work.draft_updated', 'draft', 'draft', v_actor, v_operation_id);
+
+    elsif p_command_name = 'submit_work_item' then
+      if v_item.state <> 'draft' or not (v_item.created_by = v_actor or private.has_permission(v_organization_id, v_actor, 'work.triage', v_item.neighborhood_id, v_item.home_id)) then
+        return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'Only an authorized draft can be submitted.');
+      end if;
+      if v_item.inspection_id is not null then
+        return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'Inspection findings are submitted with their inspection.');
+      end if;
+      update public.work_items set state = 'submitted', submitted_at = now() where id = v_item.id returning * into v_item;
+      perform private.append_work_event(v_item, 'work.submitted', v_old_state, v_item.state, v_actor, v_operation_id, '{}'::jsonb, null, v_captured_at);
+
+    elsif p_command_name = 'triage_work_item' then
+      if not private.has_permission(v_organization_id, v_actor, 'work.triage', v_item.neighborhood_id, v_item.home_id) then
+        return private.command_error(v_operation_id, 'FORBIDDEN', 'Triage permission is required.');
+      end if;
+      if v_item.state <> 'submitted' then
+        return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'Only submitted work can be triaged.');
+      end if;
+      update public.work_items set
+        priority = coalesce(nullif(v_payload ->> 'priority','')::public.work_priority, v_item.priority),
+        safety_flag = coalesce((v_payload ->> 'safety_flag')::boolean, v_item.safety_flag),
+        location_id = coalesce(nullif(v_payload ->> 'location_id','')::uuid, v_item.location_id)
+      where id = v_item.id returning * into v_item;
+      perform private.append_work_event(v_item, 'work.triaged', v_old_state, v_item.state, v_actor, v_operation_id, jsonb_build_object('notes', v_payload ->> 'notes'));
+
+    elsif p_command_name in ('assign_work_item', 'delegate_company_work') then
+      if p_command_name = 'delegate_company_work' then
+        if not private.has_company_membership(v_organization_id, (v_payload ->> 'company_id')::uuid, v_actor, array['owner','admin','lead']::public.company_role[]) then
+          return private.command_error(v_operation_id, 'FORBIDDEN', 'You are not authorized to delegate work for this trade partner.');
+        end if;
+      else
+        if not private.has_permission(v_organization_id, v_actor, 'work.assign', v_item.neighborhood_id, v_item.home_id) then
+          return private.command_error(v_operation_id, 'FORBIDDEN', 'Assignment permission is required.');
+        end if;
+      end if;
+      if v_item.state not in ('submitted', 'assigned', 'acknowledged', 'rework_required') then
+        return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'This work item cannot be assigned in its current state.');
+      end if;
+
+      v_episode := private.create_assignment_episode(
+        v_organization_id, v_item,
+        nullif(v_payload ->> 'internal_assignee_user_id','')::uuid,
+        nullif(v_payload ->> 'company_id','')::uuid,
+        nullif(v_payload ->> 'technician_user_id','')::uuid,
+        nullif(v_payload ->> 'specialty_id','')::uuid,
+        v_actor,
+        coalesce(nullif(v_payload ->> 'due_at','')::timestamptz, now() + interval '2 days'),
+        v_payload ->> 'reason',
+        nullif(v_payload ->> 'instructions','')
+      );
+      update public.work_items set
+        state = 'assigned',
+        current_assignment_id = v_episode.id,
+        due_at = v_episode.due_at,
+        assigned_at = now()
+      where id = v_item.id returning * into v_item;
+      perform private.item_readiness_invalidate(v_item, 'Work assigned.', v_actor, v_operation_id);
+      perform private.append_work_event(v_item, 'work.assigned', v_old_state, v_item.state, v_actor, v_operation_id, jsonb_build_object('assignment_episode_id', v_episode.id, 'reason', v_payload ->> 'reason'), v_episode.id);
+
+    elsif p_command_name = 'acknowledge_work' then
+      if not private.can_execute_work(v_actor, v_item.id) then
+        return private.command_error(v_operation_id, 'FORBIDDEN', 'Only the assigned party may acknowledge this work.');
+      end if;
+      if v_item.state <> 'assigned' then
+        return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'Only assigned work can be acknowledged.');
+      end if;
+      update public.assignment_episodes set acknowledged_at = now() where id = v_item.current_assignment_id;
+      update public.work_items set state = 'acknowledged' where id = v_item.id returning * into v_item;
+      perform private.append_work_event(v_item, 'work.acknowledged', v_old_state, v_item.state, v_actor, v_operation_id, '{}'::jsonb, v_item.current_assignment_id);
+
+    elsif p_command_name = 'start_work' then
+      if not private.can_execute_work(v_actor, v_item.id) then
+        return private.command_error(v_operation_id, 'FORBIDDEN', 'Only the assigned party may start this work.');
+      end if;
+      if v_item.state not in ('assigned','acknowledged') then
+        return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'Only assigned or acknowledged work can be started.');
+      end if;
+      update public.assignment_episodes set started_at = now(), acknowledged_at = coalesce(acknowledged_at, now()) where id = v_item.current_assignment_id;
+      update public.work_items set state = 'in_progress' where id = v_item.id returning * into v_item;
+      perform private.append_work_event(v_item, 'work.started', v_old_state, v_item.state, v_actor, v_operation_id, '{}'::jsonb, v_item.current_assignment_id);
+
+    elsif p_command_name = 'block_work' then
+      if v_item.state not in ('assigned','acknowledged','in_progress','rework_required') or not (private.can_execute_work(v_actor, v_item.id) or private.has_permission(v_organization_id, v_actor, 'work.assign', v_item.neighborhood_id, v_item.home_id)) then
+        return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'This item cannot be blocked by the current user.');
+      end if;
+      if nullif(trim(v_payload ->> 'notes'),'') is null then
+        return private.command_error(v_operation_id, 'VALIDATION_ERROR', 'Blocker notes are required.');
+      end if;
+      insert into public.blocker_events(organization_id, work_item_id, assignment_episode_id, cause, notes, opened_by)
+        values (v_organization_id, v_item.id, v_item.current_assignment_id, coalesce(v_payload ->> 'cause','other'), trim(v_payload ->> 'notes'), v_actor);
+      update public.work_items set state = 'blocked', blocked_from_state = v_old_state, blocked_reason = trim(v_payload ->> 'notes') where id = v_item.id returning * into v_item;
+      perform private.append_work_event(v_item, 'work.blocked', v_old_state, v_item.state, v_actor, v_operation_id, jsonb_build_object('cause', v_payload ->> 'cause', 'notes', v_payload ->> 'notes'), v_item.current_assignment_id, v_captured_at);
+
+    elsif p_command_name = 'unblock_work' then
+      if v_item.state <> 'blocked' or not (private.can_execute_work(v_actor, v_item.id) or private.has_permission(v_organization_id, v_actor, 'work.assign', v_item.neighborhood_id, v_item.home_id)) then
+        return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'This blocked item cannot be resumed by the current user.');
+      end if;
+      if nullif(trim(v_payload ->> 'resolution'),'') is null then
+        return private.command_error(v_operation_id, 'VALIDATION_ERROR', 'A blocker resolution is required.');
+      end if;
+      v_target_state := coalesce(v_item.blocked_from_state, 'assigned');
+      update public.blocker_events set resolved_at = now(), resolved_by = v_actor, resolution = trim(v_payload ->> 'resolution')
+        where organization_id = v_organization_id and work_item_id = v_item.id and resolved_at is null;
+      update public.work_items set state = v_target_state, blocked_from_state = null, blocked_reason = null where id = v_item.id returning * into v_item;
+      perform private.append_work_event(v_item, 'work.unblocked', v_old_state, v_item.state, v_actor, v_operation_id, jsonb_build_object('resolution', v_payload ->> 'resolution'), v_item.current_assignment_id, v_captured_at);
+
+    elsif p_command_name = 'submit_correction' then
+      if not private.can_execute_work(v_actor, v_item.id) then
+        return private.command_error(v_operation_id, 'FORBIDDEN', 'Only the assigned party may submit a correction.');
+      end if;
+      if v_item.state not in ('assigned','acknowledged','in_progress','rework_required') then
+        return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'Work is not in an executable state.');
+      end if;
+      insert into public.correction_attempts(organization_id, work_item_id, assignment_episode_id, summary, submitted_by)
+        values (v_organization_id, v_item.id, v_item.current_assignment_id, trim(v_payload ->> 'summary'), v_actor)
+        returning id into v_id;
+      update public.work_items set state = 'ready_for_verification' where id = v_item.id returning * into v_item;
+      perform private.append_work_event(v_item, 'work.correction_submitted', v_old_state, v_item.state, v_actor, v_operation_id, jsonb_build_object('correction_id', v_id, 'summary', v_payload ->> 'summary'), v_item.current_assignment_id, v_captured_at);
+
+    elsif p_command_name = 'verify_correction' then
+      if not private.has_permission(v_organization_id, v_actor, 'work.verify', v_item.neighborhood_id, v_item.home_id) then
+        return private.command_error(v_operation_id, 'FORBIDDEN', 'Verification permission is required.');
+      end if;
+      if v_item.created_by = v_actor and not private.has_permission(v_organization_id, v_actor, 'work.assign', v_item.neighborhood_id, v_item.home_id) then
+        return private.command_error(v_operation_id, 'INDEPENDENCE_REQUIRED', 'Independent verification is required.');
+      end if;
+      if v_item.state <> 'ready_for_verification' then
+        return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'Only work marked ready for verification can be verified.');
+      end if;
+      if not exists (select 1 from public.assignment_episodes where id = v_item.current_assignment_id and technician_user_id = v_actor)
+         and not private.has_permission(v_organization_id, v_actor, 'work.assign', v_item.neighborhood_id, v_item.home_id) then
+        return private.command_error(v_operation_id, 'FORBIDDEN', 'Verifier must be independent.');
+      end if;
+      if not exists (
+        select 1 from public.attachments a
+        where a.organization_id = v_organization_id and a.work_item_id = v_item.id and a.status = 'ready'
+      ) and not exists (
+        select 1 from public.evidence_exceptions e
+        where e.organization_id = v_organization_id and e.work_item_id = v_item.id and (e.expires_at is null or e.expires_at > now())
+      ) then
+        return private.command_error(v_operation_id, 'EVIDENCE_NOT_READY', 'Ready photo evidence or an active exception is required before verification.');
+      end if;
+
+      insert into public.verifications(organization_id, work_item_id, verified_by, notes)
+        values (v_organization_id, v_item.id, v_actor, nullif(trim(v_payload ->> 'notes'),''))
+        returning id into v_id;
+      update public.assignment_episodes set ended_at = now(), end_reason = 'verified' where id = v_item.current_assignment_id;
+      update public.work_items set state = 'verified', verified_at = now() where id = v_item.id returning * into v_item;
+      perform private.item_readiness_invalidate(v_item, 'Work verified.', v_actor, v_operation_id);
+      perform private.append_work_event(v_item, 'work.verified', v_old_state, v_item.state, v_actor, v_operation_id, jsonb_build_object('verification_id', v_id), v_item.current_assignment_id);
+
+    elsif p_command_name = 'reopen_work' then
+      if not private.has_permission(v_organization_id, v_actor, 'work.verify', v_item.neighborhood_id, v_item.home_id) then
+        return private.command_error(v_operation_id, 'FORBIDDEN', 'Verification permission is required to reopen work.');
+      end if;
+      if v_item.state not in ('ready_for_verification', 'verified') then
+        return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'Only completed work can be reopened.');
+      end if;
+      if nullif(trim(v_payload ->> 'reason'),'') is null then
+        return private.command_error(v_operation_id, 'VALIDATION_ERROR', 'A reopen reason is required.');
+      end if;
+      select * into v_episode from public.assignment_episodes where id = v_item.current_assignment_id;
+      if not found then
+        return private.command_error(v_operation_id, 'NOT_FOUND', 'The prior assignment episode was not found.');
+      end if;
+      insert into public.assignment_episodes(organization_id, work_item_id, internal_assignee_user_id, company_id, technician_user_id, specialty_id, assigned_by, due_at, reassignment_reason)
+        values (v_organization_id, v_item.id, v_episode.internal_assignee_user_id, v_episode.company_id, v_episode.technician_user_id, v_episode.specialty_id, v_actor, coalesce(v_item.due_at, now() + interval '1 day'), 'Reopened: ' || trim(v_payload ->> 'reason'))
+        returning * into v_episode;
+      update public.work_items set state = 'rework_required', reopened_count = reopened_count + 1, current_assignment_id = v_episode.id where id = v_item.id returning * into v_item;
+      perform private.item_readiness_invalidate(v_item, 'Verified work was reopened.', v_actor, v_operation_id);
+      perform private.append_work_event(v_item, 'work.reopened', v_old_state, v_item.state, v_actor, v_operation_id, jsonb_build_object('reason', v_payload ->> 'reason'), v_episode.id);
+
+    elsif p_command_name = 'cancel_work' then
+      if v_item.state = 'verified' or v_item.state = 'cancelled' then
+        return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'Verified or cancelled work cannot be cancelled directly.');
+      end if;
+      if not ((v_item.state = 'draft' and v_item.created_by = v_actor) or private.has_permission(v_organization_id, v_actor, 'work.triage', v_item.neighborhood_id, v_item.home_id)) then
+        return private.command_error(v_operation_id, 'FORBIDDEN', 'Cancellation requires triage permission.');
+      end if;
+      if nullif(trim(v_payload ->> 'reason'),'') is null then
+        return private.command_error(v_operation_id, 'VALIDATION_ERROR', 'A cancellation reason is required.');
+      end if;
+      update public.assignment_episodes set ended_at = now(), end_reason = 'cancelled' where organization_id = v_organization_id and work_item_id = v_item.id and ended_at is null;
+      update public.blocker_events set resolved_at = now(), resolved_by = v_actor, resolution = 'Cancelled' where organization_id = v_organization_id and work_item_id = v_item.id and resolved_at is null;
+      update public.work_items set state = 'cancelled', duplicate_of_id = nullif(v_payload ->> 'duplicate_of_id','')::uuid, blocked_from_state = null, blocked_reason = null where id = v_item.id returning * into v_item;
+      perform private.append_work_event(v_item, 'work.cancelled', v_old_state, v_item.state, v_actor, v_operation_id, jsonb_build_object('reason', v_payload ->> 'reason', 'duplicate_of_id', v_payload ->> 'duplicate_of_id'));
+
+    elsif p_command_name = 'update_due_date' then
+      if not private.has_permission(v_organization_id, v_actor, 'work.assign', v_item.neighborhood_id, v_item.home_id) or v_item.current_assignment_id is null then
+        return private.command_error(v_operation_id, 'FORBIDDEN', 'Assignment permission and an active assignment are required.');
+      end if;
+      v_due_at := nullif(v_payload ->> 'new_due_at','')::timestamptz;
+      if v_due_at is null or nullif(trim(v_payload ->> 'reason'),'') is null then
+        return private.command_error(v_operation_id, 'VALIDATION_ERROR', 'A new due date and reason are required.');
+      end if;
+      update public.assignment_episodes set due_at = v_due_at where id = v_item.current_assignment_id;
+      update public.work_items set due_at = v_due_at where id = v_item.id returning * into v_item;
+      update public.notification_outbox set status = 'cancelled', updated_at = now() where organization_id = v_organization_id and assignment_episode_id = v_item.current_assignment_id and status in ('pending','failed');
+      perform private.append_work_event(v_item, 'work.due_date_changed', v_old_state, v_item.state, v_actor, v_operation_id, jsonb_build_object('old_due_at', v_item_before.due_at, 'new_due_at', v_due_at, 'reason', v_payload ->> 'reason'), v_item.current_assignment_id);
+
+    elsif p_command_name = 'issue_evidence_exception' then
+      if not private.has_permission(v_organization_id, v_actor, 'work.assign', v_item.neighborhood_id, v_item.home_id) then
+        return private.command_error(v_operation_id, 'FORBIDDEN', 'Assignment permission is required to authorize an evidence exception.');
+      end if;
+      if nullif(trim(v_payload ->> 'reason'),'') is null then
+        return private.command_error(v_operation_id, 'VALIDATION_ERROR', 'An exception reason is required.');
+      end if;
+      insert into public.evidence_exceptions(organization_id, work_item_id, authorized_by, reason, expires_at)
+        values (v_organization_id, v_item.id, v_actor, trim(v_payload ->> 'reason'), nullif(v_payload ->> 'expires_at','')::timestamptz)
+        returning id into v_id;
+      update public.work_items set updated_at = now() where id = v_item.id returning * into v_item;
+      perform private.append_work_event(v_item, 'evidence.exception_issued', v_old_state, v_item.state, v_actor, v_operation_id, jsonb_build_object('exception_id', v_id, 'reason', v_payload ->> 'reason'));
+    end if;
+
+    perform private.append_audit(v_organization_id, v_actor, p_command_name, 'work_item', v_item.id, v_operation_id, to_jsonb(v_item_before), to_jsonb(v_item));
+    v_result := private.command_success(v_operation_id, jsonb_build_object('id', v_item.id, 'version', v_item.version, 'state', v_item.state));
+
+  elsif p_command_name = 'schedule_inspection' then
+    if not private.has_permission(v_organization_id, v_actor, 'inspection.schedule', (v_payload ->> 'neighborhood_id')::uuid, (v_payload ->> 'home_id')::uuid) then
+      return private.command_error(v_operation_id, 'FORBIDDEN', 'Inspection schedule permission is required.');
+    end if;
+    v_id := coalesce(nullif(v_payload ->> 'id', '')::uuid, gen_random_uuid());
+    insert into public.inspections(organization_id, neighborhood_id, home_id, type, template_version_id, scheduled_at, lead_inspector_user_id)
+      values (
+        v_organization_id, (v_payload ->> 'neighborhood_id')::uuid, (v_payload ->> 'home_id')::uuid,
+        (v_payload ->> 'type')::public.inspection_type, (v_payload ->> 'template_version_id')::uuid,
+        nullif(v_payload ->> 'scheduled_at','')::timestamptz, coalesce(nullif(v_payload ->> 'lead_inspector_user_id','')::uuid, v_actor)
+      ) returning * into v_inspection;
+    insert into public.inspection_participants(organization_id, inspection_id, user_id, can_edit_draft)
+      values (v_organization_id, v_inspection.id, v_inspection.lead_inspector_user_id, true) on conflict do nothing;
+    perform private.append_audit(v_organization_id, v_actor, 'inspection.scheduled', 'inspection', v_inspection.id, v_operation_id, null, to_jsonb(v_inspection));
+    v_result := private.command_success(v_operation_id, jsonb_build_object('id', v_inspection.id, 'version', v_inspection.version, 'status', v_inspection.status));
+
+  elsif p_command_name in ('upsert_inspection_response','submit_inspection','begin_inspection_amendment','approve_milestone') then
+    if p_command_name = 'approve_milestone' then
+      select neighborhood_id into v_id from public.homes where id = (v_payload ->> 'home_id')::uuid and organization_id = v_organization_id;
+      if v_id is null or not private.has_permission(v_organization_id, v_actor, 'milestone.approve', v_id, (v_payload ->> 'home_id')::uuid) then
+        return private.command_error(v_operation_id, 'FORBIDDEN', 'Milestone approval permission is required.');
+      end if;
+      perform 1 from public.homes where id = (v_payload ->> 'home_id')::uuid and organization_id = v_organization_id for update;
+      if exists (select 1 from public.home_summary h where h.id = (v_payload ->> 'home_id')::uuid and h.readiness <> 'ready_for_review') then
+        return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'The home is not ready for milestone review.');
+      end if;
+      insert into public.milestone_approvals(organization_id, home_id, milestone_code, approved_by, snapshot)
+        values (v_organization_id, (v_payload ->> 'home_id')::uuid, v_payload ->> 'milestone_code', v_actor, jsonb_build_object('approved_at', now()))
+        returning id into v_id;
+      perform private.append_audit(v_organization_id, v_actor, 'milestone.approved', 'home', (v_payload ->> 'home_id')::uuid, v_operation_id, null, jsonb_build_object('approval_id', v_id));
+      v_result := private.command_success(v_operation_id, jsonb_build_object('id', v_id, 'status', 'approved'));
+    else
+      select * into v_inspection from public.inspections where id = (v_payload ->> 'inspection_id')::uuid and organization_id = v_organization_id for update;
+      if not found or not private.can_read_inspection(v_actor, v_inspection.id) then
+        return private.command_error(v_operation_id, 'NOT_FOUND', 'The requested inspection was not found.');
+      end if;
+
+      -- Enforce strict version check only for lifecycle amendments and final submission, not individual question responses
+      if p_command_name in ('begin_inspection_amendment', 'submit_inspection') then
+        if v_expected_version is null or v_expected_version <> v_inspection.version then
+          return private.command_error(v_operation_id, 'VERSION_CONFLICT', 'The inspection changed. Refresh before retrying.', false, v_inspection.version);
+        end if;
+      end if;
+
+      if p_command_name = 'begin_inspection_amendment' then
+        if not private.has_permission(v_organization_id, v_actor, 'inspection.manage', v_inspection.neighborhood_id, v_inspection.home_id) then
+          return private.command_error(v_operation_id, 'FORBIDDEN', 'Inspection management permission is required to begin an amendment.');
+        end if;
+        if v_inspection.status <> 'submitted' then
+          return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'Only a submitted inspection can be amended.');
+        end if;
+        update public.inspections set current_revision = current_revision + 1, status = 'amended' where id = v_inspection.id returning * into v_inspection;
+        perform private.append_audit(v_organization_id, v_actor, 'inspection.amendment_started', 'inspection', v_inspection.id, v_operation_id, null, to_jsonb(v_inspection));
+        v_result := private.command_success(v_operation_id, jsonb_build_object('id', v_inspection.id, 'version', v_inspection.version, 'status', v_inspection.status, 'revision', v_inspection.current_revision));
+      elsif p_command_name = 'upsert_inspection_response' then
+        if not (
+          private.has_permission(v_organization_id, v_actor, 'inspection.perform', v_inspection.neighborhood_id, v_inspection.home_id)
+          or private.has_permission(v_organization_id, v_actor, 'inspection.manage', v_inspection.neighborhood_id, v_inspection.home_id)
+          or exists (select 1 from public.inspection_participants ip where ip.organization_id = v_organization_id and ip.inspection_id = v_inspection.id and ip.user_id = v_actor and ip.can_edit_draft)
+        ) then
+          return private.command_error(v_operation_id, 'FORBIDDEN', 'You cannot edit this inspection draft.');
+        end if;
+        if v_inspection.status not in ('draft','in_progress','amended') then
+          return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'Submitted inspection responses are immutable.');
+        end if;
+        insert into public.inspection_responses(organization_id, inspection_id, question_id, result, explanation, finding_work_item_id)
+          values (v_organization_id, v_inspection.id, (v_payload ->> 'question_id')::uuid, (v_payload ->> 'response')::public.inspection_result,
+            nullif(trim(v_payload ->> 'reason'),''), nullif(v_payload ->> 'finding_id','')::uuid)
+          on conflict (organization_id, inspection_id, question_id) do update set result = excluded.result, explanation = excluded.explanation, finding_work_item_id = excluded.finding_work_item_id;
+
+        -- Only transition from 'draft' to 'in_progress'; do not update inspections if already 'in_progress' or 'amended'
+        if v_inspection.status = 'draft' then
+          update public.inspections set status = 'in_progress' where id = v_inspection.id returning * into v_inspection;
+        end if;
+        v_result := private.command_success(v_operation_id, jsonb_build_object('id', v_inspection.id, 'version', v_inspection.version, 'status', v_inspection.status));
+      else
+        if not (
+          private.has_permission(v_organization_id, v_actor, 'inspection.perform', v_inspection.neighborhood_id, v_inspection.home_id)
+          or private.has_permission(v_organization_id, v_actor, 'inspection.manage', v_inspection.neighborhood_id, v_inspection.home_id)
+          or exists (select 1 from public.inspection_participants ip where ip.organization_id = v_organization_id and ip.inspection_id = v_inspection.id and ip.user_id = v_actor and ip.can_edit_draft)
+        ) then
+          return private.command_error(v_operation_id, 'FORBIDDEN', 'You cannot submit this inspection.');
+        end if;
+        if v_inspection.status not in ('draft','in_progress','amended') then
+          return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'This inspection cannot be submitted.');
+        end if;
+        if exists (
+          select 1 from public.checklist_questions q
+          where q.organization_id = v_organization_id and q.version_id = v_inspection.template_version_id and q.requires_response
+            and not exists (select 1 from public.inspection_responses r where r.organization_id = v_organization_id and r.inspection_id = v_inspection.id and r.question_id = q.id)
+        ) then
+          return private.command_error(v_operation_id, 'VALIDATION_ERROR', 'Every required checklist question must have a response.');
+        end if;
+        update public.work_items set state = 'submitted', submitted_at = now()
+          where organization_id = v_organization_id and inspection_id = v_inspection.id and state = 'draft';
+        insert into public.inspection_submissions(organization_id, inspection_id, revision_number, snapshot, submitted_by)
+          select v_organization_id, v_inspection.id, v_inspection.current_revision,
+            jsonb_build_object(
+              'inspection', to_jsonb(v_inspection),
+              'responses', coalesce((select jsonb_agg(to_jsonb(r) order by q.ordinal) from public.inspection_responses r join public.checklist_questions q on q.organization_id = r.organization_id and q.id = r.question_id where r.organization_id = v_organization_id and r.inspection_id = v_inspection.id), '[]'::jsonb),
+              'finding_ids', coalesce((select jsonb_agg(w.id) from public.work_items w where w.organization_id = v_organization_id and w.inspection_id = v_inspection.id), '[]'::jsonb),
+              'attachment_ids', coalesce((select jsonb_agg(a.id) from public.attachments a where a.organization_id = v_organization_id and a.inspection_id = v_inspection.id and a.status = 'ready'), '[]'::jsonb)
+            ), v_actor;
+        update public.inspections set status = 'submitted' where id = v_inspection.id returning * into v_inspection;
+        perform private.append_audit(v_organization_id, v_actor, 'inspection.submitted', 'inspection', v_inspection.id, v_operation_id, null, to_jsonb(v_inspection));
+        v_result := private.command_success(v_operation_id, jsonb_build_object('id', v_inspection.id, 'version', v_inspection.version, 'status', v_inspection.status, 'revision', v_inspection.current_revision));
+      end if;
+    end if;
+  elsif p_command_name = 'import_homes' then
+    if not private.require_aal2() or not private.has_permission(v_organization_id, v_actor, 'structure.manage', null, null) then
+      return private.command_error(v_operation_id, 'FORBIDDEN', 'Home import requires an aal2 administrator session.');
+    end if;
+    if not exists (select 1 from public.neighborhoods where organization_id = v_organization_id and id = (v_payload ->> 'neighborhood_id')::uuid) then
+      return private.command_error(v_operation_id, 'NOT_FOUND', 'The target neighborhood was not found.');
+    end if;
+    v_rows := coalesce(v_payload -> 'rows', '[]'::jsonb);
+    if jsonb_typeof(v_rows) <> 'array' or jsonb_array_length(v_rows) = 0 or jsonb_array_length(v_rows) > 1000 then
+      return private.command_error(v_operation_id, 'VALIDATION_ERROR', 'Home import requires between 1 and 1000 rows.');
+    end if;
+    v_row_results := '[]'::jsonb;
+    v_success_count := 0;
+    for v_row, v_row_index in
+      select value, (ordinality - 1)::integer from jsonb_array_elements(v_rows) with ordinality
+    loop
+      v_lot := trim(coalesce(v_row ->> 'lot_code', ''));
+      v_plan := trim(coalesce(v_row ->> 'plan_name', ''));
+      v_address := trim(coalesce(v_row ->> 'address_line1', ''));
+      v_city := trim(coalesce(v_row ->> 'city', ''));
+      v_state := trim(coalesce(v_row ->> 'state', ''));
+      v_zip := trim(coalesce(v_row ->> 'postal_code', ''));
+
+      v_row_error := null;
+      if v_lot = '' then
+        v_row_error := 'Lot code is required.';
+      elsif v_plan = '' then
+        v_row_error := 'Plan name is required.';
+      elsif v_address = '' then
+        v_row_error := 'Address line 1 is required.';
+      elsif v_city = '' or v_state = '' or v_zip = '' then
+        v_row_error := 'City, state, and postal code are required.';
+      end if;
+
+      if v_row_error is not null then
+        v_row_results := v_row_results || jsonb_build_object('row_index', v_row_index, 'ok', false, 'error', v_row_error);
+      else
+        insert into public.homes(organization_id, neighborhood_id, lot_code, plan_name, address_line1, city, state, postal_code)
+          values (v_organization_id, (v_payload ->> 'neighborhood_id')::uuid, v_lot, v_plan, v_address, v_city, v_state, v_zip)
+          on conflict (organization_id, neighborhood_id, lot_code) do update set
+            plan_name = excluded.plan_name,
+            address_line1 = excluded.address_line1,
+            city = excluded.city,
+            state = excluded.state,
+            postal_code = excluded.postal_code
+          returning id into v_id;
+        v_success_count := v_success_count + 1;
+        v_row_results := v_row_results || jsonb_build_object('row_index', v_row_index, 'ok', true, 'id', v_id);
+      end if;
+    end loop;
+    v_failure_count := jsonb_array_length(v_rows) - v_success_count;
+    perform private.append_audit(v_organization_id, v_actor, 'homes.imported', 'neighborhood', (v_payload ->> 'neighborhood_id')::uuid, v_operation_id, null, jsonb_build_object('success_count', v_success_count, 'failure_count', v_failure_count));
+    v_result := private.command_success(v_operation_id, jsonb_build_object('success_count', v_success_count, 'failure_count', v_failure_count, 'rows', v_row_results));
+  else
+    return private.command_error(v_operation_id, 'VALIDATION_ERROR', 'Unknown command.');
+  end if;
+
+  update private.client_operations
+    set result = v_result
+    where organization_id = v_organization_id and user_id = v_actor and operation_id = v_operation_id;
+
+  return v_result;
+end;
+$$;
+
+notify pgrst, 'reload schema';
+
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202611030072_batch_inspection_responses.sql
+-- ============================================================================
+
+begin;
+
+-- Introduce save_inspection_responses to allow atomic batch saving / snapshots of inspection responses
+-- Eliminates N individual API requests, cascades, and sequential dependency locks in the offline queue.
+-- When responses contain 'fail', the observation is upserted first so trigger guard_observation_response is satisfied.
+
+create or replace function public.execute_command(p_command_name text, p_envelope jsonb)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare
+  v_actor uuid := auth.uid();
+  v_operation_id uuid;
+  v_expected_version bigint;
+  v_captured_at timestamptz;
+  v_payload jsonb;
+  v_organization_id uuid;
+  v_existing private.client_operations;
+  v_request_hash text;
+  v_item public.work_items;
+  v_item_before public.work_items;
+  v_old_state public.work_state;
+  v_target_state public.work_state;
+  v_episode public.assignment_episodes;
+  v_inspection public.inspections;
+  v_id uuid;
+  v_due_at timestamptz;
+  v_result jsonb;
+  v_rows jsonb;
+  v_row jsonb;
+  v_row_index integer;
+  v_row_results jsonb;
+  v_success_count integer;
+  v_failure_count integer;
+  v_lot text;
+  v_plan text;
+  v_address text;
+  v_city text;
+  v_state text;
+  v_zip text;
+  v_row_error text;
+  v_resp jsonb;
+  v_q_id uuid;
+  v_res_val public.inspection_result;
+  v_reason text;
+  v_find_id uuid;
+  v_q public.checklist_questions;
+  v_loc_id uuid;
+begin
+  if v_actor is null then
+    return private.command_error(gen_random_uuid(), 'UNAUTHENTICATED', 'Authentication is required.');
+  end if;
+
+  v_payload := coalesce(p_envelope -> 'payload', '{}'::jsonb);
+  if p_envelope ? 'operation_id' then
+    v_operation_id := (p_envelope ->> 'operation_id')::uuid;
+  end if;
+  if v_operation_id is null then
+    return private.command_error(gen_random_uuid(), 'VALIDATION_ERROR', 'operation_id is required.');
+  end if;
+
+  begin
+    if p_envelope ? 'expected_version' and nullif(p_envelope ->> 'expected_version', '') is not null then
+      v_expected_version := (p_envelope ->> 'expected_version')::bigint;
+    end if;
+    if p_envelope ? 'captured_at' and nullif(p_envelope ->> 'captured_at', '') is not null then
+      v_captured_at := (p_envelope ->> 'captured_at')::timestamptz;
+    end if;
+  exception when others then
+    return private.command_error(v_operation_id, 'VALIDATION_ERROR', 'Invalid expected_version or captured_at.');
+  end;
+
+  if v_captured_at is not null and v_captured_at < now() - interval '90 days' then
+    return private.command_error(v_operation_id, 'OPERATION_EXPIRED', 'Offline operation is older than the accepted retry window.');
+  end if;
+
+  begin
+    if v_payload ? 'organization_id' then
+      v_organization_id := (v_payload ->> 'organization_id')::uuid;
+    elsif v_payload ? 'item_id' then
+      select organization_id into v_organization_id from public.work_items where id = (v_payload ->> 'item_id')::uuid;
+    elsif v_payload ? 'inspection_id' then
+      select organization_id into v_organization_id from public.inspections where id = (v_payload ->> 'inspection_id')::uuid;
+    elsif v_payload ? 'home_id' then
+      select organization_id into v_organization_id from public.homes where id = (v_payload ->> 'home_id')::uuid;
+    end if;
+  exception when others then
+    return private.command_error(v_operation_id, 'VALIDATION_ERROR', 'Invalid entity identifier.');
+  end;
+
+  if v_organization_id is null or not private.active_member(v_organization_id, v_actor) then
+    return private.command_error(v_operation_id, 'NOT_FOUND', 'The requested record was not found.');
+  end if;
+
+  v_request_hash := encode(extensions.digest((jsonb_build_object('command_name', p_command_name, 'envelope', p_envelope))::text, 'sha256'), 'hex');
+  insert into private.client_operations(organization_id, user_id, operation_id, command_name, request_hash)
+    values (v_organization_id, v_actor, v_operation_id, p_command_name, v_request_hash)
+    on conflict (organization_id, user_id, operation_id) do nothing;
+
+  select * into v_existing from private.client_operations
+    where organization_id = v_organization_id and user_id = v_actor and operation_id = v_operation_id
+    for update;
+  if v_existing.request_hash <> v_request_hash or v_existing.command_name <> p_command_name then
+    return private.command_error(v_operation_id, 'OPERATION_REUSE', 'This operation_id was already used with different input.');
+  end if;
+  if v_existing.created_at < now() - interval '90 days' then
+    return private.command_error(v_operation_id, 'OPERATION_EXPIRED', 'The idempotency record has expired.');
+  end if;
+  if v_existing.result is not null then
+    if not private.active_member(v_organization_id, v_actor) then
+      return private.command_error(v_operation_id, 'NOT_FOUND', 'The requested record was not found.');
+    end if;
+    return jsonb_set(v_existing.result, '{replayed}', 'true'::jsonb, true);
+  end if;
+
+  if p_command_name = 'create_work_item' then
+    if not private.has_permission(v_organization_id, v_actor, 'work.create', (v_payload ->> 'neighborhood_id')::uuid, nullif(v_payload ->> 'home_id','')::uuid) then
+      return private.command_error(v_operation_id, 'FORBIDDEN', 'You do not have permission to create work in this scope.');
+    end if;
+    v_id := coalesce(nullif(v_payload ->> 'id', '')::uuid, gen_random_uuid());
+    insert into public.work_items(
+      id, organization_id, neighborhood_id, home_id, location_id, common_area_location, inspection_id,
+      origin, title, description, priority, safety_flag, created_by, client_captured_at
+    ) values (
+      v_id, v_organization_id, (v_payload ->> 'neighborhood_id')::uuid,
+      nullif(v_payload ->> 'home_id','')::uuid, nullif(v_payload ->> 'location_id','')::uuid,
+      nullif(trim(v_payload ->> 'common_area_location'), ''), nullif(v_payload ->> 'inspection_id','')::uuid,
+      coalesce(v_payload ->> 'origin', 'internal_observation')::public.work_origin,
+      trim(v_payload ->> 'title'), nullif(trim(v_payload ->> 'description'), ''),
+      coalesce(v_payload ->> 'priority', 'normal')::public.work_priority,
+      coalesce((v_payload ->> 'safety_flag')::boolean, false),
+      v_actor, v_captured_at
+    ) returning * into v_item;
+    perform private.item_readiness_invalidate(v_item, 'Work created.', v_actor, v_operation_id);
+    perform private.append_work_event(v_item, 'work.created', null, 'draft', v_actor, v_operation_id, '{}'::jsonb, null, v_captured_at);
+    v_result := private.command_success(v_operation_id, jsonb_build_object('id', v_item.id, 'version', v_item.version, 'state', v_item.state));
+
+  elsif p_command_name in (
+    'triage_work_item','assign_work_item','acknowledge_work','start_work','block_work','unblock_work',
+    'submit_correction','verify_work','reopen_work','cancel_work','update_due_date'
+  ) then
+    select * into v_item from public.work_items where id = (v_payload ->> 'item_id')::uuid and organization_id = v_organization_id for update;
+    if not found or not private.can_read_work_item(v_actor, v_item.id) then
+      return private.command_error(v_operation_id, 'NOT_FOUND', 'The requested work item was not found.');
+    end if;
+
+    if v_expected_version is not null and v_expected_version <> v_item.version then
+      return private.command_error(v_operation_id, 'VERSION_CONFLICT', 'The work item changed. Refresh before retrying.', false, v_item.version);
+    end if;
+
+    v_old_state := v_item.state;
+
+    if p_command_name = 'triage_work_item' then
+      if not private.has_permission(v_organization_id, v_actor, 'work.triage', v_item.neighborhood_id, v_item.home_id) then
+        return private.command_error(v_operation_id, 'FORBIDDEN', 'Triage permission is required.');
+      end if;
+      if v_item.state not in ('draft', 'submitted') then
+        return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'Only draft or submitted work can be triaged.');
+      end if;
+      v_item_before := v_item;
+      update public.work_items set
+        priority = coalesce(v_payload ->> 'priority', priority::text)::public.work_priority,
+        safety_flag = coalesce((v_payload ->> 'safety_flag')::boolean, safety_flag),
+        location_id = case when v_payload ? 'location_id' then nullif(v_payload ->> 'location_id','')::uuid else location_id end,
+        common_area_location = case when v_payload ? 'common_area_location' then nullif(trim(v_payload ->> 'common_area_location'),'') else common_area_location end,
+        state = 'triaged'
+      where id = v_item.id returning * into v_item;
+      perform private.item_readiness_invalidate(v_item, 'Work triaged.', v_actor, v_operation_id);
+      perform private.append_work_event(v_item, 'work.triaged', v_old_state, v_item.state, v_actor, v_operation_id, jsonb_build_object('before', to_jsonb(v_item_before), 'after', to_jsonb(v_item)));
+
+    elsif p_command_name = 'assign_work_item' then
+      if not private.has_permission(v_organization_id, v_actor, 'work.assign', v_item.neighborhood_id, v_item.home_id) then
+        return private.command_error(v_operation_id, 'FORBIDDEN', 'Assignment permission is required.');
+      end if;
+      if v_item.state not in ('draft', 'submitted', 'triaged', 'assigned', 'acknowledged', 'rework_required') then
+        return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'Work in this state cannot be assigned.');
+      end if;
+      if nullif(trim(v_payload ->> 'reason'),'') is null then
+        return private.command_error(v_operation_id, 'VALIDATION_ERROR', 'Assignment reason is required.');
+      end if;
+      if v_item.current_assignment_id is not null then
+        update public.assignment_episodes set ended_at = now(), end_reason = 'reassigned' where id = v_item.current_assignment_id and ended_at is null;
+      end if;
+      insert into public.assignment_episodes(
+        organization_id, work_item_id, internal_assignee_user_id, company_id, technician_user_id, specialty_id,
+        assigned_by, due_at, reassignment_reason, instructions
+      ) values (
+        v_organization_id,
+        v_item.id,
+        nullif(v_payload ->> 'internal_assignee_user_id','')::uuid,
+        nullif(v_payload ->> 'company_id','')::uuid,
+        nullif(v_payload ->> 'technician_user_id','')::uuid,
+        nullif(v_payload ->> 'specialty_id','')::uuid,
+        v_actor,
+        coalesce(nullif(v_payload ->> 'due_at','')::timestamptz, now() + interval '2 days'),
+        v_payload ->> 'reason',
+        nullif(v_payload ->> 'instructions','')
+      ) returning * into v_episode;
+      update public.work_items set
+        state = 'assigned',
+        current_assignment_id = v_episode.id,
+        due_at = v_episode.due_at,
+        assigned_at = now()
+      where id = v_item.id returning * into v_item;
+      perform private.item_readiness_invalidate(v_item, 'Work assigned.', v_actor, v_operation_id);
+      perform private.append_work_event(v_item, 'work.assigned', v_old_state, v_item.state, v_actor, v_operation_id, jsonb_build_object('assignment_episode_id', v_episode.id, 'reason', v_payload ->> 'reason'), v_episode.id);
+
+    elsif p_command_name = 'acknowledge_work' then
+      if not private.can_execute_work(v_actor, v_item.id) then
+        return private.command_error(v_operation_id, 'FORBIDDEN', 'Only the assigned party may acknowledge this work.');
+      end if;
+      if v_item.state <> 'assigned' then
+        return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'Only assigned work can be acknowledged.');
+      end if;
+      update public.assignment_episodes set acknowledged_at = now() where id = v_item.current_assignment_id;
+      update public.work_items set state = 'acknowledged' where id = v_item.id returning * into v_item;
+      perform private.append_work_event(v_item, 'work.acknowledged', v_old_state, v_item.state, v_actor, v_operation_id, '{}'::jsonb, v_item.current_assignment_id);
+
+    elsif p_command_name = 'start_work' then
+      if not private.can_execute_work(v_actor, v_item.id) then
+        return private.command_error(v_operation_id, 'FORBIDDEN', 'Only the assigned party may start this work.');
+      end if;
+      if v_item.state not in ('assigned','acknowledged') then
+        return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'Only assigned or acknowledged work can be started.');
+      end if;
+      update public.assignment_episodes set started_at = now(), acknowledged_at = coalesce(acknowledged_at, now()) where id = v_item.current_assignment_id;
+      update public.work_items set state = 'in_progress' where id = v_item.id returning * into v_item;
+      perform private.append_work_event(v_item, 'work.started', v_old_state, v_item.state, v_actor, v_operation_id, '{}'::jsonb, v_item.current_assignment_id);
+
+    elsif p_command_name = 'block_work' then
+      if v_item.state not in ('assigned','acknowledged','in_progress','rework_required') or not (private.can_execute_work(v_actor, v_item.id) or private.has_permission(v_organization_id, v_actor, 'work.assign', v_item.neighborhood_id, v_item.home_id)) then
+        return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'This item cannot be blocked by the current user.');
+      end if;
+      if nullif(trim(v_payload ->> 'notes'),'') is null then
+        return private.command_error(v_operation_id, 'VALIDATION_ERROR', 'Blocker notes are required.');
+      end if;
+      insert into public.blocker_events(organization_id, work_item_id, assignment_episode_id, cause, notes, opened_by)
+        values (v_organization_id, v_item.id, v_item.current_assignment_id, coalesce(v_payload ->> 'cause','other'), trim(v_payload ->> 'notes'), v_actor);
+      update public.work_items set state = 'blocked', blocked_from_state = v_old_state, blocked_reason = trim(v_payload ->> 'notes') where id = v_item.id returning * into v_item;
+      perform private.append_work_event(v_item, 'work.blocked', v_old_state, v_item.state, v_actor, v_operation_id, jsonb_build_object('cause', v_payload ->> 'cause', 'notes', v_payload ->> 'notes'), v_item.current_assignment_id, v_captured_at);
+
+    elsif p_command_name = 'unblock_work' then
+      if v_item.state <> 'blocked' or not (private.can_execute_work(v_actor, v_item.id) or private.has_permission(v_organization_id, v_actor, 'work.assign', v_item.neighborhood_id, v_item.home_id)) then
+        return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'This blocked item cannot be resumed by the current user.');
+      end if;
+      if nullif(trim(v_payload ->> 'resolution'),'') is null then
+        return private.command_error(v_operation_id, 'VALIDATION_ERROR', 'A blocker resolution is required.');
+      end if;
+      v_target_state := coalesce(v_item.blocked_from_state, 'assigned');
+      update public.blocker_events set resolved_at = now(), resolved_by = v_actor, resolution = trim(v_payload ->> 'resolution')
+        where organization_id = v_organization_id and work_item_id = v_item.id and resolved_at is null;
+      update public.work_items set state = v_target_state, blocked_from_state = null, blocked_reason = null where id = v_item.id returning * into v_item;
+      perform private.append_work_event(v_item, 'work.unblocked', v_old_state, v_item.state, v_actor, v_operation_id, jsonb_build_object('resolution', v_payload ->> 'resolution'), v_item.current_assignment_id, v_captured_at);
+
+    elsif p_command_name = 'submit_correction' then
+      if not private.can_execute_work(v_actor, v_item.id) then
+        return private.command_error(v_operation_id, 'FORBIDDEN', 'Only assigned parties can submit completed corrections.');
+      end if;
+      if v_item.state not in ('in_progress','assigned','acknowledged','rework_required') then
+        return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'Item is not in an executable state.');
+      end if;
+      update public.work_items set state = 'ready_for_verification' where id = v_item.id returning * into v_item;
+      perform private.item_readiness_invalidate(v_item, 'Correction submitted.', v_actor, v_operation_id);
+      perform private.append_work_event(v_item, 'work.correction_submitted', v_old_state, v_item.state, v_actor, v_operation_id, jsonb_build_object('notes', v_payload ->> 'notes'), v_item.current_assignment_id, v_captured_at);
+
+    elsif p_command_name = 'verify_work' then
+      if not private.has_permission(v_organization_id, v_actor, 'work.verify', v_item.neighborhood_id, v_item.home_id) then
+        return private.command_error(v_operation_id, 'FORBIDDEN', 'Verification permission is required.');
+      end if;
+      if v_item.state <> 'ready_for_verification' then
+        return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'Only work marked ready for verification can be verified.');
+      end if;
+      if not exists (select 1 from public.assignment_episodes where id = v_item.current_assignment_id and technician_user_id = v_actor)
+         and not private.has_permission(v_organization_id, v_actor, 'work.assign', v_item.neighborhood_id, v_item.home_id) then
+        return private.command_error(v_operation_id, 'FORBIDDEN', 'Verifier must be independent.');
+      end if;
+      if not exists (
+        select 1 from public.attachments a
+        where a.organization_id = v_organization_id and a.work_item_id = v_item.id and a.status = 'ready'
+      ) and not exists (
+        select 1 from public.evidence_exceptions e
+        where e.organization_id = v_organization_id and e.work_item_id = v_item.id and (e.expires_at is null or e.expires_at > now())
+      ) then
+        return private.command_error(v_operation_id, 'EVIDENCE_NOT_READY', 'Ready photo evidence or an active exception is required before verification.');
+      end if;
+
+      insert into public.verifications(organization_id, work_item_id, verified_by, notes)
+        values (v_organization_id, v_item.id, v_actor, nullif(trim(v_payload ->> 'notes'),''))
+        returning id into v_id;
+      update public.assignment_episodes set ended_at = now(), end_reason = 'verified' where id = v_item.current_assignment_id;
+      update public.work_items set state = 'verified', verified_at = now() where id = v_item.id returning * into v_item;
+      perform private.item_readiness_invalidate(v_item, 'Work verified.', v_actor, v_operation_id);
+      perform private.append_work_event(v_item, 'work.verified', v_old_state, v_item.state, v_actor, v_operation_id, jsonb_build_object('verification_id', v_id), v_item.current_assignment_id);
+
+    elsif p_command_name = 'reopen_work' then
+      if not private.has_permission(v_organization_id, v_actor, 'work.verify', v_item.neighborhood_id, v_item.home_id) then
+        return private.command_error(v_operation_id, 'FORBIDDEN', 'Verification permission is required to reopen work.');
+      end if;
+      if v_item.state not in ('ready_for_verification', 'verified') then
+        return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'Only completed work can be reopened.');
+      end if;
+      if nullif(trim(v_payload ->> 'reason'),'') is null then
+        return private.command_error(v_operation_id, 'VALIDATION_ERROR', 'A reopen reason is required.');
+      end if;
+      select * into v_episode from public.assignment_episodes where id = v_item.current_assignment_id;
+      if not found then
+        return private.command_error(v_operation_id, 'NOT_FOUND', 'The prior assignment episode was not found.');
+      end if;
+      insert into public.assignment_episodes(organization_id, work_item_id, internal_assignee_user_id, company_id, technician_user_id, specialty_id, assigned_by, due_at, reassignment_reason)
+        values (v_organization_id, v_item.id, v_episode.internal_assignee_user_id, v_episode.company_id, v_episode.technician_user_id, v_episode.specialty_id, v_actor, coalesce(v_item.due_at, now() + interval '1 day'), 'Reopened: ' || trim(v_payload ->> 'reason'))
+        returning * into v_episode;
+      update public.work_items set state = 'rework_required', reopened_count = reopened_count + 1, current_assignment_id = v_episode.id where id = v_item.id returning * into v_item;
+      perform private.item_readiness_invalidate(v_item, 'Verified work was reopened.', v_actor, v_operation_id);
+      perform private.append_work_event(v_item, 'work.reopened', v_old_state, v_item.state, v_actor, v_operation_id, jsonb_build_object('reason', v_payload ->> 'reason'), v_episode.id);
+
+    elsif p_command_name = 'cancel_work' then
+      if v_item.state = 'verified' or v_item.state = 'cancelled' then
+        return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'Verified or cancelled work cannot be cancelled directly.');
+      end if;
+      if not ((v_item.state = 'draft' and v_item.created_by = v_actor) or private.has_permission(v_organization_id, v_actor, 'work.triage', v_item.neighborhood_id, v_item.home_id)) then
+        return private.command_error(v_operation_id, 'FORBIDDEN', 'Cancellation requires triage permission.');
+      end if;
+      if nullif(trim(v_payload ->> 'reason'),'') is null then
+        return private.command_error(v_operation_id, 'VALIDATION_ERROR', 'A cancellation reason is required.');
+      end if;
+      update public.assignment_episodes set ended_at = now(), end_reason = 'cancelled' where organization_id = v_organization_id and work_item_id = v_item.id and ended_at is null;
+      update public.blocker_events set resolved_at = now(), resolved_by = v_actor, resolution = 'Cancelled' where organization_id = v_organization_id and work_item_id = v_item.id and resolved_at is null;
+      update public.work_items set state = 'cancelled', duplicate_of_id = nullif(v_payload ->> 'duplicate_of_id','')::uuid, blocked_from_state = null, blocked_reason = null where id = v_item.id returning * into v_item;
+      perform private.append_work_event(v_item, 'work.cancelled', v_old_state, v_item.state, v_actor, v_operation_id, jsonb_build_object('reason', v_payload ->> 'reason', 'duplicate_of_id', v_payload ->> 'duplicate_of_id'));
+
+    elsif p_command_name = 'update_due_date' then
+      if not private.has_permission(v_organization_id, v_actor, 'work.assign', v_item.neighborhood_id, v_item.home_id) or v_item.current_assignment_id is null then
+        return private.command_error(v_operation_id, 'FORBIDDEN', 'Assignment permission and an active assignment are required.');
+      end if;
+      v_due_at := nullif(v_payload ->> 'new_due_at','')::timestamptz;
+      if v_due_at is null or nullif(trim(v_payload ->> 'reason'),'') is null then
+        return private.command_error(v_operation_id, 'VALIDATION_ERROR', 'A new due date and reason are required.');
+      end if;
+      update public.assignment_episodes set due_at = v_due_at where id = v_item.current_assignment_id;
+      update public.work_items set due_at = v_due_at where id = v_item.id returning * into v_item;
+      perform private.append_work_event(v_item, 'work.due_date_updated', v_old_state, v_item.state, v_actor, v_operation_id, jsonb_build_object('due_at', v_due_at, 'reason', v_payload ->> 'reason'), v_item.current_assignment_id);
+    end if;
+
+    v_result := private.command_success(v_operation_id, jsonb_build_object('id', v_item.id, 'version', v_item.version, 'state', v_item.state));
+
+  elsif p_command_name = 'schedule_inspection' then
+    if not private.has_permission(v_organization_id, v_actor, 'inspection.schedule', (v_payload ->> 'neighborhood_id')::uuid, (v_payload ->> 'home_id')::uuid) then
+      return private.command_error(v_operation_id, 'FORBIDDEN', 'Inspection schedule permission is required.');
+    end if;
+    v_id := coalesce(nullif(v_payload ->> 'id', '')::uuid, gen_random_uuid());
+    insert into public.inspections(organization_id, neighborhood_id, home_id, type, template_version_id, scheduled_at, lead_inspector_user_id)
+      values (
+        v_organization_id, (v_payload ->> 'neighborhood_id')::uuid, (v_payload ->> 'home_id')::uuid,
+        (v_payload ->> 'type')::public.inspection_type, (v_payload ->> 'template_version_id')::uuid,
+        nullif(v_payload ->> 'scheduled_at','')::timestamptz, coalesce(nullif(v_payload ->> 'lead_inspector_user_id','')::uuid, v_actor)
+      ) returning * into v_inspection;
+    insert into public.inspection_participants(organization_id, inspection_id, user_id, can_edit_draft)
+      values (v_organization_id, v_inspection.id, v_inspection.lead_inspector_user_id, true) on conflict do nothing;
+    perform private.append_audit(v_organization_id, v_actor, 'inspection.scheduled', 'inspection', v_inspection.id, v_operation_id, null, to_jsonb(v_inspection));
+    v_result := private.command_success(v_operation_id, jsonb_build_object('id', v_inspection.id, 'version', v_inspection.version, 'status', v_inspection.status));
+
+  elsif p_command_name in ('save_inspection_responses','upsert_inspection_response','submit_inspection','begin_inspection_amendment','approve_milestone') then
+    if p_command_name = 'approve_milestone' then
+      select neighborhood_id into v_id from public.homes where id = (v_payload ->> 'home_id')::uuid and organization_id = v_organization_id;
+      if v_id is null or not private.has_permission(v_organization_id, v_actor, 'milestone.approve', v_id, (v_payload ->> 'home_id')::uuid) then
+        return private.command_error(v_operation_id, 'FORBIDDEN', 'Milestone approval permission is required.');
+      end if;
+      perform 1 from public.homes where id = (v_payload ->> 'home_id')::uuid and organization_id = v_organization_id for update;
+      if exists (select 1 from public.home_summary h where h.id = (v_payload ->> 'home_id')::uuid and h.readiness <> 'ready_for_review') then
+        return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'The home is not ready for milestone review.');
+      end if;
+      insert into public.milestone_approvals(organization_id, home_id, milestone_code, approved_by, snapshot)
+        values (v_organization_id, (v_payload ->> 'home_id')::uuid, v_payload ->> 'milestone_code', v_actor, jsonb_build_object('approved_at', now()))
+        returning id into v_id;
+      perform private.append_audit(v_organization_id, v_actor, 'milestone.approved', 'home', (v_payload ->> 'home_id')::uuid, v_operation_id, null, jsonb_build_object('approval_id', v_id));
+      v_result := private.command_success(v_operation_id, jsonb_build_object('id', v_id, 'status', 'approved'));
+    else
+      select * into v_inspection from public.inspections where id = (v_payload ->> 'inspection_id')::uuid and organization_id = v_organization_id for update;
+      if not found or not private.can_read_inspection(v_actor, v_inspection.id) then
+        return private.command_error(v_operation_id, 'NOT_FOUND', 'The requested inspection was not found.');
+      end if;
+
+      -- Enforce strict version check only for lifecycle amendments and final submission, not response drafts
+      if p_command_name in ('begin_inspection_amendment', 'submit_inspection') then
+        if v_expected_version is null or v_expected_version <> v_inspection.version then
+          return private.command_error(v_operation_id, 'VERSION_CONFLICT', 'The inspection changed. Refresh before retrying.', false, v_inspection.version);
+        end if;
+      end if;
+
+      if p_command_name = 'begin_inspection_amendment' then
+        if not private.has_permission(v_organization_id, v_actor, 'inspection.manage', v_inspection.neighborhood_id, v_inspection.home_id) then
+          return private.command_error(v_operation_id, 'FORBIDDEN', 'Inspection management permission is required to begin an amendment.');
+        end if;
+        if v_inspection.status <> 'submitted' then
+          return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'Only a submitted inspection can be amended.');
+        end if;
+        update public.inspections set current_revision = current_revision + 1, status = 'amended' where id = v_inspection.id returning * into v_inspection;
+        perform private.append_audit(v_organization_id, v_actor, 'inspection.amendment_started', 'inspection', v_inspection.id, v_operation_id, null, to_jsonb(v_inspection));
+        v_result := private.command_success(v_operation_id, jsonb_build_object('id', v_inspection.id, 'version', v_inspection.version, 'status', v_inspection.status, 'revision', v_inspection.current_revision));
+
+      elsif p_command_name = 'save_inspection_responses' then
+        if not (
+          private.has_permission(v_organization_id, v_actor, 'inspection.perform', v_inspection.neighborhood_id, v_inspection.home_id)
+          or private.has_permission(v_organization_id, v_actor, 'inspection.manage', v_inspection.neighborhood_id, v_inspection.home_id)
+          or exists (select 1 from public.inspection_participants ip where ip.organization_id = v_organization_id and ip.inspection_id = v_inspection.id and ip.user_id = v_actor and ip.can_edit_draft)
+        ) then
+          return private.command_error(v_operation_id, 'FORBIDDEN', 'You cannot edit this inspection draft.');
+        end if;
+        if v_inspection.status not in ('draft','in_progress','amended') then
+          return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'Submitted inspection responses are immutable.');
+        end if;
+
+        for v_resp in select * from jsonb_array_elements(coalesce(v_payload -> 'responses', '[]'::jsonb)) loop
+          v_q_id := (v_resp ->> 'question_id')::uuid;
+          v_res_val := (v_resp ->> 'response')::public.inspection_result;
+          v_reason := nullif(trim(v_resp ->> 'reason'), '');
+          v_find_id := nullif(v_resp ->> 'finding_id', '')::uuid;
+
+          -- First, if fail, upsert observation so trigger guard_observation_response passes
+          if v_res_val = 'fail' then
+            select * into v_q from public.checklist_questions
+              where organization_id = v_organization_id and version_id = v_inspection.template_version_id and id = v_q_id;
+            select id into v_loc_id from public.home_locations
+              where organization_id = v_organization_id and home_id = v_inspection.home_id and active and name = v_q.section order by id limit 1;
+
+            if exists (select 1 from public.inspection_observations where organization_id = v_organization_id and inspection_id = v_inspection.id and question_id = v_q_id and status = 'open') then
+              update public.inspection_observations set
+                title = coalesce(nullif(trim(v_resp ->> 'title'), ''), title),
+                description = coalesce(nullif(trim(v_resp ->> 'description'), ''), v_reason, description),
+                priority = coalesce(nullif(v_resp ->> 'priority', '')::public.work_priority, 'normal'),
+                safety_flag = coalesce((v_resp ->> 'safety_flag')::boolean, false)
+              where organization_id = v_organization_id and inspection_id = v_inspection.id and question_id = v_q_id and status = 'open';
+            else
+              insert into public.inspection_observations(
+                id, organization_id, inspection_id, home_id, neighborhood_id, question_id, location_id, space_name, title, description, priority, safety_flag, created_by
+              ) values (
+                coalesce(nullif(v_resp ->> 'observation_id', '')::uuid, gen_random_uuid()),
+                v_organization_id,
+                v_inspection.id,
+                v_inspection.home_id,
+                v_inspection.neighborhood_id,
+                v_q_id,
+                v_loc_id,
+                coalesce(v_q.section, 'Whole property'),
+                coalesce(nullif(trim(v_resp ->> 'title'), ''), coalesce(v_q.label, 'Observation')),
+                coalesce(nullif(trim(v_resp ->> 'description'), ''), v_reason, coalesce(v_q.label, 'Observation')),
+                coalesce(nullif(v_resp ->> 'priority', '')::public.work_priority, 'normal'),
+                coalesce((v_resp ->> 'safety_flag')::boolean, false),
+                v_actor
+              );
+            end if;
+          end if;
+
+          -- Now insert into inspection_responses
+          insert into public.inspection_responses(organization_id, inspection_id, question_id, result, explanation, finding_work_item_id)
+            values (v_organization_id, v_inspection.id, v_q_id, v_res_val, v_reason, v_find_id)
+            on conflict (organization_id, inspection_id, question_id) do update set
+              result = excluded.result,
+              explanation = excluded.explanation,
+              finding_work_item_id = excluded.finding_work_item_id;
+
+          -- If response is not fail, disregard any open observation
+          if v_res_val <> 'fail' then
+            update public.inspection_observations set
+              status = 'disregarded',
+              review_notes = 'Response updated from fail',
+              reviewed_by = v_actor,
+              reviewed_at = now()
+            where organization_id = v_organization_id and inspection_id = v_inspection.id and question_id = v_q_id and status = 'open';
+          end if;
+        end loop;
+
+        if v_inspection.status = 'draft' then
+          update public.inspections set status = 'in_progress' where id = v_inspection.id returning * into v_inspection;
+        end if;
+        v_result := private.command_success(v_operation_id, jsonb_build_object('id', v_inspection.id, 'version', v_inspection.version, 'status', v_inspection.status, 'saved_count', jsonb_array_length(coalesce(v_payload -> 'responses', '[]'::jsonb))));
+
+      elsif p_command_name = 'upsert_inspection_response' then
+        if not (
+          private.has_permission(v_organization_id, v_actor, 'inspection.perform', v_inspection.neighborhood_id, v_inspection.home_id)
+          or private.has_permission(v_organization_id, v_actor, 'inspection.manage', v_inspection.neighborhood_id, v_inspection.home_id)
+          or exists (select 1 from public.inspection_participants ip where ip.organization_id = v_organization_id and ip.inspection_id = v_inspection.id and ip.user_id = v_actor and ip.can_edit_draft)
+        ) then
+          return private.command_error(v_operation_id, 'FORBIDDEN', 'You cannot edit this inspection draft.');
+        end if;
+        if v_inspection.status not in ('draft','in_progress','amended') then
+          return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'Submitted inspection responses are immutable.');
+        end if;
+        insert into public.inspection_responses(organization_id, inspection_id, question_id, result, explanation, finding_work_item_id)
+          values (v_organization_id, v_inspection.id, (v_payload ->> 'question_id')::uuid, (v_payload ->> 'response')::public.inspection_result,
+            nullif(trim(v_payload ->> 'reason'),''), nullif(v_payload ->> 'finding_id','')::uuid)
+          on conflict (organization_id, inspection_id, question_id) do update set result = excluded.result, explanation = excluded.explanation, finding_work_item_id = excluded.finding_work_item_id;
+
+        -- Only transition from 'draft' to 'in_progress'; do not update inspections if already 'in_progress' or 'amended'
+        if v_inspection.status = 'draft' then
+          update public.inspections set status = 'in_progress' where id = v_inspection.id returning * into v_inspection;
+        end if;
+        v_result := private.command_success(v_operation_id, jsonb_build_object('id', v_inspection.id, 'version', v_inspection.version, 'status', v_inspection.status));
+      else
+        if not (
+          private.has_permission(v_organization_id, v_actor, 'inspection.perform', v_inspection.neighborhood_id, v_inspection.home_id)
+          or private.has_permission(v_organization_id, v_actor, 'inspection.manage', v_inspection.neighborhood_id, v_inspection.home_id)
+          or exists (select 1 from public.inspection_participants ip where ip.organization_id = v_organization_id and ip.inspection_id = v_inspection.id and ip.user_id = v_actor and ip.can_edit_draft)
+        ) then
+          return private.command_error(v_operation_id, 'FORBIDDEN', 'You cannot submit this inspection.');
+        end if;
+        if v_inspection.status not in ('draft','in_progress','amended') then
+          return private.command_error(v_operation_id, 'INVALID_TRANSITION', 'This inspection cannot be submitted.');
+        end if;
+        if exists (
+          select 1 from public.checklist_questions q
+          where q.organization_id = v_organization_id and q.version_id = v_inspection.template_version_id and q.requires_response
+            and not exists (select 1 from public.inspection_responses r where r.organization_id = v_organization_id and r.inspection_id = v_inspection.id and r.question_id = q.id)
+        ) then
+          return private.command_error(v_operation_id, 'VALIDATION_ERROR', 'Every required checklist question must have a response.');
+        end if;
+        update public.work_items set state = 'submitted', submitted_at = now()
+          where organization_id = v_organization_id and inspection_id = v_inspection.id and state = 'draft';
+        insert into public.inspection_submissions(organization_id, inspection_id, revision_number, snapshot, submitted_by)
+          select v_organization_id, v_inspection.id, v_inspection.current_revision,
+            jsonb_build_object(
+              'inspection', to_jsonb(v_inspection),
+              'responses', coalesce((select jsonb_agg(to_jsonb(r) order by q.ordinal) from public.inspection_responses r join public.checklist_questions q on q.organization_id = r.organization_id and q.id = r.question_id where r.organization_id = v_organization_id and r.inspection_id = v_inspection.id), '[]'::jsonb),
+              'finding_ids', coalesce((select jsonb_agg(w.id) from public.work_items w where w.organization_id = v_organization_id and w.inspection_id = v_inspection.id), '[]'::jsonb),
+              'attachment_ids', coalesce((select jsonb_agg(a.id) from public.attachments a where a.organization_id = v_organization_id and a.inspection_id = v_inspection.id and a.status = 'ready'), '[]'::jsonb)
+            ), v_actor;
+        update public.inspections set status = 'submitted', submitted_at = now() where id = v_inspection.id returning * into v_inspection;
+        perform private.append_audit(v_organization_id, v_actor, 'inspection.submitted', 'inspection', v_inspection.id, v_operation_id, null, to_jsonb(v_inspection));
+        v_result := private.command_success(v_operation_id, jsonb_build_object('id', v_inspection.id, 'version', v_inspection.version, 'status', v_inspection.status, 'revision', v_inspection.current_revision));
+      end if;
+    end if;
+
+  elsif p_command_name = 'bulk_create_homes' then
+    if not private.has_permission(v_organization_id, v_actor, 'structure.manage', (v_payload ->> 'neighborhood_id')::uuid) then
+      return private.command_error(v_operation_id, 'FORBIDDEN', 'Structure management permission is required.');
+    end if;
+    v_rows := coalesce(v_payload -> 'homes', '[]'::jsonb);
+    if jsonb_array_length(v_rows) = 0 then
+      return private.command_error(v_operation_id, 'VALIDATION_ERROR', 'At least one home row is required.');
+    end if;
+    v_success_count := 0;
+    v_failure_count := 0;
+    v_row_results := '[]'::jsonb;
+    for v_row_index in 0 .. jsonb_array_length(v_rows) - 1 loop
+      v_row := v_rows -> v_row_index;
+      v_lot := trim(coalesce(v_row ->> 'lot_code', ''));
+      v_plan := nullif(trim(coalesce(v_row ->> 'plan_name', '')), '');
+      v_address := trim(coalesce(v_row ->> 'address_line1', ''));
+      v_city := trim(coalesce(v_row ->> 'city', ''));
+      v_state := trim(coalesce(v_row ->> 'state_code', ''));
+      v_zip := trim(coalesce(v_row ->> 'postal_code', ''));
+      v_row_error := null;
+
+      if v_lot = '' or v_address = '' or v_city = '' or v_state = '' or v_zip = '' then
+        v_row_error := 'Missing required fields.';
+      elsif exists (
+        select 1 from public.homes
+        where organization_id = v_organization_id
+          and neighborhood_id = (v_payload ->> 'neighborhood_id')::uuid
+          and lot_code = v_lot
+      ) then
+        v_row_error := 'Lot code already exists in this neighborhood.';
+      end if;
+
+      if v_row_error is not null then
+        v_failure_count := v_failure_count + 1;
+        v_row_results := v_row_results || jsonb_build_object('row', v_row_index + 1, 'lot_code', v_lot, 'error', v_row_error);
+      else
+        insert into public.homes (
+          organization_id, neighborhood_id, lot_code, plan_name, address_line1, city, state_code, postal_code
+        ) values (
+          v_organization_id, (v_payload ->> 'neighborhood_id')::uuid, v_lot, v_plan, v_address, v_city, v_state, v_zip
+        ) returning id into v_id;
+        v_success_count := v_success_count + 1;
+        v_row_results := v_row_results || jsonb_build_object('row', v_row_index + 1, 'lot_code', v_lot, 'id', v_id);
+      end if;
+    end loop;
+    v_result := private.command_success(v_operation_id, jsonb_build_object(
+      'success_count', v_success_count,
+      'failure_count', v_failure_count,
+      'results', v_row_results
+    ));
+
+  else
+    return private.command_error(v_operation_id, 'UNKNOWN_COMMAND', 'The requested command is not supported.');
+  end if;
+
+  update private.client_operations
+    set result = v_result
+    where organization_id = v_organization_id and user_id = v_actor and operation_id = v_operation_id;
+
+  return v_result;
+end;
+$$;
+
+revoke all on function public.execute_command(text, jsonb) from public, anon;
+grant execute on function public.execute_command(text, jsonb) to authenticated;
+
+notify pgrst, 'reload schema';
+
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202611040073_inspection_item_media.sql
+-- ============================================================================
+
+begin;
+alter table public.attachments add column question_id uuid;
+alter table public.attachments add constraint attachment_question_fk foreign key(organization_id,question_id) references public.checklist_questions(organization_id,id);
+alter table public.attachments add constraint attachment_question_parent check(question_id is null or inspection_id is not null);
+create index attachment_inspection_question on public.attachments(organization_id,inspection_id,question_id);
+
+create function public.request_inspection_item_media(p_inspection uuid,p_question uuid,p_name text,p_mime text,p_bytes bigint)
+returns public.attachments language plpgsql security definer set search_path='' as $$
+declare i public.inspections; result public.attachments; media_id uuid:=gen_random_uuid();
+begin
+  select * into i from public.inspections where id=p_inspection for update;
+  if not found or not private.active_member(i.organization_id,auth.uid()) or i.status not in ('draft','in_progress','amended')
+    or not private.has_permission(i.organization_id,auth.uid(),'inspection.perform',i.neighborhood_id,i.home_id)
+    or not (i.lead_inspector_user_id=auth.uid() or private.has_permission(i.organization_id,auth.uid(),'inspection.manage',i.neighborhood_id,i.home_id)) then
+    raise insufficient_privilege using message='Only the assigned Inspector or inspection manager can attach evidence to an open inspection.';
+  end if;
+  if not exists(select 1 from public.checklist_questions q where q.organization_id=i.organization_id and q.version_id=i.template_version_id and q.id=p_question) then raise check_violation using message='Checklist item does not belong to this inspection.'; end if;
+  if p_bytes is null or p_bytes not between 1 and 20971520 or p_mime is null or p_mime not in ('image/jpeg','image/png','image/heic','image/heif','application/pdf') or nullif(trim(p_name),'') is null then raise check_violation using message='Use a photo or PDF up to 20 MB.'; end if;
+  if (select count(*) from public.attachments where inspection_id=i.id and question_id=p_question and status<>'deleted')>=20 then raise check_violation using message='Each checklist item supports up to 20 evidence files.'; end if;
+  insert into public.attachments(id,organization_id,neighborhood_id,home_id,inspection_id,question_id,visibility,uploader_id,bucket,object_key,original_name,mime_type,byte_size,purpose)
+  values(media_id,i.organization_id,i.neighborhood_id,i.home_id,i.id,p_question,'shared',auth.uid(),'evidence',i.organization_id||'/'||media_id||'/original',regexp_replace(p_name,'[\\/\x00-\x1f]','_','g'),p_mime,p_bytes,'observation') returning * into result;
+  return result;
+end; $$;
+revoke all on function public.request_inspection_item_media(uuid,uuid,text,text,bigint) from public,anon;
+grant execute on function public.request_inspection_item_media(uuid,uuid,text,text,bigint) to authenticated;
+notify pgrst,'reload schema';
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202611040074_work_completion_flow.sql
+-- ============================================================================
+
+begin;
+
+-- Preserve the inspection batch implementation while restoring the audited
+-- work command pipeline (attempts, evidence, independent verification, receipts).
+do $patch$
+declare definition text; needle text;
+begin
+  definition:=replace(pg_get_functiondef('public.execute_command_before_plan_checklists(text,jsonb)'::regprocedure),chr(13)||chr(10),chr(10));
+  needle:='if v_item.state <> ''in_progress'' or not private.can_execute_work(v_actor, v_item.id) then';
+  if strpos(definition,needle)=0 then raise exception 'Review completion state guard before applying migration'; end if;
+  definition:=replace(definition,needle,'if v_item.state not in (''assigned'',''acknowledged'',''in_progress'',''rework_required'') or not private.can_execute_work(v_actor, v_item.id) then');
+  definition:=replace(definition,'Only the current accountable party may submit an in-progress correction.','Only the assigned party may mark this work as completed.');
+  execute definition;
+end; $patch$;
+
+alter function public.execute_command(text,jsonb) rename to execute_command_before_work_completion;
+revoke all on function public.execute_command_before_work_completion(text,jsonb) from public,anon,authenticated;
+create function public.execute_command(p_command_name text,p_envelope jsonb) returns jsonb
+language plpgsql security definer set search_path='' as $$
+begin
+  if p_command_name in ('create_work_item','update_work_draft','submit_work_item','triage_work_item','assign_work_item','delegate_company_work','acknowledge_work','start_work','block_work','unblock_work','submit_correction','verify_correction','reopen_work','cancel_work','update_due_date','issue_evidence_exception','add_comment') then
+    return public.execute_command_before_plan_checklists(p_command_name,p_envelope);
+  end if;
+  return public.execute_command_before_work_completion(p_command_name,p_envelope);
+end; $$;
+revoke all on function public.execute_command(text,jsonb) from public,anon;
+grant execute on function public.execute_command(text,jsonb) to authenticated;
+
+create function public.work_completion_context(p_org uuid,p_item uuid) returns jsonb
+language plpgsql stable security definer set search_path='' as $$
+declare w public.work_items; executable boolean;
+begin
+  select * into w from public.work_items where organization_id=p_org and id=p_item;
+  if not found or not private.can_read_work(auth.uid(),p_item) then raise insufficient_privilege using message='Work item is outside your access.'; end if;
+  executable:=private.can_execute_work(auth.uid(),p_item) and w.state in ('assigned','acknowledged','in_progress','rework_required');
+  return jsonb_build_object('can_complete',executable,'evidence_exception_id',case when executable then (
+    select id from public.evidence_exceptions where organization_id=p_org and work_item_id=p_item and consumed_by_attempt_id is null and (expires_at is null or expires_at>now()) order by created_at desc limit 1) end);
+end; $$;
+revoke all on function public.work_completion_context(uuid,uuid) from public,anon;
+grant execute on function public.work_completion_context(uuid,uuid) to authenticated;
+notify pgrst,'reload schema';
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202611050075_supervisor_repair_review.sql
+-- ============================================================================
+
+begin;
+
+-- A completed repair normally goes to its supervisor. Inspector authority is
+-- limited to the optional, explicitly assigned reinspection branch.
+create or replace function private.can_verify(p_user_id uuid,p_attempt_id uuid)
+returns boolean language sql stable security definer set search_path='' as $$
+ select exists(
+  select 1 from public.correction_attempts ca
+  join public.work_items w on w.organization_id=ca.organization_id and w.id=ca.work_item_id
+  where ca.id=p_attempt_id and ca.submitted_by<>p_user_id
+   and ca.accountable_internal_user_id is distinct from p_user_id
+   and ca.technician_user_id is distinct from p_user_id
+   and (private.has_permission(w.organization_id,p_user_id,'work.verify',w.neighborhood_id,w.home_id)
+    or (w.state='ready_for_verification' and w.reinspection_status='pending'
+     and w.reinspection_assignee_user_id=p_user_id
+     and private.has_permission(w.organization_id,p_user_id,'inspection.perform',w.neighborhood_id,w.home_id)))
+   and not (ca.accountable_company_id is not null
+    and private.active_company_membership(w.organization_id,ca.accountable_company_id,p_user_id,null))
+ );
+$$;
+revoke all on function private.can_verify(uuid,uuid) from public,anon,authenticated;
+
+-- Keep the audited completion attempts, assignment history, evidence, immutable
+-- submissions and receipts. Never send these commands to the batch-only fork.
+do $patch$
+declare definition text; needle text;
+begin
+ definition:=replace(pg_get_functiondef('public.execute_command_before_plan_checklists(text,jsonb)'::regprocedure),chr(13)||chr(10),chr(10));
+ needle:='elsif p_command_name = ''verify_correction'' then';
+ if strpos(definition,needle)=0 then raise exception 'Review supervisor decision dispatch before applying migration'; end if;
+ definition:=replace(definition,needle,needle||'
+      if not private.has_permission(v_organization_id,v_actor,''work.verify'',v_item.neighborhood_id,v_item.home_id) then
+        return private.command_error(v_operation_id,''FORBIDDEN'',''An authorized supervisor must review completed work.'');
+      end if;
+      if v_item.reinspection_status = ''pending'' then
+        return private.command_error(v_operation_id,''INVALID_TRANSITION'',''An Inspector has been assigned. Wait for the requested reinspection decision.'');
+      end if;');
+ execute definition;
+
+ definition:=replace(pg_get_functiondef('private.quality_workflow_command(text,jsonb,uuid,uuid,uuid,bigint)'::regprocedure),chr(13)||chr(10),chr(10));
+ needle:='or attempt.submitted_by=target or';
+ if strpos(definition,needle)=0 then raise exception 'Review reinspection independence check before applying migration'; end if;
+ definition:=replace(definition,needle,'or attempt.submitted_by=target or attempt.accountable_internal_user_id=target or attempt.technician_user_id=target or');
+ needle:='if action=''reinspect'' then';
+ definition:=replace(definition,needle,needle||'
+        if w.reinspection_status=''pending'' then raise check_violation using message=''This repair already has a pending reinspection.''; end if;');
+ execute definition;
+
+ definition:=replace(pg_get_functiondef('public.execute_command_before_work_completion(text,jsonb)'::regprocedure),chr(13)||chr(10),chr(10));
+ needle:='elsif p_command_name = ''save_inspection_responses'' then';
+ if strpos(definition,needle)=0 then raise exception 'Review inspection batch draft handler before applying migration'; end if;
+ definition:=replace(definition,needle,needle||'
+        if not (private.has_permission(v_organization_id,v_actor,''inspection.manage'',v_inspection.neighborhood_id,v_inspection.home_id)
+          or private.has_permission(v_organization_id,v_actor,''inspection.perform'',v_inspection.neighborhood_id,v_inspection.home_id)
+           and (v_inspection.lead_inspector_user_id=v_actor or exists(select 1 from public.inspection_participants ip where ip.inspection_id=v_inspection.id and ip.user_id=v_actor and ip.can_edit_draft))) then
+          return private.command_error(v_operation_id,''FORBIDDEN'',''Only an assigned Inspector or supervisor can edit this draft.'');
+        end if;');
+ execute definition;
+end; $patch$;
+
+-- The observation upsert rewrite removed its error boundary. Restore structured
+-- errors and rollback of every nested task if any assignment in the batch fails.
+do $$ declare definition text; needle text; begin
+ definition:=replace(pg_get_functiondef('private.inspection_observation_command(text,jsonb)'::regprocedure),chr(13)||chr(10),chr(10));
+ needle:='return result;'||chr(10)||'end;';
+ if strpos(definition,needle)=0 then raise exception 'Review observation command error boundary before applying migration'; end if;
+ definition:=replace(definition,needle,'return result;
+exception when insufficient_privilege then return private.command_error(op,''FORBIDDEN'',sqlerrm);
+ when serialization_failure then return private.command_error(op,''VERSION_CONFLICT'',sqlerrm);
+ when check_violation or foreign_key_violation or not_null_violation or invalid_text_representation or unique_violation then return private.command_error(op,''VALIDATION_ERROR'',sqlerrm);
+end;');
+ execute definition;
+end; $$;
+
+create or replace function public.execute_command(p_command_name text,p_envelope jsonb)
+returns jsonb language plpgsql security definer set search_path='' as $$
+declare payload jsonb:=p_envelope->'payload'; h public.homes; ver uuid; result jsonb; error_detail text;
+begin
+ if p_command_name='save_inspection_responses' then
+  return public.execute_command_before_work_completion(p_command_name,p_envelope);
+ end if;
+ if p_command_name in ('record_inspection_observation','create_observation_work','disregard_inspection_observation') then
+  return private.inspection_observation_command(p_command_name,p_envelope);
+ end if;
+ if p_command_name in ('schedule_inspection','schedule_company_inspection') and coalesce((payload->>'plan_checklist')::boolean,false) then
+  select * into h from public.homes where id=(payload->>'home_id')::uuid;
+  ver:=private.snapshot_plan_checklist(h.organization_id,h.id,(p_envelope->>'operation_id')::uuid,(payload->>'plan_version')::bigint,coalesce(payload->'additional_items','[]'::jsonb));
+  p_envelope:=jsonb_set(p_envelope,'{payload,template_version_id}',to_jsonb(ver));
+  result:=public.execute_command_before_plan_checklists(p_command_name,p_envelope);
+  -- A rejected schedule must not leave an orphan property snapshot.
+  if not coalesce((result->>'ok')::boolean,false) then
+   raise exception using errcode='BT002',message='Scheduling failed',detail=result::text;
+  end if;
+  return result;
+ end if;
+ return public.execute_command_before_plan_checklists(p_command_name,p_envelope);
+exception when sqlstate 'BT002' then
+ get stacked diagnostics error_detail=pg_exception_detail;
+ return error_detail::jsonb;
+end; $$;
+revoke all on function public.execute_command(text,jsonb) from public,anon;
+grant execute on function public.execute_command(text,jsonb) to authenticated;
+
+create or replace function public.work_completion_context(p_org uuid,p_item uuid)
+returns jsonb language plpgsql stable security definer set search_path='' as $$
+declare w public.work_items; executable boolean; supervisor boolean; independent boolean; attempt uuid;
+begin
+ select * into w from public.work_items where organization_id=p_org and id=p_item;
+ if not found or not private.can_read_work(auth.uid(),p_item) then raise insufficient_privilege using message='Work item is outside your access.'; end if;
+ executable:=private.can_execute_work(auth.uid(),p_item) and w.state in ('assigned','acknowledged','in_progress','rework_required');
+ supervisor:=private.has_permission(p_org,auth.uid(),'work.verify',w.neighborhood_id,w.home_id);
+ select ca.id into attempt from public.correction_attempts ca where ca.organization_id=p_org and ca.work_item_id=p_item
+  and not exists(select 1 from public.verifications v where v.organization_id=p_org and v.correction_attempt_id=ca.id)
+  order by ca.attempt_number desc limit 1;
+ independent:=coalesce(private.can_verify(auth.uid(),attempt),false);
+ return jsonb_build_object(
+  'can_complete',executable,
+  'can_review',supervisor and independent and w.state='ready_for_verification' and w.reinspection_status is distinct from 'pending',
+  'can_request_reinspection',supervisor and w.home_id is not null and w.state='ready_for_verification' and w.reinspection_status is distinct from 'pending',
+  'review_block_reason',case when w.state<>'ready_for_verification' then null
+   when w.reinspection_status='pending' then 'Waiting for the assigned Inspector’s reinspection decision.'
+   when supervisor and not independent then 'Another authorized reviewer must review this completion. You cannot approve work you performed or submitted, or work completed by your company.'
+   when not supervisor then 'An authorized supervisor will review this completion.' end,
+  'evidence_exception_id',case when executable then (select id from public.evidence_exceptions where organization_id=p_org and work_item_id=p_item
+   and consumed_by_attempt_id is null and (expires_at is null or expires_at>now()) order by created_at desc limit 1) end);
+end; $$;
+revoke all on function public.work_completion_context(uuid,uuid) from public,anon;
+grant execute on function public.work_completion_context(uuid,uuid) to authenticated;
+
+-- Notify supervisors of a review queue, without implying every repair needs an
+-- Inspector visit. Existing API field names remain compatible with saved clients.
+do $$ declare definition text; begin
+ definition:=pg_get_functiondef('private.notify_property_repairs_ready()'::regprocedure);
+ definition:=replace(definition,'Property ready for reinspection','Property repairs ready for review');
+ definition:=replace(definition,': all repair tasks are complete and the inspection report has been reviewed.',': repairs have been marked complete. Review and close the work, or request an optional reinspection.');
+ execute definition;
+end; $$;
+notify pgrst,'reload schema';
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202611050076_allow_supervisor_self_approval.sql
+-- ============================================================================
+
+begin;
+
+-- Supervisors may accept repairs they performed or submitted themselves.
+-- Authority still comes from work.verify in the repair's scope. Optional
+-- Inspector reinspections retain their separate assignment/independence rules.
+create or replace function private.can_verify(p_user_id uuid,p_attempt_id uuid)
+returns boolean language sql stable security definer set search_path='' as $$
+ select exists(
+  select 1 from public.correction_attempts ca
+  join public.work_items w on w.organization_id=ca.organization_id and w.id=ca.work_item_id
+  where ca.id=p_attempt_id and (
+   (w.reinspection_status is distinct from 'pending'
+    and private.has_permission(w.organization_id,p_user_id,'work.verify',w.neighborhood_id,w.home_id))
+   or (w.state='ready_for_verification' and w.reinspection_status='pending'
+    and w.reinspection_assignee_user_id=p_user_id
+    and private.has_permission(w.organization_id,p_user_id,'inspection.perform',w.neighborhood_id,w.home_id)
+    and ca.submitted_by<>p_user_id
+    and ca.accountable_internal_user_id is distinct from p_user_id
+    and ca.technician_user_id is distinct from p_user_id
+    and not (ca.accountable_company_id is not null
+     and private.active_company_membership(w.organization_id,ca.accountable_company_id,p_user_id,null)))
+  )
+ );
+$$;
+revoke all on function private.can_verify(uuid,uuid) from public,anon,authenticated;
+
+do $$ declare definition text; needle text; begin
+ definition:=pg_get_functiondef('public.work_completion_context(uuid,uuid)'::regprocedure);
+ needle:='Another authorized reviewer must review this completion. You cannot approve work you performed or submitted, or work completed by your company.';
+ if strpos(definition,needle)=0 then raise exception 'Review completion context before updating self approval'; end if;
+ definition:=replace(definition,needle,'A submitted completion is required before this work can be reviewed.');
+ definition:=replace(definition,'independent','eligible');
+ execute definition;
+
+ definition:=pg_get_functiondef('public.execute_command_before_plan_checklists(text,jsonb)'::regprocedure);
+ needle:='''INDEPENDENCE_REQUIRED'', ''Verification requires an eligible independent verifier.''';
+ if strpos(definition,needle)=0 then raise exception 'Review completion error before updating self approval'; end if;
+ definition:=replace(definition,needle,'''FORBIDDEN'', ''An authorized supervisor and a pending completion are required for review.''');
+ execute definition;
+end; $$;
+
+notify pgrst,'reload schema';
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202611050077_settings_and_catalog_security.sql
+-- ============================================================================
+
+begin;
+
+-- Restore working settings saves while retaining organization-wide authorization.
+create or replace function public.admin_save_business_calendar(p_organization_id uuid,p_id uuid,p_name text,p_timezone text,p_working_weekdays smallint[],p_local_start_time time,p_local_end_time time,p_holiday_dates date[] default '{}')
+returns public.business_calendars language plpgsql security definer set search_path = '' as $$
+declare result public.business_calendars; before_row jsonb;
+begin
+  perform private.require_org_admin_permission(p_organization_id, 'config.manage');
+  if length(trim(coalesce(p_name,''))) not between 1 and 160 then raise exception using errcode='22023',message='calendar name is required'; end if;
+  if not exists(select 1 from pg_catalog.pg_timezone_names where name=p_timezone) then raise exception using errcode='22023', message='invalid timezone'; end if;
+  if p_working_weekdays is null or cardinality(p_working_weekdays)<1 or exists(select 1 from unnest(p_working_weekdays) d where d is null or d<0 or d>6) then raise exception using errcode='22023', message='working weekdays must contain values from 0 through 6'; end if;
+  if p_local_start_time is null or p_local_end_time is null or p_local_end_time<=p_local_start_time then raise exception using errcode='22023', message='business day must end after it starts'; end if;
+  if p_id is null then insert into public.business_calendars(organization_id,name,timezone,working_weekdays,local_start_time,local_end_time,holiday_dates) values(p_organization_id,trim(p_name),p_timezone,p_working_weekdays,p_local_start_time,p_local_end_time,p_holiday_dates) returning * into result;
+  else select to_jsonb(c) into before_row from public.business_calendars c where c.organization_id=p_organization_id and c.id=p_id for update;
+    update public.business_calendars set name=trim(p_name),timezone=p_timezone,working_weekdays=p_working_weekdays,local_start_time=p_local_start_time,local_end_time=p_local_end_time,holiday_dates=p_holiday_dates,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning * into result;
+    if not found then raise exception using errcode='02000', message='calendar not found'; end if;
+  end if;
+  perform private.append_audit(p_organization_id,auth.uid(),'calendar.saved','business_calendar',result.id,null,before_row,to_jsonb(result)); return result;
+end; $$;
+revoke all on function public.admin_save_business_calendar(uuid,uuid,text,text,smallint[],time,time,date[]) from public,anon;
+grant execute on function public.admin_save_business_calendar(uuid,uuid,text,text,smallint[],time,time,date[]) to authenticated;
+
+
+create or replace function public.admin_save_escalation_route(p_organization_id uuid,p_id uuid,p_name text,p_active boolean,p_steps jsonb)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare result public.escalation_routes; before_row jsonb; step jsonb; ordinal integer:=0;
+begin
+  perform private.require_org_admin_permission(p_organization_id,'config.manage');
+  if length(trim(coalesce(p_name,''))) not between 1 and 160 then raise exception using errcode='22023',message='route name is required'; end if;
+  if jsonb_typeof(p_steps) is distinct from 'array' or jsonb_array_length(p_steps)<1 or jsonb_array_length(p_steps)>10 then raise exception using errcode='22023',message='one to ten escalation steps are required'; end if;
+  if p_id is null then insert into public.escalation_routes(organization_id,name,active) values(p_organization_id,trim(p_name),p_active) returning * into result;
+  else
+    select jsonb_build_object('route',to_jsonb(r),'steps',(select coalesce(jsonb_agg(to_jsonb(s) order by s.level),'[]'::jsonb) from public.escalation_route_steps s where s.organization_id=p_organization_id and s.route_id=p_id)) into before_row from public.escalation_routes r where r.organization_id=p_organization_id and r.id=p_id for update;
+    update public.escalation_routes set name=trim(p_name),active=p_active,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning * into result;
+    if not found then raise exception using errcode='02000',message='escalation route not found'; end if;
+    delete from public.escalation_route_steps where organization_id=p_organization_id and route_id=p_id;
+  end if;
+  for step in select value from jsonb_array_elements(p_steps) loop
+    ordinal:=ordinal+1;
+    if step->>'recipient_kind' is null or step->>'recipient_kind' not in ('assigned_company_manager','supervisor','area_manager','specific_user','org_admin') then raise exception using errcode='22023',message='invalid escalation recipient kind'; end if;
+    if step->>'recipient_kind'='specific_user' and (nullif(step->>'recipient_user_id','') is null or not private.active_member(p_organization_id,(step->>'recipient_user_id')::uuid)) then raise exception using errcode='22023',message='specific escalation recipient must be an active member'; end if;
+    insert into public.escalation_route_steps(organization_id,route_id,level,recipient_kind,recipient_user_id)
+      values(p_organization_id,result.id,ordinal,step->>'recipient_kind',case when step->>'recipient_kind'='specific_user' then (step->>'recipient_user_id')::uuid else null end);
+  end loop;
+  perform private.append_audit(p_organization_id,auth.uid(),'escalation_route.saved','escalation_route',result.id,null,before_row,jsonb_build_object('route',to_jsonb(result),'steps',p_steps));
+  return jsonb_build_object('id',result.id,'name',result.name,'step_count',ordinal);
+end; $$;
+revoke all on function public.admin_save_escalation_route(uuid,uuid,text,boolean,jsonb) from public,anon;
+grant execute on function public.admin_save_escalation_route(uuid,uuid,text,boolean,jsonb) to authenticated;
+
+create or replace function public.admin_save_notification_rule(
+  p_organization_id uuid,p_id uuid,p_neighborhood_id uuid,p_trigger text,p_business_minutes integer,p_repeat_minutes integer,
+  p_max_repeats integer,p_quiet_hours jsonb,p_escalation_route_id uuid,p_enabled boolean
+)
+returns public.notification_rules language plpgsql security definer set search_path = '' as $$
+declare result public.notification_rules; before_row jsonb;
+begin
+  perform private.require_org_admin_permission(p_organization_id,'config.manage');
+  if p_trigger is null or p_trigger not in ('assignment_unacknowledged','work_due','attempt_unreviewed','blocked','critical_created') then raise exception using errcode='22023',message='invalid notification trigger'; end if;
+  if p_business_minutes is not null and p_business_minutes<0 or p_repeat_minutes is not null and p_repeat_minutes<1 or p_max_repeats is null or p_max_repeats not between 0 and 50 then raise exception using errcode='22023',message='invalid notification timing'; end if;
+  if p_neighborhood_id is not null and not exists(select 1 from public.neighborhoods where organization_id=p_organization_id and id=p_neighborhood_id and status='active') then raise exception using errcode='22023',message='neighborhood is unavailable'; end if;
+  if not exists(select 1 from public.escalation_routes where organization_id=p_organization_id and id=p_escalation_route_id and active) then raise exception using errcode='22023',message='escalation route is unavailable'; end if;
+  if jsonb_typeof(p_quiet_hours) is distinct from 'object' then raise exception using errcode='22023',message='quiet hours must be an object'; end if;
+  if p_id is null then insert into public.notification_rules(organization_id,neighborhood_id,trigger,business_minutes,repeat_minutes,max_repeats,quiet_hours,escalation_route_id,enabled)
+    values(p_organization_id,p_neighborhood_id,p_trigger,p_business_minutes,p_repeat_minutes,p_max_repeats,p_quiet_hours,p_escalation_route_id,p_enabled) returning * into result;
+  else select to_jsonb(n) into before_row from public.notification_rules n where n.organization_id=p_organization_id and n.id=p_id for update;
+    update public.notification_rules set neighborhood_id=p_neighborhood_id,trigger=p_trigger,business_minutes=p_business_minutes,repeat_minutes=p_repeat_minutes,max_repeats=p_max_repeats,quiet_hours=p_quiet_hours,escalation_route_id=p_escalation_route_id,enabled=p_enabled,updated_at=now(),version=version+1 where organization_id=p_organization_id and id=p_id returning * into result;
+    if not found then raise exception using errcode='02000',message='notification rule not found'; end if;
+  end if;
+  perform private.append_audit(p_organization_id,auth.uid(),'notification_rule.saved','notification_rule',result.id,null,before_row,to_jsonb(result)); return result;
+end; $$;
+revoke all on function public.admin_save_notification_rule(uuid,uuid,uuid,text,integer,integer,integer,jsonb,uuid,boolean) from public,anon;
+grant execute on function public.admin_save_notification_rule(uuid,uuid,uuid,text,integer,integer,integer,jsonb,uuid,boolean) to authenticated;
+
+
+-- Preserve vendor ownership guards while restoring per-record scope checks.
+-- The current audit call is also incompatible with the audit function signature.
+do $$ declare definition text; needle text; begin
+ definition:=pg_get_functiondef('public.admin_set_catalog_status(uuid,text,uuid,boolean)'::regprocedure);
+ needle:='perform private.require_admin_permission(p_organization_id, required_permission);';
+ if strpos(definition,needle)=0 then raise exception 'Review catalog authorization before applying security fix'; end if;
+ definition:=replace(definition,needle,'perform private.require_catalog_authority(p_organization_id,p_entity,p_id,p_active);');
+ definition:=replace(definition,'''company'',''specialty'',''roster''','''company'',''roster''');
+ definition:=regexp_replace(definition,'  elsif p_entity=''specialty'' then.*?  elsif p_entity=''roster'' then','  elsif p_entity=''roster'' then','s');
+ needle:='perform private.append_audit(p_organization_id,''catalog.''||p_entity||''.status_changed'',auth.uid(),jsonb_build_object(''before'',before_row,''after'',after_row));';
+ if strpos(definition,needle)=0 then raise exception 'Review catalog audit call before applying security fix'; end if;
+ definition:=replace(definition,needle,'if after_row is null then raise exception using errcode=''02000'',message=''catalog record not found''; end if;
+  perform private.append_audit(p_organization_id,auth.uid(),''catalog.''||p_entity||''.status_changed'',p_entity,p_id,null,before_row,after_row);');
+ execute definition;
+
+ -- This revoked helper is only used for batch response saves. Correct the stale
+ -- helper reference in its legacy work branch without changing public routing.
+ definition:=pg_get_functiondef('public.execute_command_before_work_completion(text,jsonb)'::regprocedure);
+ if strpos(definition,'private.can_read_work_item')=0 then raise exception 'Review archived batch helper before applying lint correction'; end if;
+ execute replace(definition,'private.can_read_work_item','private.can_read_work');
+end; $$;
+notify pgrst,'reload schema';
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202611050078_evidence_access_and_integrity.sql
+-- ============================================================================
+
+begin;
+
+-- Use the parent record's scope, not caller-supplied location metadata. Lock the
+-- parent so quota checks and inspection submission serialize with uploads.
+create function private.require_attachment_write(a public.attachments,p_actor uuid)
+returns void language plpgsql security definer set search_path='' as $$
+declare w public.work_items; i public.inspections; c public.comments;
+begin
+ if p_actor is null or not private.active_member(a.organization_id,p_actor) then raise insufficient_privilege using message='forbidden'; end if;
+ if (a.work_item_id is not null)::int+(a.inspection_id is not null)::int+(a.comment_id is not null)::int<>1 then
+  raise check_violation using message='Choose exactly one attachment parent.';
+ end if;
+ if a.inspection_id is not null then
+  select * into i from public.inspections where organization_id=a.organization_id and id=a.inspection_id for update;
+  if not found or a.neighborhood_id is distinct from i.neighborhood_id or a.home_id is distinct from i.home_id
+   or i.status not in ('draft','in_progress','amended')
+   or not (private.has_permission(i.organization_id,p_actor,'inspection.manage',i.neighborhood_id,i.home_id)
+    or private.has_permission(i.organization_id,p_actor,'inspection.perform',i.neighborhood_id,i.home_id)
+     and (i.lead_inspector_user_id=p_actor or exists(select 1 from public.inspection_participants ip where ip.inspection_id=i.id and ip.user_id=p_actor and ip.can_edit_draft))) then
+   raise insufficient_privilege using message='Only an assigned Inspector or supervisor can attach evidence to an open inspection.';
+  end if;
+ else
+  if a.comment_id is not null then
+   select * into c from public.comments where organization_id=a.organization_id and id=a.comment_id for update;
+   if not found or c.visibility='internal' and not private.is_internal_member(a.organization_id,p_actor) then raise insufficient_privilege using message='Comment is outside your access.'; end if;
+   select * into w from public.work_items where organization_id=a.organization_id and id=c.work_item_id for update;
+  else
+   select * into w from public.work_items where organization_id=a.organization_id and id=a.work_item_id for update;
+  end if;
+  if w.id is null or a.neighborhood_id is distinct from w.neighborhood_id or a.home_id is distinct from w.home_id
+   or not private.can_read_work(p_actor,w.id) then raise insufficient_privilege using message='Work item is outside your upload access.'; end if;
+ end if;
+ if not private.has_permission(a.organization_id,p_actor,'evidence.upload',a.neighborhood_id,a.home_id)
+  or a.visibility='internal' and not private.is_internal_member(a.organization_id,p_actor) then
+  raise insufficient_privilege using message='Evidence upload permission is required in this scope.';
+ end if;
+end; $$;
+revoke all on function private.require_attachment_write(public.attachments,uuid) from public,anon,authenticated;
+
+-- Upload ownership alone must never bypass loss of access to the parent.
+create or replace function private.can_read_attachment(p_user_id uuid,p_attachment_id uuid)
+returns boolean language sql stable security definer set search_path='' as $$
+ select exists(select 1 from public.attachments a where a.id=p_attachment_id
+  and private.active_member(a.organization_id,p_user_id)
+  and (a.visibility='shared' or private.is_internal_member(a.organization_id,p_user_id))
+  and (a.status='ready' or a.uploader_id=p_user_id and a.status in ('pending_upload','quarantined'))
+  and ((a.work_item_id is not null and private.can_read_work(p_user_id,a.work_item_id))
+   or (a.inspection_id is not null and private.can_read_inspection(p_user_id,a.inspection_id))
+   or (a.comment_id is not null and exists(select 1 from public.comments c where c.organization_id=a.organization_id and c.id=a.comment_id
+    and private.can_read_work(p_user_id,c.work_item_id) and (c.visibility='shared' or private.is_internal_member(a.organization_id,p_user_id)))))
+ );
+$$;
+-- This helper is used by an RLS policy and needs execution permission.
+revoke all on function private.can_read_attachment(uuid,uuid) from public,anon;
+grant execute on function private.can_read_attachment(uuid,uuid) to authenticated;
+
+do $$ declare definition text; needle text; begin
+ definition:=replace(pg_get_functiondef('public.request_attachment_slot(uuid,uuid,uuid,uuid,uuid,uuid,public.comment_visibility,text,text,bigint,text)'::regprocedure),chr(13)||chr(10),chr(10));
+ needle:='if auth.uid() is null or not private.active_member(p_organization_id, auth.uid()) then';
+ if strpos(definition,needle)=0 then raise exception 'Review attachment reservation before applying security fix'; end if;
+ definition:=replace(definition,needle,'v_result.organization_id:=p_organization_id; v_result.neighborhood_id:=p_neighborhood_id; v_result.home_id:=p_home_id;
+  v_result.work_item_id:=p_work_item_id; v_result.inspection_id:=p_inspection_id; v_result.comment_id:=p_comment_id; v_result.visibility:=p_visibility;
+  perform private.require_attachment_write(v_result,auth.uid());
+  if nullif(trim(p_original_name),'''') is null or length(p_original_name)>255 then raise check_violation using message=''A filename of up to 255 characters is required.''; end if;
+  '||needle);
+ execute definition;
+
+ definition:=replace(pg_get_functiondef('public.finalize_attachment_record(uuid,text,bigint,text,boolean,text,text,text)'::regprocedure),chr(13)||chr(10),chr(10));
+ needle:='update public.attachments set';
+ if strpos(definition,needle)=0 then raise exception 'Review evidence finalization before applying security fix'; end if;
+ definition:=replace(definition,needle,'select * into result from public.attachments where id=p_attachment_id;
+  if not found or result.status not in (''pending_upload'',''quarantined'') then return null; end if;
+  perform private.require_attachment_write(result,result.uploader_id);
+  select * into result from public.attachments where id=p_attachment_id for update;
+  if result.status not in (''pending_upload'',''quarantined'') then return null; end if;
+  '||needle);
+ execute definition;
+end; $$;
+
+-- Recheck access and draft state before issuing a replacement signed upload URL.
+create function public.authorize_attachment_upload(p_attachment_id uuid)
+returns public.attachments language plpgsql security definer set search_path='' as $$
+declare a public.attachments;
+begin
+ select * into a from public.attachments where id=p_attachment_id;
+ if not found or a.uploader_id is distinct from auth.uid() or not private.can_read_attachment(auth.uid(),a.id) then
+  raise insufficient_privilege using message='Attachment is outside your upload access.';
+ end if;
+ if a.status in ('pending_upload','quarantined') then perform private.require_attachment_write(a,auth.uid());
+ elsif a.status<>'ready' then raise check_violation using message='Attachment is not available for upload.'; end if;
+ return a;
+end; $$;
+revoke all on function public.authorize_attachment_upload(uuid) from public,anon;
+grant execute on function public.authorize_attachment_upload(uuid) to authenticated;
+
+-- Use the same parent authorization for per-question inspection media.
+create or replace function public.request_inspection_item_media(p_inspection uuid,p_question uuid,p_name text,p_mime text,p_bytes bigint)
+returns public.attachments language plpgsql security definer set search_path='' as $$
+declare i public.inspections; result public.attachments; media_id uuid:=gen_random_uuid();
+begin
+ select * into i from public.inspections where id=p_inspection for update;
+ if not found then raise insufficient_privilege using message='Inspection is outside your upload access.'; end if;
+ result.organization_id:=i.organization_id; result.neighborhood_id:=i.neighborhood_id; result.home_id:=i.home_id;
+ result.inspection_id:=i.id; result.visibility:='shared';
+ perform private.require_attachment_write(result,auth.uid());
+ if not exists(select 1 from public.checklist_questions q where q.organization_id=i.organization_id and q.version_id=i.template_version_id and q.id=p_question) then raise check_violation using message='Checklist item does not belong to this inspection.'; end if;
+ if p_bytes is null or p_bytes not between 1 and 20971520 or p_mime is null or p_mime not in ('image/jpeg','image/png','image/heic','image/heif','application/pdf')
+  or nullif(trim(p_name),'') is null or length(p_name)>255 then raise check_violation using message='Use a photo or PDF up to 20 MB and a filename of up to 255 characters.'; end if;
+ if (select count(*) from public.attachments where inspection_id=i.id and question_id=p_question and status<>'deleted')>=20 then raise check_violation using message='Each checklist item supports up to 20 evidence files.'; end if;
+ insert into public.attachments(id,organization_id,neighborhood_id,home_id,inspection_id,question_id,visibility,uploader_id,bucket,object_key,original_name,mime_type,byte_size,purpose)
+ values(media_id,i.organization_id,i.neighborhood_id,i.home_id,i.id,p_question,'shared',auth.uid(),'evidence',i.organization_id||'/'||media_id||'/original',regexp_replace(p_name,'[\\/\x00-\x1f]','_','g'),p_mime,p_bytes,'observation') returning * into result;
+ return result;
+end; $$;
+
+-- Each completion attempt owns its evidence permanently. A resubmission must
+-- use new correction evidence or an explicitly authorized evidence exception.
+do $$ declare definition text; needle text; begin
+ definition:=replace(pg_get_functiondef('public.execute_command_before_plan_checklists(text,jsonb)'::regprocedure),chr(13)||chr(10),chr(10));
+ needle:='elsif p_command_name = ''submit_correction'' then';
+ if strpos(definition,needle)=0 then raise exception 'Review completion evidence dispatch before applying security fix'; end if;
+ definition:=replace(definition,needle,needle||'
+      if exists(select 1 from jsonb_array_elements_text(coalesce(v_payload->''attachment_ids'',''[]''::jsonb)) selected(id)
+       where not exists(select 1 from public.attachments a where a.id=selected.id::uuid and a.organization_id=v_organization_id
+        and a.work_item_id=v_item.id and a.status=''ready'' and a.visibility=''shared'' and a.purpose=''correction'' and a.correction_attempt_id is null)) then
+       return private.command_error(v_operation_id,''EVIDENCE_NOT_READY'',''Choose new, ready completion evidence. Evidence already submitted with an earlier attempt cannot be reused.'');
+      end if;');
+ execute definition;
+end; $$;
+notify pgrst,'reload schema';
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202611050079_remove_stale_command_branches.sql
+-- ============================================================================
+
+begin;
+
+-- This internal helper has only received batch response saves since migration
+-- 075. Preserve that exact path and its receipts; remove unreachable copies of
+-- work commands referencing retired fields and states.
+do $$
+declare definition text; dispatch_start integer; select_start integer; select_end integer; batch_start integer; batch_end integer; tail_start integer; marker text;
+begin
+ definition:=replace(pg_get_functiondef('public.execute_command_before_work_completion(text,jsonb)'::regprocedure),chr(13)||chr(10),chr(10));
+ dispatch_start:=strpos(definition,'  if p_command_name = ''create_work_item'' then');
+ select_start:=strpos(definition,'      select * into v_inspection from public.inspections where id = (v_payload ->> ''inspection_id'')::uuid and organization_id = v_organization_id for update;');
+ select_end:=strpos(definition,'      -- Enforce strict version check');
+ marker:='      elsif p_command_name = ''save_inspection_responses'' then';
+ batch_start:=strpos(definition,marker)+length(marker);
+ batch_end:=strpos(definition,'      elsif p_command_name = ''upsert_inspection_response'' then');
+ tail_start:=strpos(definition,'  update private.client_operations');
+ if dispatch_start=0 or select_start<=dispatch_start or select_end<=select_start or batch_start<=select_end or batch_end<=batch_start or tail_start<=batch_end then
+  raise exception 'Review batch command layout before removing legacy branches';
+ end if;
+ definition:=left(definition,dispatch_start-1)||'
+  if p_command_name<>''save_inspection_responses'' then
+    return private.command_error(v_operation_id,''UNKNOWN_COMMAND'',''This internal handler only saves inspection response batches.'');
+  end if;
+  '||substring(definition,select_start,select_end-select_start)
+   ||substring(definition,batch_start,batch_end-batch_start)
+   ||substring(definition,tail_start);
+ execute definition;
+end; $$;
+revoke all on function public.execute_command_before_work_completion(text,jsonb) from public,anon,authenticated;
+
+do $$ declare definition text; needle text; begin
+ definition:=pg_get_functiondef('public.admin_set_catalog_status(uuid,text,uuid,boolean)'::regprocedure);
+ needle:='update public.inspection_engagements set revoked_at=case when p_active then null else now() end,updated_at=now(),version=version+1';
+ if strpos(definition,needle)=0 then raise exception 'Review inspection engagement lifecycle before correcting obsolete columns'; end if;
+ execute replace(definition,needle,'update public.inspection_engagements set revoked_at=case when p_active then null else now() end');
+end; $$;
+notify pgrst,'reload schema';
+commit;
+
+-- ============================================================================
+-- SOURCE: supabase/migrations/202611060080_remove_inspections.sql
+-- ============================================================================
+
+begin;
+
+alter table public.inspections
+  add column removed_at timestamptz,
+  add column removed_by uuid references auth.users(id),
+  add column status_before_removal public.inspection_status;
+
+create or replace view public.inspection_list with (security_invoker = true) as
+  select i.id,i.organization_id,i.neighborhood_id,i.home_id,i.type,i.status,i.scheduled_at,h.lot_code,h.address_line1,i.current_revision,i.updated_at,i.version,
+    i.company_id,i.lead_inspector_user_id,i.reviewed_at,i.escalated_at,i.escalation_reason,i.escalation_resolved_at
+  from public.inspections i join public.homes h on h.organization_id=i.organization_id and h.id=i.home_id
+  where i.removed_at is null;
+
+create function public.remove_inspection(p_organization_id uuid, p_inspection_id uuid, p_expected_version bigint)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare i public.inspections; actor uuid := auth.uid();
+begin
+  if actor is null or not private.active_member(p_organization_id, actor) then
+    raise insufficient_privilege using message = 'An active organization membership is required.';
+  end if;
+  select * into i from public.inspections where organization_id=p_organization_id and id=p_inspection_id for update;
+  if not found or i.removed_at is not null then raise no_data_found using message = 'Inspection not found.'; end if;
+  if not private.has_permission(p_organization_id, actor, 'inspection.manage', i.neighborhood_id, i.home_id)
+    or not exists (
+      select 1 from public.role_assignments a
+      where a.organization_id=p_organization_id and a.user_id=actor
+        and a.role_code in ('org_admin','division_admin','neighborhood_admin','superintendent','assistant_superintendent')
+        and a.revoked_at is null and a.starts_at<=now() and (a.ends_at is null or a.ends_at>now())
+        and private.role_grant_enabled(a) and a.scope_kind <> 'company'
+        and private.scope_contains(p_organization_id,a.scope_kind,a.division_id,a.neighborhood_id,a.home_id,'home'::public.scope_kind,null,i.neighborhood_id,i.home_id)
+    ) then raise insufficient_privilege using message = 'An administrator or supervisor with access to this home is required.'; end if;
+  if p_expected_version is null or i.version<>p_expected_version then raise serialization_failure using message = 'Inspection changed. Refresh and try again.'; end if;
+  update public.inspections set removed_at=now(), removed_by=actor, status_before_removal=i.status,
+    status='cancelled', cancellation_reason='Removed from active inspections', updated_at=now(), version=version+1
+    where id=i.id and organization_id=p_organization_id;
+  update public.milestone_approvals set invalidated_at=now(), invalidation_reason='An inspection was removed.'
+    where organization_id=p_organization_id and home_id=i.home_id and invalidated_at is null;
+  perform private.append_audit(p_organization_id,actor,'inspection.removed','inspection',i.id,null,
+    jsonb_build_object('status',i.status,'version',i.version),jsonb_build_object('status','cancelled'),jsonb_build_object('history_retained',true));
+  return jsonb_build_object('id',i.id,'removed',true);
+end; $$;
+revoke all on function public.remove_inspection(uuid,uuid,bigint) from public,anon;
+grant execute on function public.remove_inspection(uuid,uuid,bigint) to authenticated;
+notify pgrst,'reload schema';
 commit;
 

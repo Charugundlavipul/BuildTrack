@@ -201,13 +201,13 @@ begin
     v_id := coalesce(nullif(v_payload ->> 'id', '')::uuid, gen_random_uuid());
     insert into public.work_items(
       id, organization_id, neighborhood_id, home_id, location_id, common_area_location, inspection_id,
-      origin, title, description, category_id, priority, safety_flag, created_by, client_captured_at
+      origin, title, description, priority, safety_flag, created_by, client_captured_at
     ) values (
       v_id, v_organization_id, (v_payload ->> 'neighborhood_id')::uuid,
       nullif(v_payload ->> 'home_id','')::uuid, nullif(v_payload ->> 'location_id','')::uuid,
       nullif(trim(v_payload ->> 'common_area_location'), ''), nullif(v_payload ->> 'inspection_id','')::uuid,
       coalesce(v_payload ->> 'origin', 'internal_observation')::public.work_origin,
-      trim(v_payload ->> 'title'), trim(v_payload ->> 'description'), nullif(v_payload ->> 'category_id','')::uuid,
+      trim(v_payload ->> 'title'), trim(v_payload ->> 'description'),
       coalesce(v_payload ->> 'priority','normal')::public.work_priority, coalesce((v_payload ->> 'safety_flag')::boolean, false),
       v_actor, v_captured_at
     ) returning * into v_item;
@@ -236,7 +236,6 @@ begin
       update public.work_items set
         title = coalesce(nullif(trim(v_payload ->> 'title'), ''), title),
         description = coalesce(nullif(trim(v_payload ->> 'description'), ''), description),
-        category_id = coalesce(nullif(v_payload ->> 'category_id','')::uuid, category_id),
         priority = coalesce(nullif(v_payload ->> 'priority','')::public.work_priority, priority),
         safety_flag = coalesce((v_payload ->> 'safety_flag')::boolean, safety_flag)
       where id = v_item.id returning * into v_item;
@@ -258,7 +257,6 @@ begin
         return private.command_error(v_operation_id, 'FORBIDDEN', 'Triage permission is required.');
       end if;
       update public.work_items set
-        category_id = coalesce(nullif(v_payload ->> 'category_id','')::uuid, category_id),
         priority = coalesce(nullif(v_payload ->> 'priority','')::public.work_priority, priority)
       where id = v_item.id returning * into v_item;
       perform private.append_work_event(v_item, 'work.triaged', v_old_state, v_item.state, v_actor, v_operation_id, jsonb_build_object('notes', v_payload ->> 'notes'));
