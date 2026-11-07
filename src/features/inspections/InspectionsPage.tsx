@@ -7,6 +7,8 @@ import { useHomes, useInspection, useInspections, usePublishedChecklistVersions,
 import { formatDateTime, humanize } from '../../lib/utils'
 import { newCommand, runCommand } from '../../lib/commands'
 import { useAuth } from '../auth/AuthProvider'
+import { RemoveInspectionButton } from './RemoveInspectionButton'
+import { InspectionRepairPlanning } from './InspectionRepairPlanning'
 import type { UUID } from '../../types/domain'
 import { findOfflineInspection, listHomeOfflineBundles } from '../../lib/offline'
 
@@ -90,6 +92,7 @@ export function InspectionDetailPage() {
   })
   const inspectionData = detail.data ?? cachedDetail.data as unknown as NonNullable<typeof detail.data>
   const [drafts, setDrafts] = useState<Record<string, DraftResponse>>({})
+  const [selectedSpace, setSelectedSpace] = useState('')
   const [localResponses, setLocalResponses] = useState<Record<string, InspectionResponseRow>>({})
   const [busyQuestion, setBusyQuestion] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
@@ -194,11 +197,15 @@ export function InspectionDetailPage() {
   const editable = ['draft', 'in_progress', 'amended'].includes(inspection.status)
   const allRequiredAnswered = inspectionData.questions.filter((question) => question.requires_response).every((question) => effectiveResponses.some((response) => response.question_id === question.id))
 
-  return <div className="stack-xl"><PageHeader eyebrow={`REVISION ${inspection.current_revision}`} title={humanize(inspection.type)} description={`Scheduled ${formatDateTime(inspection.scheduled_at)}`} actions={<div className="button-row"><span className={`state-badge state-${inspection.status}`}><span />{humanize(inspection.status)}</span>{inspection.status === 'submitted' && can('inspection.manage') && <button className="button secondary" disabled={submitting} onClick={() => void beginAmendment()}>Begin amendment</button>}</div>} />
+  return <div className="stack-xl"><PageHeader eyebrow={inspection.current_revision > 1 ? `REVISION ${inspection.current_revision}` : 'INSPECTION'} title={humanize(inspection.type)} description={`Scheduled ${formatDateTime(inspection.scheduled_at)}`} actions={<div className="button-row"><span className={`state-badge state-${inspection.status}`}><span />{humanize(inspection.status)}</span>{org && <RemoveInspectionButton org={org} id={inspection.id} version={inspection.version} />}{inspection.status === 'submitted' && can('inspection.manage') && <button className="button secondary" disabled={submitting} onClick={() => void beginAmendment()}>Edit submitted answers</button>}</div>} />
     {!navigator.onLine && cachedDetail.data && <div className="notice warning"><AlertTriangle />Offline checklist loaded. Saved responses and findings remain queued until membership and versions are revalidated.</div>}
     {error && <div className="notice danger" role="alert"><AlertTriangle />{error}</div>}
     <section className="coverage-summary"><div><strong>{counts.pass}</strong><span>Pass</span></div><div><strong>{counts.fail}</strong><span>Fail</span></div><div><strong>{counts.not_applicable}</strong><span>Not applicable</span></div><div><strong>{counts.not_checked}</strong><span>Not checked</span></div></section>
-    <section className="stack-lg" aria-label="Inspection checklist">{inspectionData.questions.map((question) => {
+    {org && ['submitted', 'amended'].includes(inspection.status) && <InspectionRepairPlanning org={org} id={inspection.id} neighborhoodId={inspection.neighborhood_id} editable={inspection.status === 'submitted'} />}
+    {inspection.status === 'amended' && <div className="notice">You are editing a new version of this inspection. Submit it to finish the update and create repair work from its findings.</div>}
+    {['submitted', 'amended'].includes(inspection.status) && can('work.assign') && effectiveResponses.some((response) => response.result === 'fail' && response.finding_work_item_id) && <section className="panel form-panel stack-lg" aria-label="Inspection findings to assign"><div><h2>Inspection findings</h2><p>Open a finding to assign the repair and track its progress.</p></div>{effectiveResponses.filter((response) => response.result === 'fail' && response.finding_work_item_id).map((response) => <div className="section-heading" key={response.id}><div><h2>{inspectionData.questions.find((question) => question.id === response.question_id)?.label ?? 'Inspection finding'}</h2>{response.explanation && <p>{response.explanation}</p>}</div><Link className="button secondary" to={`/org/${org}/work/${response.finding_work_item_id}`}>Open work item</Link></div>)}</section>}
+    <section className="panel form-panel"><label className="field">Select space<select aria-label="Select space" value={selectedSpace || inspectionData.questions[0]?.section || ''} onChange={(event) => setSelectedSpace(event.target.value)}>{[...new Set(inspectionData.questions.map((question) => question.section))].map((space) => <option key={space} value={space}>{space}</option>)}</select></label></section>
+    <section className="stack-lg" aria-label="Inspection checklist">{inspectionData.questions.filter((question) => question.section === (selectedSpace || inspectionData.questions[0]?.section)).map((question) => {
       const saved = effectiveResponses.find((response) => response.question_id === question.id)
       const draft = drafts[question.id] ?? { result: saved?.result, explanation: saved?.explanation ?? '', findingTitle: '' }
       return <article className="panel checklist-question" key={question.id}><div className="question-title"><span>{question.ordinal}</span><div><small>{question.section}</small><h2>{question.label}</h2></div>{saved && <CheckCircle2 aria-label="Response saved" />}</div>
@@ -208,6 +215,6 @@ export function InspectionDetailPage() {
         {editable && <button className="button secondary" disabled={!draft.result || busyQuestion === question.id} onClick={() => void saveResponse(question)}><Save />{busyQuestion === question.id ? 'Saving…' : 'Save response'}</button>}
       </article>
     })}</section>
-    {editable && <div className="form-actions sticky-actions"><span>{effectiveResponses.length} of {inspectionData.questions.length} questions saved</span><button className="button primary" disabled={!allRequiredAnswered || submitting} onClick={() => void submitInspection()}><ClipboardCheck />{submitting ? 'Submitting…' : `Submit revision ${inspection.current_revision}`}</button></div>}
+    {editable && <div className="form-actions sticky-actions"><span>{effectiveResponses.length} of {inspectionData.questions.length} questions saved</span><button className="button primary" disabled={!allRequiredAnswered || submitting} onClick={() => void submitInspection()}><ClipboardCheck />{submitting ? 'Submitting…' : 'Submit inspection'}</button></div>}
   </div>
 }

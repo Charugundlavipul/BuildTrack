@@ -27,6 +27,12 @@ Verify the chosen Resend domain with SPF and DKIM before enabling external deliv
 
 Deploy Edge Functions individually and confirm JWT requirements match `supabase/config.toml`.
 
+### Website origins for Edge Functions
+
+In the Supabase dashboard, open **Project Settings → Edge Functions → Secrets** and set `APP_ORIGIN` to the complete comma-separated list of approved website origins, for example `https://app.example.com,https://staging.example.com,http://localhost:5173`. Use scheme and host only, with no path or trailing slash. Setting the secret replaces the existing value, so retain every origin that still needs access. This is separate from **Authentication → URL Configuration**, which controls sign-in and password-reset redirects.
+
+The current production origin `https://buildtrack-five-blush.vercel.app` is also explicitly allowed in `supabase/functions/_shared/http.ts` because the existing secret's complete value could not be read. When the full `APP_ORIGIN` list is confirmed and configured, remove that explicit fallback before redeploying. A shared-code change must be deployed to every affected function, not just `command`; verify browser OPTIONS requests from the new origin return 204, and an unapproved origin remains rejected. Never use a wildcard origin for authenticated commands.
+
 ## 4. Deploy the Vercel application
 
 Create project `buildtrack` through the authenticated Vercel CLI or dashboard. Configure only:

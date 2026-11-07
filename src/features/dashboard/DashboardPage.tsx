@@ -1,7 +1,7 @@
 import { useMemo, useState, type FormEvent } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Link, useParams } from 'react-router-dom'
-import { ArrowUpRight, CalendarClock, Plus, Search, ShieldCheck, UsersRound, Wrench } from 'lucide-react'
+import { ArrowUpRight, CalendarClock, Plus, Search, UsersRound, Wrench } from 'lucide-react'
 import { EmptyState, ErrorState, LoadingState, MetricCard, PageHeader, PriorityBadge, StateBadge } from '../../components/Ui'
 import { useDashboardMetrics, useParticipants, useWorkItems } from '../../lib/data'
 import { newCommand, runCommand } from '../../lib/commands'
@@ -118,7 +118,6 @@ export function DashboardPage() {
           </Link>
         ))}</div>}
       </section>
-      <section className="field-callout"><ShieldCheck /><div><strong>Closure stays independent</strong><p>The person who submits a correction—and anyone in the accountable trade company—cannot verify that attempt.</p></div><Link to={`/org/${org}/reports`}>View quality metrics <ArrowUpRight /></Link></section>
     </div>
   )
 }

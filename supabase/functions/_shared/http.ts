@@ -1,7 +1,7 @@
 import { createClient, type SupabaseClient } from 'npm:@supabase/supabase-js@2.118.0'
 
 function configuredOrigins() {
-  return (Deno.env.get('APP_ORIGIN') ?? 'http://localhost:5173').split(',').map((value) => value.trim()).filter(Boolean)
+  return [...new Set([...(Deno.env.get('APP_ORIGIN') ?? 'http://localhost:5173').split(',').map((value) => value.trim()).filter(Boolean), 'https://buildtrack-five-blush.vercel.app'])]
 }
 
 function allowedOrigin(request: Request) {
