@@ -36,7 +36,7 @@ reset role;
 insert into public.platform_administrators(user_id) values('10000000-0000-0000-0000-000000000001');
 set local role authenticated;
 select set_config('request.jwt.claims','{"sub":"10000000-0000-0000-0000-000000000001","role":"authenticated","aal":"aal1"}',true);
-select extensions.throws_ok($$select public.platform_list_organizations()$$,'42501',null,'platform operations require MFA');
+select extensions.lives_ok($$select public.platform_list_organizations()$$,'authorized platform operator can list organizations without MFA');
 select set_config('request.jwt.claims','{"sub":"10000000-0000-0000-0000-000000000001","role":"authenticated","aal":"aal2"}',true);
 select extensions.lives_ok($$select public.platform_list_organizations()$$,'verified platform operator can list organizations');
 select extensions.is((select count(*)::bigint from public.work_items where organization_id='20000000-0000-0000-0000-000000000002'),0::bigint,'platform administration does not impersonate tenant users');

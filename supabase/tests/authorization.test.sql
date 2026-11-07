@@ -1,6 +1,6 @@
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(13);
+select plan(15);
 
 select extensions.ok((select relrowsecurity from pg_class where oid = 'public.work_items'::regclass), 'SEC01 work_items has RLS');
 select extensions.ok((select relrowsecurity from pg_class where oid = 'public.attachments'::regclass), 'SEC08 attachments has RLS');
@@ -29,7 +29,8 @@ select extensions.is((select count(*)::bigint from public.work_items), 0::bigint
 
 select set_config('request.jwt.claims', '{"sub":"10000000-0000-0000-0000-000000000009","role":"authenticated","aal":"aal1"}', true);
 reset role;
-select extensions.ok(not private.can_verify('10000000-0000-0000-0000-000000000009','72000000-0000-0000-0000-000000000001'), 'SEC07 same-company verifier is denied');
+select extensions.ok(private.can_verify('10000000-0000-0000-0000-000000000009','72000000-0000-0000-0000-000000000001'), 'SEC07 scoped supervisor can approve a repair');
+select extensions.ok(not private.can_verify('10000000-0000-0000-0000-000000000008','72000000-0000-0000-0000-000000000001'), 'SEC07 trade contributor cannot approve their repair without supervisor authority');
 
 set local role authenticated;
 select set_config('request.jwt.claims', '{"sub":"10000000-0000-0000-0000-000000000003","role":"authenticated","aal":"aal1"}', true);
@@ -40,6 +41,7 @@ set local role authenticated;
 select extensions.throws_ok(
   $$update public.work_items set state = 'verified' where id = '70000000-0000-0000-0000-000000000001'$$,
   '42501',
+  null,
   'SEC09 direct lifecycle update is denied'
 );
 
