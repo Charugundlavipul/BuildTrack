@@ -161,6 +161,9 @@ insert into public.work_events(organization_id,work_item_id,assignment_episode_i
   ('20000000-0000-0000-0000-000000000001','70000000-0000-0000-0000-000000000003','71000000-0000-0000-0000-000000000003','correction.submitted','in_progress','ready_for_verification','10000000-0000-0000-0000-000000000008',now()-interval '3 hours','73000000-0000-0000-0000-000000000003','{"attempt_number":1}')
 on conflict do nothing;
 
+-- Fixtures are loaded by a privileged database session, without an end-user JWT.
+-- Restrict the service-role claim to this transaction so comment triggers accept the historical authors.
+select set_config('request.jwt.claims', '{"role":"service_role"}', true);
 insert into public.comments(organization_id,work_item_id,author_id,visibility,body) values
   ('20000000-0000-0000-0000-000000000001','70000000-0000-0000-0000-000000000001','10000000-0000-0000-0000-000000000002','shared','Please protect the cabinet base before opening the fitting.'),
   ('20000000-0000-0000-0000-000000000001','70000000-0000-0000-0000-000000000001','10000000-0000-0000-0000-000000000003','internal','Safety flag requires an on-site verification.')
